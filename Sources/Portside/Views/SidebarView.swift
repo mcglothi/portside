@@ -302,18 +302,19 @@ struct SessionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "server.rack")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.name)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                 Text(entry.subtitle)
                     .font(.caption)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
             }
             Spacer(minLength: 4)
             if entry.isProtected {
                 Image(systemName: "lock.fill")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? Color.white : Color.secondary)
                     .help("Protected host")
             }
             EnvironmentBadge(environment: entry.environment)
@@ -324,7 +325,7 @@ struct SessionRow: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(isSelected ? Color.accentColor.opacity(0.22) : .clear)
+                .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
         )
         // Manual selection: single click selects immediately (no native List
         // selection to compete for the click); double-click connects.
