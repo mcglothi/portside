@@ -268,11 +268,13 @@ struct SFTPPaneView: View {
     private func dragProvider(for file: RemoteFile) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.suggestedName = file.name
-        let ext = (file.name as NSString).pathExtension
-        let type = UTType(filenameExtension: ext) ?? .data
         let spec = model.dragSpec(for: file)
+        // Register as generic data so Finder uses the exact suggested filename.
+        // Using the file's specific UTI makes Finder re-append the type's
+        // preferred extension (index.html -> index.html.html) and can even
+        // rewrite it (.htm -> .html), so we preserve the name verbatim instead.
         provider.registerFileRepresentation(
-            forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all
+            forTypeIdentifier: UTType.data.identifier, fileOptions: [], visibility: .all
         ) { completion in
             let progress = Progress(totalUnitCount: 1)
             Task.detached {
