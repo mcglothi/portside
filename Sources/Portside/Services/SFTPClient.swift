@@ -91,6 +91,9 @@ struct SFTPClient {
             + "\""
     }
 
+    /// Set PORTSIDE_SFTP_DEBUG=1 to log raw sftp batches + output to Console.app.
+    private static let debugLogging = ProcessInfo.processInfo.environment["PORTSIDE_SFTP_DEBUG"] != nil
+
     private func run(batch commands: [String]) async throws -> String {
         var args = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         args += SSHControl.options
@@ -99,6 +102,10 @@ struct SFTPClient {
 
         let input = commands.joined(separator: "\n") + "\n"
         let result = try await Self.runProcess("/usr/bin/sftp", args, stdin: input)
+        if Self.debugLogging {
+            NSLog("Portside SFTP » commands:\n%@\n« status=%d\nstdout:\n%@\nstderr:\n%@",
+                  input, result.status, result.out, result.err)
+        }
         guard result.status == 0 else {
             let detail = result.err.trimmingCharacters(in: .whitespacesAndNewlines)
             throw SFTPClientError.failed(detail.isEmpty ? "sftp exited with status \(result.status)" : detail)
@@ -156,24 +163,30 @@ struct SFTPClient {
 
     // MARK: - ls parsing
 
-    private static let listingRegex = try! NSRegularExpression(
-        pattern: #"^([\-dlbcps][rwxsStT\-]{9}[@+.]?)\s+\d+\s+\S+\s+\S+\s+(\d+)\s+(\S+\s+\d+\s+\S+)\s+(.+)$"#
+    /// A valid long-listing line starts with a 10-char mode string
+    /// (type + 9 permission bits) optionally followed by an ACL/xattr marker.
+    private static let modeRegex = try! NSRegularExpression(
+        pattern: #"^[\-dlbcpsD?][rwxsStTlL\-]{9}[@+.]?$"#
     )
 
+    /// Parses openssh `sftp` long-listing output. Rather than one brittle
+    /// regex over the whole line (which breaks on unusual date/owner columns
+    /// and left the browser silently empty), split on the eight fixed columns —
+    /// mode, links, owner, group, size, month, day, time/year — and treat the
+    /// rest as the name, so filenames with spaces and odd date formats survive.
     static func parseListing(_ output: String) -> [RemoteFile] {
         var files: [RemoteFile] = []
         for line in output.components(separatedBy: .newlines) {
-            if line.hasPrefix("sftp>") || line.isEmpty { continue }
-            let range = NSRange(line.startIndex..., in: line)
-            guard let match = listingRegex.firstMatch(in: line, range: range),
-                  let permsRange = Range(match.range(at: 1), in: line),
-                  let sizeRange = Range(match.range(at: 2), in: line),
-                  let dateRange = Range(match.range(at: 3), in: line),
-                  let nameRange = Range(match.range(at: 4), in: line)
-            else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("sftp>") || trimmed.hasPrefix("total ") { continue }
 
-            let permissions = String(line[permsRange])
-            var name = String(line[nameRange])
+            let fields = line.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: true)
+            guard fields.count == 9 else { continue }
+            let permissions = String(fields[0])
+            let modeRange = NSRange(permissions.startIndex..., in: permissions)
+            guard Self.modeRegex.firstMatch(in: permissions, range: modeRange) != nil else { continue }
+
+            var name = String(fields[8])
             let isSymlink = permissions.hasPrefix("l")
             if isSymlink, let arrow = name.range(of: " -> ") {
                 name = String(name[..<arrow.lowerBound])
@@ -184,8 +197,8 @@ struct SFTPClient {
                 name: name,
                 isDirectory: permissions.hasPrefix("d"),
                 isSymlink: isSymlink,
-                size: Int(line[sizeRange]) ?? 0,
-                dateText: String(line[dateRange]),
+                size: Int(fields[4]) ?? 0,
+                dateText: "\(fields[5]) \(fields[6]) \(fields[7])",
                 permissions: permissions
             ))
         }

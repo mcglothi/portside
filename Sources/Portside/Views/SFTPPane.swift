@@ -49,10 +49,13 @@ final class SFTPBrowserModel: ObservableObject {
 
     func upload(_ urls: [URL]) async {
         await withBusy {
+            // A drop before the first listing lands leaves `path` empty, which
+            // would send the file to sftp's default dir and list the wrong one.
+            let target = self.path.isEmpty ? try await self.client.pwd() : self.path
             for url in urls {
-                try await self.client.upload(localURL: url, toDirectory: self.path)
+                try await self.client.upload(localURL: url, toDirectory: target)
             }
-            try await self.load(self.path)
+            try await self.load(target)
         }
     }
 
