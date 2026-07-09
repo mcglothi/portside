@@ -346,16 +346,32 @@ struct SessionRow: View {
         // from List(selection:), which is what made selection feel stuck.
         .simultaneousGesture(TapGesture(count: 2).onEnded { connect(entry) })
         .help("Double-click to connect")
-        // `.onDrag` (NSItemProvider) is the List-compatible drag source. The row
-        // is a drag SOURCE only — drop targets live on folders, never on the same
-        // row, which is what previously locked up List selection after a drag.
-        .onDrag { NSItemProvider(object: entry.id.uuidString as NSString) }
+        // `.draggable` (not `.onDrag`) coexists with List selection: it only
+        // starts a drag past a movement threshold, so plain clicks still select.
+        // Row is a drag SOURCE only — drop targets live on folders.
+        .draggable(entry.id.uuidString)
         .contextMenu {
             Button("Connect") { connect(entry) }
             Button("Edit…") { edit(entry) }
+            if !moveTargets.isEmpty {
+                Menu("Move to") {
+                    ForEach(moveTargets, id: \.self) { target in
+                        Button(target.isEmpty ? "Top Level" : target) {
+                            store.move(entryID: entry.id, toFolder: target)
+                        }
+                    }
+                }
+            }
             Divider()
             Button("Delete", role: .destructive) { store.delete(entry) }
         }
+    }
+
+    /// Folders the session can move to, plus "Top Level" when it's in a folder.
+    private var moveTargets: [String] {
+        var targets = store.folders.filter { $0 != entry.folder }
+        if !entry.folder.isEmpty { targets.insert("", at: 0) }
+        return targets
     }
 }
 
