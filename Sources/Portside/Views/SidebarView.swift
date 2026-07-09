@@ -145,20 +145,15 @@ struct SidebarView: View {
 
     private var hostsList: some View {
         let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
-        return List(selection: $selectedEntryID) {
-            // Drag-out target: drop a session here to move it to the top level.
-            if !store.folders.isEmpty {
-                Label("Top level", systemImage: "tray")
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-                    .dropDestination(for: String.self) { ids, _ in
-                        moveDropped(ids, into: "")
-                        return true
-                    }
-            }
+        // Selection is managed manually (not List(selection:)): native list
+        // selection competes with the row's own click/drag handling, which made
+        // clicks on the row content unreliable. A plain List + our own highlight
+        // puts the click handler where the click actually lands.
+        return List {
             ForEach(tree.folders) { node in
                 FolderGroupView(
                     node: node,
+                    selection: $selectedEntryID,
                     connect: connect,
                     edit: { editingEntry = $0 },
                     newSubfolder: { newFolderName = ""; newFolderParent = $0 },
@@ -166,7 +161,8 @@ struct SidebarView: View {
                 )
             }
             ForEach(tree.root) { entry in
-                SessionRow(entry: entry, connect: connect, edit: { editingEntry = $0 })
+                SessionRow(entry: entry, selection: $selectedEntryID,
+                           connect: connect, edit: { editingEntry = $0 })
             }
         }
         .searchable(text: $filter, placement: .sidebar, prompt: "Filter hosts")
@@ -238,14 +234,6 @@ struct SidebarView: View {
         }
     }
 
-    private func moveDropped(_ ids: [String], into folder: String) {
-        for id in ids {
-            if let uuid = UUID(uuidString: id) {
-                store.move(entryID: uuid, toFolder: folder)
-            }
-        }
-    }
-
     private func connect(_ entry: SessionEntry) {
         sessions.connect(to: store.resolved(entry))
     }
@@ -275,6 +263,7 @@ struct SidebarView: View {
 struct FolderGroupView: View {
     @EnvironmentObject var store: SessionStore
     let node: FolderNode
+    @Binding var selection: UUID?
     let connect: (SessionEntry) -> Void
     let edit: (SessionEntry) -> Void
     let newSubfolder: (String) -> Void
@@ -283,19 +272,14 @@ struct FolderGroupView: View {
     var body: some View {
         DisclosureGroup {
             ForEach(node.subfolders) { child in
-                FolderGroupView(node: child, connect: connect, edit: edit,
+                FolderGroupView(node: child, selection: $selection, connect: connect, edit: edit,
                                 newSubfolder: newSubfolder, rename: rename)
             }
             ForEach(node.entries) { entry in
-                SessionRow(entry: entry, connect: connect, edit: edit)
+                SessionRow(entry: entry, selection: $selection, connect: connect, edit: edit)
             }
         } label: {
             Label(node.name, systemImage: "folder")
-                .contentShape(Rectangle())
-                .dropDestination(for: String.self) { ids, _ in
-                    move(ids: ids, into: node.path)
-                    return true
-                }
                 .contextMenu {
                     Button("New Subfolder…") { newSubfolder(node.path) }
                     Button("Rename…") { rename(node.path, node.name) }
@@ -304,21 +288,16 @@ struct FolderGroupView: View {
                 }
         }
     }
-
-    private func move(ids: [String], into folder: String) {
-        for id in ids {
-            if let uuid = UUID(uuidString: id) {
-                store.move(entryID: uuid, toFolder: folder)
-            }
-        }
-    }
 }
 
 struct SessionRow: View {
     @EnvironmentObject var store: SessionStore
     let entry: SessionEntry
+    @Binding var selection: UUID?
     let connect: (SessionEntry) -> Void
     let edit: (SessionEntry) -> Void
+
+    private var isSelected: Bool { selection == entry.id }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -328,7 +307,7 @@ struct SessionRow: View {
                 Text(entry.name)
                 Text(entry.subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
             }
             Spacer(minLength: 4)
             if entry.isProtected {
@@ -339,17 +318,19 @@ struct SessionRow: View {
             }
             EnvironmentBadge(environment: entry.environment)
         }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .tag(entry.id)
-        // Let the List own single-click selection natively; add double-click as a
-        // NON-exclusive gesture. `.onTapGesture` is exclusive and steals clicks
-        // from List(selection:), which is what made selection feel stuck.
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isSelected ? Color.accentColor.opacity(0.22) : .clear)
+        )
+        // Manual selection: single click selects immediately (no native List
+        // selection to compete for the click); double-click connects.
+        .onTapGesture { selection = entry.id }
         .simultaneousGesture(TapGesture(count: 2).onEnded { connect(entry) })
-        .help("Double-click to connect")
-        // `.draggable` (not `.onDrag`) coexists with List selection: it only
-        // starts a drag past a movement threshold, so plain clicks still select.
-        // Row is a drag SOURCE only — drop targets live on folders.
-        .draggable(entry.id.uuidString)
+        .help("Click to select, double-click to connect")
         .contextMenu {
             Button("Connect") { connect(entry) }
             Button("Edit…") { edit(entry) }
