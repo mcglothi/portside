@@ -74,14 +74,12 @@ final class SFTPBrowserModel: ObservableObject {
         }
     }
 
-    /// Downloads to a unique temp location; used by drag-out file promises.
-    func downloadForDrag(_ file: RemoteFile) async throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("portside-drag-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let local = dir.appendingPathComponent(file.name)
-        try await client.download(remotePath: join(file.name), to: local)
-        return local
+    /// The Sendable pieces a drag-out promise needs. Captured on the main actor
+    /// at drag start; the actual download must run OFF the main actor (a Finder
+    /// drag spins a nested run loop on the main thread, so a @MainActor download
+    /// would deadlock and the promised file would never arrive).
+    func dragSpec(for file: RemoteFile) -> (entry: SessionEntry, remotePath: String, name: String) {
+        (entry, join(file.name), file.name)
     }
 
     func downloadToDownloads(_ file: RemoteFile) async {
@@ -264,22 +262,29 @@ struct SFTPPaneView: View {
     }
 
     /// An item provider backed by a lazy file promise: the file is downloaded
-    /// only when the drop target (Finder) actually asks for it. NSItemProvider
-    /// promises are far more reliable for Finder drops than SwiftUI .draggable.
+    /// only when the drop target (Finder) asks for it. The download runs on a
+    /// detached task with a fresh SFTPClient (reusing the ControlMaster socket)
+    /// so it never touches the main actor the drag's run loop is holding.
     private func dragProvider(for file: RemoteFile) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.suggestedName = file.name
         let ext = (file.name as NSString).pathExtension
         let type = UTType(filenameExtension: ext) ?? .data
+        let spec = model.dragSpec(for: file)
         provider.registerFileRepresentation(
             forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all
         ) { completion in
             let progress = Progress(totalUnitCount: 1)
-            Task {
+            Task.detached {
                 do {
-                    let url = try await model.downloadForDrag(file)
+                    let client = SFTPClient(entry: spec.entry)
+                    let dir = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("portside-drag-\(UUID().uuidString)")
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let local = dir.appendingPathComponent(spec.name)
+                    try await client.download(remotePath: spec.remotePath, to: local)
                     progress.completedUnitCount = 1
-                    completion(url, false, nil)
+                    completion(local, false, nil)
                 } catch {
                     completion(nil, false, error)
                 }
