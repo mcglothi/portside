@@ -39,6 +39,7 @@ struct SidebarView: View {
     @State private var renamingFolder: String?
     @State private var renameFolderName = ""
     @State private var selection: Set<UUID> = []
+    @State private var showingLogSearch = false
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -66,7 +67,7 @@ struct SidebarView: View {
             switch section {
             case .hosts: hostsList
             case .macros: macrosList
-            case .tools: ToolsList()
+            case .tools: ToolsList(searchLogs: { showingLogSearch = true })
             }
         }
         .navigationTitle("Portside")
@@ -86,6 +87,9 @@ struct SidebarView: View {
                 case .delete: store.delete(macro)
                 }
             }
+        }
+        .sheet(isPresented: $showingLogSearch) {
+            LogSearchView().environmentObject(store)
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -416,11 +420,12 @@ struct SessionRow: View {
     }
 }
 
-/// Home for standalone tools. Local shell works today; the rest are the
-/// roadmap items (port forwarding, quick connect) surfaced as disabled rows
-/// so the section shows where they'll live.
+/// Home for standalone tools. Local shell and log search work today; the rest
+/// are roadmap items surfaced as disabled rows so the section shows where
+/// they'll live.
 struct ToolsList: View {
     @EnvironmentObject var sessions: SessionManager
+    let searchLogs: () -> Void
 
     var body: some View {
         List {
@@ -429,6 +434,14 @@ struct ToolsList: View {
                     sessions.openLocalShell()
                 } label: {
                     Label("New Local Shell", systemImage: "terminal")
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Logs") {
+                Button {
+                    searchLogs()
+                } label: {
+                    Label("Search Logs…", systemImage: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.plain)
             }

@@ -14,6 +14,7 @@ final class SessionStore: ObservableObject {
     @Published private(set) var customThemes: [TerminalTheme] = []
     /// Fallback user/key applied to sessions that don't specify their own.
     @Published var defaults = ConnectionDefaults()
+    @Published var logging = LoggingSettings()
 
     private struct Document: Codable {
         var entries: [SessionEntry]
@@ -22,6 +23,7 @@ final class SessionStore: ObservableObject {
         var appearance: TerminalAppearance?
         var customThemes: [TerminalTheme]?
         var defaults: ConnectionDefaults?
+        var logging: LoggingSettings?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -85,6 +87,11 @@ final class SessionStore: ObservableObject {
 
     func updateDefaults(_ defaults: ConnectionDefaults) {
         self.defaults = defaults
+        save()
+    }
+
+    func updateLogging(_ logging: LoggingSettings) {
+        self.logging = logging
         save()
     }
 
@@ -218,6 +225,7 @@ final class SessionStore: ObservableObject {
             appearance = doc.appearance ?? .default
             customThemes = doc.customThemes ?? []
             defaults = doc.defaults ?? ConnectionDefaults()
+            logging = doc.logging ?? LoggingSettings()
         } else {
             entries = SSHConfigImporter.importEntries()
             save()
@@ -234,7 +242,7 @@ final class SessionStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(Document(entries: entries, macros: macros,
                                         explicitFolders: explicitFolders, appearance: appearance,
-                                        customThemes: customThemes, defaults: defaults))
+                                        customThemes: customThemes, defaults: defaults, logging: logging))
                 .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")

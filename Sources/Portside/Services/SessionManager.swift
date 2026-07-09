@@ -2,6 +2,17 @@ import AppKit
 import Foundation
 import SwiftTerm
 
+/// A terminal view that tees the child process's output to a session log
+/// before feeding it to the terminal.
+final class LoggingTerminalView: LocalProcessTerminalView {
+    var logger: SessionLogger?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        logger?.append(slice)
+        super.dataReceived(slice: slice)
+    }
+}
+
 /// One live terminal tab: owns the SwiftTerm view and the child process
 /// (either `ssh` or a local login shell) running inside it.
 final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
@@ -27,16 +38,21 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     /// Removes any on-disk askpass secret once ssh no longer needs it.
     private var cleanup: (() -> Void)?
+    private let logger: SessionLogger?
 
     init(title: String, executable: String, args: [String], entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
-         environment: [String]? = nil, cleanup: (() -> Void)? = nil) {
+         environment: [String]? = nil, cleanup: (() -> Void)? = nil,
+         logger: SessionLogger? = nil) {
         self.title = title
         self.entry = entry
         self.cleanup = cleanup
+        self.logger = logger
         // Protected hosts must be opted in to MultiExec explicitly.
         self.includedInMultiExec = !(entry?.isProtected ?? false)
-        self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let view = LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.logger = logger
+        self.terminalView = view
         super.init()
         terminalView.processDelegate = self
         apply(appearance: appearance)
@@ -50,6 +66,11 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     private func runCleanup() {
         cleanup?()
         cleanup = nil
+    }
+
+    /// Flushes and closes the session log (idempotent).
+    func closeLog() {
+        logger?.close()
     }
 
     func sendText(_ text: String) {
@@ -77,6 +98,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         runCleanup()
+        logger?.close()
         DispatchQueue.main.async { self.isRunning = false }
     }
 }
@@ -87,6 +109,7 @@ final class SessionManager: ObservableObject {
     @Published var multiExecActive = false
     @Published var filesPaneVisible = false
     var appearance: TerminalAppearance = .default
+    var loggingSettings = LoggingSettings()
 
     private var keyMonitor: Any?
 
@@ -152,14 +175,18 @@ final class SessionManager: ObservableObject {
             cleanup = injected.cleanup
         }
 
+        let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
         add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
                             entry: entry, appearance: appearance,
-                            environment: environment, cleanup: cleanup))
+                            environment: environment, cleanup: cleanup, logger: logger))
     }
 
     func openLocalShell() {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        add(TerminalSession(title: "local", executable: shell, args: ["-l"], appearance: appearance))
+        let logger = LogManager.makeLogger(hostKey: "local", title: "Local Shell",
+                                           subtitle: shell, settings: loggingSettings)
+        add(TerminalSession(title: "local", executable: shell, args: ["-l"],
+                            appearance: appearance, logger: logger))
     }
 
     /// Opens several hosts at once, optionally arming MultiExec so keystrokes
@@ -180,6 +207,7 @@ final class SessionManager: ObservableObject {
     }
 
     func close(_ session: TerminalSession) {
+        session.closeLog()
         sessions.removeAll { $0.id == session.id }
         if selectedID == session.id {
             selectedID = sessions.last?.id

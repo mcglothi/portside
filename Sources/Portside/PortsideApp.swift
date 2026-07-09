@@ -22,8 +22,13 @@ struct PortsideApp: App {
                 .environmentObject(store)
                 .environmentObject(sessions)
                 .frame(minWidth: 1000, minHeight: 640)
-                .onAppear { sessions.appearance = store.appearance }
+                .onAppear {
+                    sessions.appearance = store.appearance
+                    sessions.loggingSettings = store.logging
+                    LogManager.runMaintenance(settings: store.logging)
+                }
                 .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
+                .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -40,6 +45,9 @@ struct PortsideApp: App {
                 ConnectionSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Connection", systemImage: "network") }
+                LoggingSettingsView()
+                    .environmentObject(store)
+                    .tabItem { Label("Logging", systemImage: "doc.text.magnifyingglass") }
             }
         }
     }
