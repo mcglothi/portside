@@ -191,6 +191,10 @@ struct SFTPClient {
             if isSymlink, let arrow = name.range(of: " -> ") {
                 name = String(name[..<arrow.lowerBound])
             }
+            // Some SFTP servers list absolute paths in the name column; a
+            // filename can't contain "/", so reduce to the basename. This keeps
+            // display, navigation, upload/download, and drag paths correct.
+            name = (name as NSString).lastPathComponent
             if name == "." || name == ".." { continue }
 
             files.append(RemoteFile(
