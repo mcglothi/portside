@@ -341,7 +341,10 @@ struct SessionRow: View {
         }
         .contentShape(Rectangle())
         .tag(entry.id)
-        .onTapGesture(count: 2) { connect(entry) }
+        // Let the List own single-click selection natively; add double-click as a
+        // NON-exclusive gesture. `.onTapGesture` is exclusive and steals clicks
+        // from List(selection:), which is what made selection feel stuck.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { connect(entry) })
         .help("Double-click to connect")
         // `.onDrag` (NSItemProvider) is the List-compatible drag source. The row
         // is a drag SOURCE only — drop targets live on folders, never on the same
