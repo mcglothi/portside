@@ -88,6 +88,15 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// All sessions in a folder and its subfolders, resolved and sorted by name.
+    func entriesInFolder(_ path: String) -> [SessionEntry] {
+        let prefix = path + "/"
+        return entries
+            .filter { $0.folder == path || $0.folder.hasPrefix(prefix) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(resolved)
+    }
+
     /// Fills in user/identity from the connection defaults when a session
     /// leaves them blank, so a default user/key applies without editing each host.
     func resolved(_ entry: SessionEntry) -> SessionEntry {

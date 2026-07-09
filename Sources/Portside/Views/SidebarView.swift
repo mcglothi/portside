@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -37,7 +38,7 @@ struct SidebarView: View {
     @State private var newFolderName = ""
     @State private var renamingFolder: String?
     @State private var renameFolderName = ""
-    @State private var selectedEntryID: UUID?
+    @State private var selection: Set<UUID> = []
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -153,16 +154,19 @@ struct SidebarView: View {
             ForEach(tree.folders) { node in
                 FolderGroupView(
                     node: node,
-                    selection: $selectedEntryID,
+                    selection: $selection,
                     connect: connect,
+                    openSelected: openSelected,
+                    openFolder: openFolder,
                     edit: { editingEntry = $0 },
                     newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                     rename: { renameFolderName = $1; renamingFolder = $0 }
                 )
             }
             ForEach(tree.root) { entry in
-                SessionRow(entry: entry, selection: $selectedEntryID,
-                           connect: connect, edit: { editingEntry = $0 })
+                SessionRow(entry: entry, selection: $selection,
+                           connect: connect, openSelected: openSelected,
+                           edit: { editingEntry = $0 })
             }
         }
         .searchable(text: $filter, placement: .sidebar, prompt: "Filter hosts")
@@ -201,6 +205,19 @@ struct SidebarView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if section == .hosts {
+            ToolbarItem {
+                Menu {
+                    Button("Open \(selection.count) Selected") { openSelected(multiExec: false) }
+                    Button("Open \(selection.count) in MultiExec") { openSelected(multiExec: true) }
+                } label: {
+                    Label("Open Selected", systemImage: "play.fill")
+                }
+                .menuIndicator(selection.isEmpty ? .hidden : .visible)
+                .disabled(selection.isEmpty)
+                .help("Open the selected hosts (⌘-click to select several)")
+            }
+        }
         ToolbarItem {
             Menu {
                 switch section {
@@ -238,6 +255,20 @@ struct SidebarView: View {
         sessions.connect(to: store.resolved(entry))
     }
 
+    /// Opens every currently selected host (in sidebar order).
+    private func openSelected(multiExec: Bool) {
+        let entries = store.entries
+            .filter { selection.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(store.resolved)
+        sessions.connectAll(entries, multiExec: multiExec)
+    }
+
+    /// Opens every host in a folder (and its subfolders).
+    private func openFolder(_ path: String, multiExec: Bool) {
+        sessions.connectAll(store.entriesInFolder(path), multiExec: multiExec)
+    }
+
     private func handleImport(_ result: Swift.Result<[URL], Error>) {
         switch result {
         case .failure(let error):
@@ -263,24 +294,35 @@ struct SidebarView: View {
 struct FolderGroupView: View {
     @EnvironmentObject var store: SessionStore
     let node: FolderNode
-    @Binding var selection: UUID?
+    @Binding var selection: Set<UUID>
     let connect: (SessionEntry) -> Void
+    let openSelected: (_ multiExec: Bool) -> Void
+    let openFolder: (_ path: String, _ multiExec: Bool) -> Void
     let edit: (SessionEntry) -> Void
     let newSubfolder: (String) -> Void
     let rename: (_ path: String, _ currentName: String) -> Void
 
+    private var hostCount: Int { store.entriesInFolder(node.path).count }
+
     var body: some View {
         DisclosureGroup {
             ForEach(node.subfolders) { child in
-                FolderGroupView(node: child, selection: $selection, connect: connect, edit: edit,
+                FolderGroupView(node: child, selection: $selection, connect: connect,
+                                openSelected: openSelected, openFolder: openFolder, edit: edit,
                                 newSubfolder: newSubfolder, rename: rename)
             }
             ForEach(node.entries) { entry in
-                SessionRow(entry: entry, selection: $selection, connect: connect, edit: edit)
+                SessionRow(entry: entry, selection: $selection, connect: connect,
+                           openSelected: openSelected, edit: edit)
             }
         } label: {
             Label(node.name, systemImage: "folder")
                 .contextMenu {
+                    if hostCount > 0 {
+                        Button("Open All (\(hostCount))") { openFolder(node.path, false) }
+                        Button("Open All in MultiExec") { openFolder(node.path, true) }
+                        Divider()
+                    }
                     Button("New Subfolder…") { newSubfolder(node.path) }
                     Button("Rename…") { rename(node.path, node.name) }
                     Divider()
@@ -293,11 +335,13 @@ struct FolderGroupView: View {
 struct SessionRow: View {
     @EnvironmentObject var store: SessionStore
     let entry: SessionEntry
-    @Binding var selection: UUID?
+    @Binding var selection: Set<UUID>
     let connect: (SessionEntry) -> Void
+    let openSelected: (_ multiExec: Bool) -> Void
     let edit: (SessionEntry) -> Void
 
-    private var isSelected: Bool { selection == entry.id }
+    private var isSelected: Bool { selection.contains(entry.id) }
+    private var multiSelected: Bool { selection.count > 1 && isSelected }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -328,11 +372,17 @@ struct SessionRow: View {
                 .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
         )
         // Manual selection: single click selects immediately (no native List
-        // selection to compete for the click); double-click connects.
-        .onTapGesture { selection = entry.id }
+        // selection to compete for the click); ⌘-click extends the selection;
+        // double-click connects.
+        .onTapGesture { handleClick() }
         .simultaneousGesture(TapGesture(count: 2).onEnded { connect(entry) })
-        .help("Click to select, double-click to connect")
+        .help("Click to select (⌘-click for several), double-click to connect")
         .contextMenu {
+            if multiSelected {
+                Button("Connect \(selection.count) Selected") { openSelected(false) }
+                Button("Connect \(selection.count) in MultiExec") { openSelected(true) }
+                Divider()
+            }
             Button("Connect") { connect(entry) }
             Button("Edit…") { edit(entry) }
             if !moveTargets.isEmpty {
@@ -346,6 +396,15 @@ struct SessionRow: View {
             }
             Divider()
             Button("Delete", role: .destructive) { store.delete(entry) }
+        }
+    }
+
+    /// Plain click selects just this row; ⌘-click toggles it in the set.
+    private func handleClick() {
+        if NSEvent.modifierFlags.contains(.command) {
+            if isSelected { selection.remove(entry.id) } else { selection.insert(entry.id) }
+        } else {
+            selection = [entry.id]
         }
     }
 

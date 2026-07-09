@@ -162,6 +162,15 @@ final class SessionManager: ObservableObject {
         add(TerminalSession(title: "local", executable: shell, args: ["-l"], appearance: appearance))
     }
 
+    /// Opens several hosts at once, optionally arming MultiExec so keystrokes
+    /// broadcast to the whole group — the "launch a group and drive them
+    /// together" workflow. Entries should already be resolved (defaults applied).
+    func connectAll(_ entries: [SessionEntry], multiExec: Bool) {
+        guard !entries.isEmpty else { return }
+        for entry in entries { connect(to: entry) }
+        if multiExec { multiExecActive = true }
+    }
+
     /// Re-applies the global look to every open terminal (live settings edits).
     func applyAppearance(_ appearance: TerminalAppearance) {
         self.appearance = appearance
