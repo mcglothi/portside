@@ -1,9 +1,31 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The sidebar is split into distinct sections so hosts, macros, and tools
+/// aren't one long list — and so more tools can be added over time.
+enum SidebarSection: String, CaseIterable, Identifiable {
+    case hosts, macros, tools
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .hosts: return "Hosts"
+        case .macros: return "Macros"
+        case .tools: return "Tools"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .hosts: return "server.rack"
+        case .macros: return "bolt"
+        case .tools: return "wrench.and.screwdriver"
+        }
+    }
+}
+
 struct SidebarView: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var sessions: SessionManager
+    @State private var section: SidebarSection = .hosts
     @State private var filter = ""
     @State private var editingEntry: SessionEntry?
     @State private var editingMacro: Macro?
@@ -27,73 +49,27 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
-        List(selection: $selectedEntryID) {
-            Section("Sessions") {
-                ForEach(tree.folders) { node in
-                    FolderGroupView(
-                        node: node,
-                        connect: connect,
-                        edit: { editingEntry = $0 },
-                        newSubfolder: { newFolderName = ""; newFolderParent = $0 },
-                        rename: { renameFolderName = $1; renamingFolder = $0 }
-                    )
-                }
-                ForEach(tree.root) { entry in
-                    SessionRow(entry: entry, connect: connect, edit: { editingEntry = $0 })
+        VStack(spacing: 0) {
+            Picker("Section", selection: $section) {
+                ForEach(SidebarSection.allCases) { s in
+                    Label(s.title, systemImage: s.icon).tag(s)
                 }
             }
-            Section("Macros") {
-                ForEach(store.macros) { macro in
-                    MacroRow(macro: macro, run: { sessions.run($0) }, edit: { editingMacro = $0 })
-                }
-                Button {
-                    editingMacro = Macro(name: "", text: "")
-                } label: {
-                    Label("New Macro…", systemImage: "plus")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
+            .pickerStyle(.segmented)
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+
+            Divider()
+
+            switch section {
+            case .hosts: hostsList
+            case .macros: macrosList
+            case .tools: ToolsList()
             }
         }
-        .searchable(text: $filter, placement: .sidebar, prompt: "Filter sessions")
         .navigationTitle("Portside")
-        .toolbar {
-            ToolbarItem {
-                Menu {
-                    Button("New Session…") {
-                        editingEntry = SessionEntry(name: "")
-                    }
-                    Button("New Folder…") {
-                        newFolderName = ""
-                        newFolderParent = ""
-                    }
-                    Button("New Macro…") {
-                        editingMacro = Macro(name: "", text: "")
-                    }
-                    Divider()
-                    Button("Import MobaXterm File…") {
-                        showingImporter = true
-                    }
-                    Button("Re-import ~/.ssh/config") {
-                        let added = store.mergeSSHConfig()
-                        importMessage = added == 0
-                            ? "No new hosts found in ~/.ssh/config."
-                            : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
-                    }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-            }
-            ToolbarItem {
-                Button {
-                    sessions.openLocalShell()
-                } label: {
-                    Label("New Local Shell", systemImage: "terminal")
-                }
-                .help("New local shell (⌘T)")
-            }
-        }
+        .toolbar { toolbarContent }
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
                 switch result {
@@ -162,6 +138,111 @@ struct SidebarView: View {
                 renamingFolder = nil
             }
             Button("Cancel", role: .cancel) { renamingFolder = nil }
+        }
+    }
+
+    // MARK: - Sections
+
+    private var hostsList: some View {
+        let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
+        return List(selection: $selectedEntryID) {
+            // Drag-out target: drop a session here to move it to the top level.
+            if !store.folders.isEmpty {
+                Label("Top level", systemImage: "tray")
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                    .dropDestination(for: String.self) { ids, _ in
+                        moveDropped(ids, into: "")
+                        return true
+                    }
+            }
+            ForEach(tree.folders) { node in
+                FolderGroupView(
+                    node: node,
+                    connect: connect,
+                    edit: { editingEntry = $0 },
+                    newSubfolder: { newFolderName = ""; newFolderParent = $0 },
+                    rename: { renameFolderName = $1; renamingFolder = $0 }
+                )
+            }
+            ForEach(tree.root) { entry in
+                SessionRow(entry: entry, connect: connect, edit: { editingEntry = $0 })
+            }
+        }
+        .searchable(text: $filter, placement: .sidebar, prompt: "Filter hosts")
+        .overlay {
+            if store.entries.isEmpty {
+                ContentUnavailableView("No hosts yet",
+                    systemImage: "server.rack",
+                    description: Text("Add a session or import from ~/.ssh/config."))
+            }
+        }
+    }
+
+    private var macrosList: some View {
+        List {
+            ForEach(store.macros) { macro in
+                MacroRow(macro: macro, run: { sessions.run($0) }, edit: { editingMacro = $0 })
+            }
+            Button {
+                editingMacro = Macro(name: "", text: "")
+            } label: {
+                Label("New Macro…", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .overlay {
+            if store.macros.isEmpty {
+                ContentUnavailableView("No macros yet",
+                    systemImage: "bolt",
+                    description: Text("Macros send saved text to the active or broadcast terminals."))
+            }
+        }
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem {
+            Menu {
+                switch section {
+                case .hosts:
+                    Button("New Session…") { editingEntry = SessionEntry(name: "") }
+                    Button("New Folder…") { newFolderName = ""; newFolderParent = "" }
+                    Divider()
+                    Button("Import MobaXterm File…") { showingImporter = true }
+                    Button("Re-import ~/.ssh/config") {
+                        let added = store.mergeSSHConfig()
+                        importMessage = added == 0
+                            ? "No new hosts found in ~/.ssh/config."
+                            : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
+                    }
+                case .macros:
+                    Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
+                case .tools:
+                    Button("New Local Shell") { sessions.openLocalShell() }
+                }
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+        }
+        ToolbarItem {
+            Button {
+                sessions.openLocalShell()
+            } label: {
+                Label("New Local Shell", systemImage: "terminal")
+            }
+            .help("New local shell (⌘T)")
+        }
+    }
+
+    private func moveDropped(_ ids: [String], into folder: String) {
+        for id in ids {
+            if let uuid = UUID(uuidString: id) {
+                store.move(entryID: uuid, toFolder: folder)
+            }
         }
     }
 
@@ -271,6 +352,34 @@ struct SessionRow: View {
             Button("Edit…") { edit(entry) }
             Divider()
             Button("Delete", role: .destructive) { store.delete(entry) }
+        }
+    }
+}
+
+/// Home for standalone tools. Local shell works today; the rest are the
+/// roadmap items (port forwarding, quick connect) surfaced as disabled rows
+/// so the section shows where they'll live.
+struct ToolsList: View {
+    @EnvironmentObject var sessions: SessionManager
+
+    var body: some View {
+        List {
+            Section("Terminal") {
+                Button {
+                    sessions.openLocalShell()
+                } label: {
+                    Label("New Local Shell", systemImage: "terminal")
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Coming soon") {
+                Label("Port Forwarding", systemImage: "arrow.left.arrow.right")
+                    .foregroundStyle(.tertiary)
+                Label("Quick Connect", systemImage: "bolt.horizontal")
+                    .foregroundStyle(.tertiary)
+                Label("Split Layouts", systemImage: "rectangle.split.2x1")
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }
