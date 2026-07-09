@@ -25,19 +25,44 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         return _sftp
     }
 
-    init(title: String, executable: String, args: [String], entry: SessionEntry? = nil) {
+    /// Removes any on-disk askpass secret once ssh no longer needs it.
+    private var cleanup: (() -> Void)?
+
+    init(title: String, executable: String, args: [String], entry: SessionEntry? = nil,
+         appearance: TerminalAppearance = .default,
+         environment: [String]? = nil, cleanup: (() -> Void)? = nil) {
         self.title = title
         self.entry = entry
+        self.cleanup = cleanup
         // Protected hosts must be opted in to MultiExec explicitly.
         self.includedInMultiExec = !(entry?.isProtected ?? false)
         self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         terminalView.processDelegate = self
-        terminalView.startProcess(executable: executable, args: args)
+        apply(appearance: appearance)
+        terminalView.startProcess(executable: executable, args: args, environment: environment)
+        // Bound how long the secret lives on disk even if auth stalls.
+        if cleanup != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.runCleanup() }
+        }
+    }
+
+    private func runCleanup() {
+        cleanup?()
+        cleanup = nil
     }
 
     func sendText(_ text: String) {
         terminalView.send(txt: text)
+    }
+
+    /// Applies the global look to this terminal's view.
+    func apply(appearance: TerminalAppearance) {
+        terminalView.font = appearance.nsFont
+        terminalView.installColors(appearance.palette)
+        terminalView.nativeForegroundColor = appearance.foreground
+        terminalView.nativeBackgroundColor = appearance.background
+        terminalView.caretColor = appearance.cursor
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
@@ -51,6 +76,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
+        runCleanup()
         DispatchQueue.main.async { self.isRunning = false }
     }
 }
@@ -60,6 +86,7 @@ final class SessionManager: ObservableObject {
     @Published var selectedID: UUID?
     @Published var multiExecActive = false
     @Published var filesPaneVisible = false
+    var appearance: TerminalAppearance = .default
 
     private var keyMonitor: Any?
 
@@ -70,7 +97,18 @@ final class SessionManager: ObservableObject {
         // forwarding the NSEvent itself doesn't work because text input
         // routes through the focused view's input context.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.multiExecActive,
+            guard let self else { return event }
+
+            // A terminal whose process has exited closes on Return (keyCode 36)
+            // or Enter (76), matching the "press Enter to close" affordance.
+            if event.keyCode == 36 || event.keyCode == 76,
+               let focused = event.window?.firstResponder as? LocalProcessTerminalView,
+               let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
+                DispatchQueue.main.async { self.close(dead) }
+                return nil
+            }
+
+            guard self.multiExecActive,
                   !event.modifierFlags.contains(.command),
                   let focused = event.window?.firstResponder as? LocalProcessTerminalView,
                   let focusedSession = self.sessions.first(where: { $0.terminalView === focused }),
@@ -103,12 +141,33 @@ final class SessionManager: ObservableObject {
         // ControlMaster options so this interactive session becomes the
         // multiplexing master the SFTP pane piggybacks on.
         let args = SSHControl.options + entry.sshArgs
-        add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args, entry: entry))
+
+        // If the host has a saved password, set up the askpass helper so ssh
+        // auto-authenticates; otherwise it just prompts in the terminal.
+        var environment = SwiftTerm.Terminal.getEnvironmentVariables()
+        var cleanup: (() -> Void)?
+        if entry.savePassword, let password = CredentialStore.password(for: entry.id),
+           let injected = AskpassInjector.environment(for: password) {
+            environment += injected.env
+            cleanup = injected.cleanup
+        }
+
+        add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
+                            entry: entry, appearance: appearance,
+                            environment: environment, cleanup: cleanup))
     }
 
     func openLocalShell() {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        add(TerminalSession(title: "local", executable: shell, args: ["-l"]))
+        add(TerminalSession(title: "local", executable: shell, args: ["-l"], appearance: appearance))
+    }
+
+    /// Re-applies the global look to every open terminal (live settings edits).
+    func applyAppearance(_ appearance: TerminalAppearance) {
+        self.appearance = appearance
+        for session in sessions {
+            session.apply(appearance: appearance)
+        }
     }
 
     func close(_ session: TerminalSession) {

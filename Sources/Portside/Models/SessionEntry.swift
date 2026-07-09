@@ -28,6 +28,8 @@ struct SessionEntry: Identifiable, Hashable {
     var user: String?
     var port: Int?
     var sshAlias: String?            // when set, connect via `ssh <alias>` so ~/.ssh/config rules apply
+    var identityFile: String?        // private key path; passed as `ssh -i`
+    var savePassword = false         // password stored in the Keychain under this id
     var source: Source = .manual
     var environment: HostEnvironment = .none
     var isProtected = false          // excluded from MultiExec unless explicitly confirmed
@@ -39,11 +41,16 @@ struct SessionEntry: Identifiable, Hashable {
         return userPart + target + portPart
     }
 
+    private var identityArgs: [String] {
+        guard let path = identityFile, !path.isEmpty else { return [] }
+        return ["-i", (path as NSString).expandingTildeInPath]
+    }
+
     var sshArgs: [String] {
         if let alias = sshAlias, !alias.isEmpty {
-            return [alias]
+            return identityArgs + [alias]
         }
-        var args: [String] = []
+        var args = identityArgs
         if let port {
             args += ["-p", String(port)]
         }
@@ -54,9 +61,9 @@ struct SessionEntry: Identifiable, Hashable {
     /// Same target as `sshArgs`, but sftp spells the port flag -P.
     var sftpTargetArgs: [String] {
         if let alias = sshAlias, !alias.isEmpty {
-            return [alias]
+            return identityArgs + [alias]
         }
-        var args: [String] = []
+        var args = identityArgs
         if let port {
             args += ["-P", String(port)]
         }
@@ -69,7 +76,8 @@ struct SessionEntry: Identifiable, Hashable {
 // decodeIfPresent keeps older library files loading when fields are added.
 extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
-        case id, name, folder, hostname, user, port, sshAlias, source, environment, isProtected
+        case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
+        case source, environment, isProtected
     }
 
     init(from decoder: Decoder) throws {
@@ -81,10 +89,18 @@ extension SessionEntry: Codable {
         user = try c.decodeIfPresent(String.self, forKey: .user)
         port = try c.decodeIfPresent(Int.self, forKey: .port)
         sshAlias = try c.decodeIfPresent(String.self, forKey: .sshAlias)
+        identityFile = try c.decodeIfPresent(String.self, forKey: .identityFile)
+        savePassword = try c.decodeIfPresent(Bool.self, forKey: .savePassword) ?? false
         source = try c.decodeIfPresent(Source.self, forKey: .source) ?? .manual
         environment = try c.decodeIfPresent(HostEnvironment.self, forKey: .environment) ?? .none
         isProtected = try c.decodeIfPresent(Bool.self, forKey: .isProtected) ?? false
     }
+}
+
+/// App-wide fallback credentials applied to sessions that don't set their own.
+struct ConnectionDefaults: Codable, Equatable {
+    var user: String?
+    var identityFile: String?
 }
 
 struct Macro: Identifiable, Codable, Hashable {
@@ -104,30 +120,49 @@ struct FolderNode: Identifiable {
 
 enum FolderTree {
     /// Splits entries into top-level entries and a sorted folder hierarchy.
-    static func build(entries: [SessionEntry]) -> (root: [SessionEntry], folders: [FolderNode]) {
+    /// `explicitFolders` are standalone (possibly empty) folders that should
+    /// render even when no session lives in them.
+    static func build(
+        entries: [SessionEntry],
+        explicitFolders: [String] = []
+    ) -> (root: [SessionEntry], folders: [FolderNode]) {
         let root = entries.filter { $0.folder.isEmpty }.sorted(by: byName)
-        let foldered = entries.filter { !$0.folder.isEmpty }
-        return (root, childNodes(prefix: "", entries: foldered))
+
+        // Every folder path, expanded so each ancestor exists as a node too.
+        var paths = Set<String>()
+        func addWithAncestors(_ path: String) {
+            var prefix = ""
+            for part in path.split(separator: "/") {
+                prefix = prefix.isEmpty ? String(part) : prefix + "/" + part
+                paths.insert(prefix)
+            }
+        }
+        for entry in entries where !entry.folder.isEmpty { addWithAncestors(entry.folder) }
+        for folder in explicitFolders { addWithAncestors(folder) }
+
+        var directEntries: [String: [SessionEntry]] = [:]
+        for entry in entries where !entry.folder.isEmpty {
+            directEntries[entry.folder, default: []].append(entry)
+        }
+
+        return (root, childNodes(parent: "", paths: paths, directEntries: directEntries))
     }
 
-    private static func childNodes(prefix: String, entries: [SessionEntry]) -> [FolderNode] {
-        var groups: [String: [SessionEntry]] = [:]
-        for entry in entries {
-            let remainder = prefix.isEmpty ? entry.folder : String(entry.folder.dropFirst(prefix.count + 1))
-            let head = remainder.components(separatedBy: "/").first ?? remainder
-            groups[head, default: []].append(entry)
-        }
-        let names = groups.keys.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        return names.map { name in
-            let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
-            let inGroup = groups[name] ?? []
-            let direct = inGroup.filter { $0.folder == path }.sorted(by: byName)
-            let deeper = inGroup.filter { $0.folder != path }
-            return FolderNode(
+    private static func childNodes(
+        parent: String,
+        paths: Set<String>,
+        directEntries: [String: [SessionEntry]]
+    ) -> [FolderNode] {
+        let prefix = parent.isEmpty ? "" : parent + "/"
+        let depth = parent.isEmpty ? 1 : parent.split(separator: "/").count + 1
+        let children = paths.filter { $0.hasPrefix(prefix) && $0.split(separator: "/").count == depth }
+        let sorted = children.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        return sorted.map { path in
+            FolderNode(
                 path: path,
-                name: name,
-                subfolders: childNodes(prefix: path, entries: deeper),
-                entries: direct
+                name: String(path.split(separator: "/").last ?? Substring(path)),
+                subfolders: childNodes(parent: path, paths: paths, directEntries: directEntries),
+                entries: (directEntries[path] ?? []).sorted(by: byName)
             )
         }
     }

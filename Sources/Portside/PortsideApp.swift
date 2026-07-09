@@ -22,11 +22,24 @@ struct PortsideApp: App {
                 .environmentObject(store)
                 .environmentObject(sessions)
                 .frame(minWidth: 1000, minHeight: 640)
+                .onAppear { sessions.appearance = store.appearance }
+                .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
         }
         .commands {
             CommandGroup(after: .newItem) {
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut("t", modifiers: [.command])
+            }
+        }
+
+        Settings {
+            TabView {
+                AppearanceSettingsView()
+                    .environmentObject(store)
+                    .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                ConnectionSettingsView()
+                    .environmentObject(store)
+                    .tabItem { Label("Connection", systemImage: "network") }
             }
         }
     }

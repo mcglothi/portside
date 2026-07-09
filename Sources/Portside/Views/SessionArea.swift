@@ -15,7 +15,7 @@ struct SessionArea: View {
                     Divider()
                     if let current = sessions.selected {
                         HSplitView {
-                            TerminalHostingView(session: current)
+                            TerminalPane(session: current)
                                 .id(current.id)
                                 .frame(minWidth: 400)
                                 .layoutPriority(1)
@@ -50,8 +50,36 @@ struct SessionArea: View {
     }
 }
 
+/// A single terminal plus a "session ended" bar once its process exits.
+struct TerminalPane: View {
+    @EnvironmentObject var sessions: SessionManager
+    @ObservedObject var session: TerminalSession
+
+    var body: some View {
+        TerminalHostingView(session: session)
+            .overlay(alignment: .bottom) {
+                if !session.isRunning {
+                    HStack(spacing: 10) {
+                        Image(systemName: "power")
+                            .foregroundStyle(.secondary)
+                        Text("Session ended — press ⏎ or click to close")
+                            .font(.callout)
+                        Button("Close") { sessions.close(session) }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(.quaternary))
+                    .padding(.bottom, 18)
+                }
+            }
+    }
+}
+
 struct MultiExecView: View {
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var store: SessionStore
     @State private var commandInput = ""
 
     private let columns = [GridItem(.adaptive(minimum: 420), spacing: 8)]
@@ -80,6 +108,26 @@ struct MultiExecView: View {
             }
 
             Divider()
+
+            if !store.macros.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text("Macros:")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(store.macros) { macro in
+                            Button(macro.name) { sessions.run(macro) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help(macro.text)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+                .background(.bar)
+                Divider()
+            }
 
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")

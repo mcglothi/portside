@@ -9,6 +9,8 @@ struct SessionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SessionEntry
     @State private var portText: String
+    @State private var password = ""
+    @State private var hasSavedPassword: Bool
     private let isNew: Bool
     private let folders: [String]
     private let onComplete: (EditorResult<SessionEntry>) -> Void
@@ -16,9 +18,37 @@ struct SessionEditorView: View {
     init(entry: SessionEntry, folders: [String], onComplete: @escaping (EditorResult<SessionEntry>) -> Void) {
         _draft = State(initialValue: entry)
         _portText = State(initialValue: entry.port.map(String.init) ?? "")
+        _hasSavedPassword = State(initialValue: CredentialStore.password(for: entry.id) != nil)
         isNew = entry.name.isEmpty
         self.folders = folders
         self.onComplete = onComplete
+    }
+
+    private var identityBinding: Binding<String> {
+        Binding(
+            get: { draft.identityFile ?? "" },
+            set: { draft.identityFile = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private func browseForKey() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: (NSString(string: "~/.ssh").expandingTildeInPath))
+        if panel.runModal() == .OK, let url = panel.url {
+            draft.identityFile = url.path
+        }
+    }
+
+    private func persistCredentials() {
+        if draft.savePassword {
+            if !password.isEmpty { CredentialStore.setPassword(password, for: draft.id) }
+        } else {
+            CredentialStore.deletePassword(for: draft.id)
+        }
     }
 
     private var userBinding: Binding<String> {
@@ -63,6 +93,22 @@ struct SessionEditorView: View {
                 TextField("User", text: userBinding, prompt: Text("optional"))
                 TextField("Port", text: $portText, prompt: Text("22"))
                 TextField("~/.ssh/config alias", text: aliasBinding, prompt: Text("optional — connects via ssh <alias>"))
+
+                HStack {
+                    TextField("Identity file (key)", text: identityBinding,
+                              prompt: Text("optional — e.g. ~/.ssh/id_ed25519"))
+                    Button("Browse…") { browseForKey() }
+                }
+
+                Toggle("Save password in Keychain", isOn: $draft.savePassword)
+                if draft.savePassword {
+                    SecureField("Password", text: $password,
+                                prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
+                    Text("Stored in the macOS Keychain and supplied to ssh automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Picker("Environment", selection: $draft.environment) {
                     ForEach(HostEnvironment.allCases) { env in
                         Text(env.label).tag(env)
@@ -73,6 +119,7 @@ struct SessionEditorView: View {
             HStack {
                 if !isNew {
                     Button("Delete", role: .destructive) {
+                        CredentialStore.deletePassword(for: draft.id)
                         onComplete(.delete)
                         dismiss()
                     }
@@ -83,6 +130,7 @@ struct SessionEditorView: View {
                 Button("Save") {
                     draft.port = Int(portText)
                     draft.folder = draft.folder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                    persistCredentials()
                     onComplete(.save(draft))
                     dismiss()
                 }

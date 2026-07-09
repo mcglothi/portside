@@ -6,11 +6,26 @@ import Foundation
 final class SessionStore: ObservableObject {
     @Published private(set) var entries: [SessionEntry] = []
     @Published private(set) var macros: [Macro] = []
+    /// Folders that exist independently of any session, so empty folders and
+    /// subfolders can be created and persist.
+    @Published private(set) var explicitFolders: [String] = []
+    @Published var appearance: TerminalAppearance = .default
+    /// Themes imported by the user, shown alongside the built-ins.
+    @Published private(set) var customThemes: [TerminalTheme] = []
+    /// Fallback user/key applied to sessions that don't specify their own.
+    @Published var defaults = ConnectionDefaults()
 
     private struct Document: Codable {
         var entries: [SessionEntry]
         var macros: [Macro]
+        var explicitFolders: [String]?
+        var appearance: TerminalAppearance?
+        var customThemes: [TerminalTheme]?
+        var defaults: ConnectionDefaults?
     }
+
+    /// Built-in presets plus imported themes, for the settings picker.
+    var allThemes: [TerminalTheme] { TerminalTheme.builtIns + customThemes }
 
     private let fileURL: URL
 
@@ -20,8 +35,10 @@ final class SessionStore: ObservableObject {
         load()
     }
 
+    /// Union of folders implied by sessions and standalone folders.
     var folders: [String] {
-        Array(Set(entries.map(\.folder).filter { !$0.isEmpty })).sorted()
+        let fromEntries = entries.map(\.folder).filter { !$0.isEmpty }
+        return Array(Set(fromEntries + explicitFolders)).sorted()
     }
 
     // MARK: - CRUD
@@ -52,6 +69,102 @@ final class SessionStore: ObservableObject {
     func delete(_ macro: Macro) {
         macros.removeAll { $0.id == macro.id }
         save()
+    }
+
+    func updateAppearance(_ appearance: TerminalAppearance) {
+        self.appearance = appearance
+        save()
+    }
+
+    /// Adds (or replaces by name) an imported theme and returns it.
+    func addCustomTheme(_ theme: TerminalTheme) {
+        customThemes.removeAll { $0.name == theme.name }
+        customThemes.append(theme)
+        save()
+    }
+
+    func updateDefaults(_ defaults: ConnectionDefaults) {
+        self.defaults = defaults
+        save()
+    }
+
+    /// Fills in user/identity from the connection defaults when a session
+    /// leaves them blank, so a default user/key applies without editing each host.
+    func resolved(_ entry: SessionEntry) -> SessionEntry {
+        var e = entry
+        if (e.user?.isEmpty ?? true), e.sshAlias?.isEmpty ?? true,
+           let u = defaults.user, !u.isEmpty {
+            e.user = u
+        }
+        if (e.identityFile?.isEmpty ?? true), let key = defaults.identityFile, !key.isEmpty {
+            e.identityFile = key
+        }
+        return e
+    }
+
+    // MARK: - Folders
+
+    /// Moves a session into `folder` ("" = top level).
+    func move(entryID: UUID, toFolder folder: String) {
+        guard let i = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        guard entries[i].folder != folder else { return }
+        entries[i].folder = folder
+        save()
+    }
+
+    func createFolder(_ path: String) {
+        let clean = normalize(path)
+        guard !clean.isEmpty, !explicitFolders.contains(clean) else { return }
+        explicitFolders.append(clean)
+        save()
+    }
+
+    /// Renames the leaf of `path` to `newName`, rewriting affected sessions and
+    /// subfolders so their paths follow.
+    func renameFolder(_ path: String, to newName: String) {
+        let leaf = normalize(newName)
+        guard !leaf.isEmpty, !leaf.contains("/") else { return }
+        let parent = folderParent(path)
+        let newPath = parent.isEmpty ? leaf : parent + "/" + leaf
+        guard newPath != path else { return }
+        let prefix = path + "/"
+
+        for i in entries.indices {
+            if entries[i].folder == path {
+                entries[i].folder = newPath
+            } else if entries[i].folder.hasPrefix(prefix) {
+                entries[i].folder = newPath + "/" + String(entries[i].folder.dropFirst(prefix.count))
+            }
+        }
+        explicitFolders = explicitFolders.map { f in
+            if f == path { return newPath }
+            if f.hasPrefix(prefix) { return newPath + "/" + String(f.dropFirst(prefix.count)) }
+            return f
+        }
+        save()
+    }
+
+    /// Deletes a folder and its descendants, relocating any sessions underneath
+    /// to the deleted folder's parent so nothing is lost.
+    func deleteFolder(_ path: String) {
+        let parent = folderParent(path)
+        let prefix = path + "/"
+        for i in entries.indices where entries[i].folder == path || entries[i].folder.hasPrefix(prefix) {
+            entries[i].folder = parent
+        }
+        explicitFolders.removeAll { $0 == path || $0.hasPrefix(prefix) }
+        save()
+    }
+
+    private func normalize(_ path: String) -> String {
+        path.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+    }
+
+    private func folderParent(_ path: String) -> String {
+        var parts = path.split(separator: "/").map(String.init)
+        guard !parts.isEmpty else { return "" }
+        parts.removeLast()
+        return parts.joined(separator: "/")
     }
 
     // MARK: - Imports
@@ -92,6 +205,10 @@ final class SessionStore: ObservableObject {
            let doc = try? JSONDecoder().decode(Document.self, from: data) {
             entries = doc.entries
             macros = doc.macros
+            explicitFolders = doc.explicitFolders ?? []
+            appearance = doc.appearance ?? .default
+            customThemes = doc.customThemes ?? []
+            defaults = doc.defaults ?? ConnectionDefaults()
         } else {
             entries = SSHConfigImporter.importEntries()
             save()
@@ -106,7 +223,10 @@ final class SessionStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(Document(entries: entries, macros: macros)).write(to: fileURL, options: .atomic)
+            try encoder.encode(Document(entries: entries, macros: macros,
+                                        explicitFolders: explicitFolders, appearance: appearance,
+                                        customThemes: customThemes, defaults: defaults))
+                .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")
         }
