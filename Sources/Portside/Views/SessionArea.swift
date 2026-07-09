@@ -14,14 +14,30 @@ struct SessionArea: View {
                     TabBar()
                     Divider()
                     if let current = sessions.selected {
-                        TerminalHostingView(session: current)
-                            .id(current.id)
+                        HSplitView {
+                            TerminalHostingView(session: current)
+                                .id(current.id)
+                                .frame(minWidth: 400)
+                                .layoutPriority(1)
+                            if sessions.filesPaneVisible, let sftp = current.sftp {
+                                SFTPPaneView(model: sftp)
+                                    .frame(minWidth: 260, idealWidth: 340, maxWidth: 560)
+                            }
+                        }
                     }
                 }
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .toolbar {
+            ToolbarItem {
+                Toggle(isOn: $sessions.filesPaneVisible) {
+                    Label("Files", systemImage: "folder")
+                }
+                .toggleStyle(.button)
+                .disabled(sessions.multiExecActive || sessions.selected?.entry == nil)
+                .help("Show the remote file browser for this session")
+            }
             ToolbarItem {
                 Toggle(isOn: $sessions.multiExecActive) {
                     Label("MultiExec", systemImage: "square.grid.2x2")

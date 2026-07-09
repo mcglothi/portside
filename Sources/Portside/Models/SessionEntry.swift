@@ -50,6 +50,19 @@ struct SessionEntry: Identifiable, Hashable {
         args.append(user.map { "\($0)@\(hostname)" } ?? hostname)
         return args
     }
+
+    /// Same target as `sshArgs`, but sftp spells the port flag -P.
+    var sftpTargetArgs: [String] {
+        if let alias = sshAlias, !alias.isEmpty {
+            return [alias]
+        }
+        var args: [String] = []
+        if let port {
+            args += ["-P", String(port)]
+        }
+        args.append(user.map { "\($0)@\(hostname)" } ?? hostname)
+        return args
+    }
 }
 
 // Codable lives in an extension so the memberwise initializer survives;

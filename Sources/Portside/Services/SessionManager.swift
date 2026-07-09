@@ -15,6 +15,16 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     var environment: HostEnvironment { entry?.environment ?? .none }
     var isProtected: Bool { entry?.isProtected ?? false }
 
+    private var _sftp: SFTPBrowserModel?
+    /// Lazy per-session file browser; nil for local shells.
+    @MainActor var sftp: SFTPBrowserModel? {
+        guard let entry else { return nil }
+        if _sftp == nil {
+            _sftp = SFTPBrowserModel(entry: entry)
+        }
+        return _sftp
+    }
+
     init(title: String, executable: String, args: [String], entry: SessionEntry? = nil) {
         self.title = title
         self.entry = entry
@@ -49,6 +59,7 @@ final class SessionManager: ObservableObject {
     @Published var sessions: [TerminalSession] = []
     @Published var selectedID: UUID?
     @Published var multiExecActive = false
+    @Published var filesPaneVisible = false
 
     private var keyMonitor: Any?
 
@@ -89,7 +100,10 @@ final class SessionManager: ObservableObject {
     }
 
     func connect(to entry: SessionEntry) {
-        add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: entry.sshArgs, entry: entry))
+        // ControlMaster options so this interactive session becomes the
+        // multiplexing master the SFTP pane piggybacks on.
+        let args = SSHControl.options + entry.sshArgs
+        add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args, entry: entry))
     }
 
     func openLocalShell() {
