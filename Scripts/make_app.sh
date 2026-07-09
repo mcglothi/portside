@@ -74,7 +74,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Sign nested code first (framework + its XPC/helper apps), then the app.
-codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
-codesign --force --sign - "$APP"
-echo "Built $APP (version ${VERSION}, build ${BUILD})"
+# Signing. If PORTSIDE_SIGN_IDENTITY is set (a "Developer ID Application"
+# identity), sign with the hardened runtime so the app can be notarized —
+# that's what removes the Gatekeeper block for people who download it.
+# Otherwise fall back to ad-hoc (local/personal; updates trusted via Sparkle's
+# EdDSA signature). Sign nested code first, then the app.
+SIGN_IDENTITY="${PORTSIDE_SIGN_IDENTITY:-}"
+if [ -n "$SIGN_IDENTITY" ]; then
+    codesign --force --options runtime --deep --sign "$SIGN_IDENTITY" \
+        "$APP/Contents/Frameworks/Sparkle.framework"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP"
+    echo "Built $APP (version ${VERSION}, build ${BUILD}) — Developer ID: $SIGN_IDENTITY"
+else
+    codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
+    codesign --force --sign - "$APP"
+    echo "Built $APP (version ${VERSION}, build ${BUILD}) — ad-hoc signed"
+fi

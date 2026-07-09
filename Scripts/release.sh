@@ -27,7 +27,23 @@ PORTSIDE_VERSION="$VERSION" PORTSIDE_BUILD="$BUILD" ./Scripts/make_app.sh
 echo "==> Packaging"
 rm -rf build/updates
 mkdir -p build/updates
-ditto -c -k --keepParent build/Portside.app "build/updates/Portside-$VERSION.zip"
+ZIP="build/updates/Portside-$VERSION.zip"
+ditto -c -k --keepParent build/Portside.app "$ZIP"
+
+# Notarization (only when set up). Requires make_app to have Developer-ID
+# signed the app (PORTSIDE_SIGN_IDENTITY). Submit the zip, staple the ticket
+# onto the .app, then re-zip so the distributed archive carries the ticket.
+NOTARY_PROFILE="${PORTSIDE_NOTARY_PROFILE:-}"
+if [ -n "$NOTARY_PROFILE" ]; then
+    echo "==> Notarizing (profile: $NOTARY_PROFILE)"
+    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+    echo "==> Stapling ticket"
+    xcrun stapler staple build/Portside.app
+    rm "$ZIP"
+    ditto -c -k --keepParent build/Portside.app "$ZIP"
+else
+    echo "==> Skipping notarization (set PORTSIDE_NOTARY_PROFILE + PORTSIDE_SIGN_IDENTITY to enable)"
+fi
 
 echo "==> Signing + generating appcast"
 "$SPARKLE_BIN/generate_appcast" \
