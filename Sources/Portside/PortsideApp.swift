@@ -15,6 +15,7 @@ struct PortsideApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var store = SessionStore()
     @StateObject private var sessions = SessionManager()
+    @StateObject private var updater = UpdaterViewModel()
 
     var body: some Scene {
         WindowGroup("Portside") {
@@ -31,6 +32,10 @@ struct PortsideApp: App {
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
             CommandGroup(after: .newItem) {
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut("t", modifiers: [.command])
