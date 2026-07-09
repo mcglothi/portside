@@ -121,20 +121,6 @@ final class SFTPBrowserModel: ObservableObject {
     }
 }
 
-/// Drag payload: the file is downloaded lazily when the drop target asks
-/// for it (a file promise), not when the drag starts.
-struct RemoteFileDragItem: Transferable {
-    let model: SFTPBrowserModel
-    let file: RemoteFile
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .data) { item in
-            let url = try await item.model.downloadForDrag(item.file)
-            return SentTransferredFile(url, allowAccessingOriginalFile: true)
-        }
-    }
-}
-
 struct SFTPPaneView: View {
     @ObservedObject var model: SFTPBrowserModel
     @State private var newFolderName = ""
@@ -227,8 +213,7 @@ struct SFTPPaneView: View {
 
     private var fileList: some View {
         List(model.visibleFiles) { file in
-            RemoteFileRow(file: file)
-                .draggable(RemoteFileDragItem(model: model, file: file))
+            row(for: file)
                 .gesture(
                     TapGesture(count: 2).onEnded {
                         Task { await model.navigate(to: file) }
@@ -264,6 +249,44 @@ struct SFTPPaneView: View {
                     .font(.callout)
             }
         }
+    }
+
+    /// A remote row. Files are draggable out to Finder/Desktop via a file
+    /// promise (downloaded on drop); directories aren't draggable.
+    @ViewBuilder
+    private func row(for file: RemoteFile) -> some View {
+        if file.isDirectory {
+            RemoteFileRow(file: file)
+        } else {
+            RemoteFileRow(file: file)
+                .onDrag { dragProvider(for: file) }
+        }
+    }
+
+    /// An item provider backed by a lazy file promise: the file is downloaded
+    /// only when the drop target (Finder) actually asks for it. NSItemProvider
+    /// promises are far more reliable for Finder drops than SwiftUI .draggable.
+    private func dragProvider(for file: RemoteFile) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.suggestedName = file.name
+        let ext = (file.name as NSString).pathExtension
+        let type = UTType(filenameExtension: ext) ?? .data
+        provider.registerFileRepresentation(
+            forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all
+        ) { completion in
+            let progress = Progress(totalUnitCount: 1)
+            Task {
+                do {
+                    let url = try await model.downloadForDrag(file)
+                    progress.completedUnitCount = 1
+                    completion(url, false, nil)
+                } catch {
+                    completion(nil, false, error)
+                }
+            }
+            return progress
+        }
+        return provider
     }
 }
 

@@ -86,6 +86,19 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.caretColor = appearance.cursor
     }
 
+    /// Per-session text zoom (⌘+/⌘-); clamped to a sane range.
+    func zoom(by delta: CGFloat) {
+        let current = terminalView.font
+        let newSize = min(72, max(6, current.pointSize + delta))
+        terminalView.font = NSFont(descriptor: current.fontDescriptor, size: newSize)
+            ?? .monospacedSystemFont(ofSize: newSize, weight: .regular)
+    }
+
+    /// Restores the global appearance's font size (⌘0).
+    func resetZoom(appearance: TerminalAppearance) {
+        terminalView.font = appearance.nsFont
+    }
+
     // MARK: - LocalProcessTerminalViewDelegate
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
@@ -205,6 +218,12 @@ final class SessionManager: ObservableObject {
             session.apply(appearance: appearance)
         }
     }
+
+    // MARK: - Zoom (current session)
+
+    func zoomIn() { selected?.zoom(by: 1) }
+    func zoomOut() { selected?.zoom(by: -1) }
+    func resetZoom() { selected?.resetZoom(appearance: appearance) }
 
     func close(_ session: TerminalSession) {
         session.closeLog()

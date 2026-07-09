@@ -35,6 +35,15 @@ struct PortsideApp: App {
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut("t", modifiers: [.command])
             }
+            CommandGroup(after: .sidebar) {
+                Button("Zoom In") { sessions.zoomIn() }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Zoom Out") { sessions.zoomOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                Button("Actual Size") { sessions.resetZoom() }
+                    .keyboardShortcut("0", modifiers: .command)
+                Divider()
+            }
         }
 
         Settings {
