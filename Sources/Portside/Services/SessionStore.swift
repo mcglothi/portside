@@ -64,6 +64,25 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// Clones a session (fresh id, " copy" suffix) right after the original.
+    /// The saved password isn't copied — it's keyed by id and stays with the
+    /// original; the clone can set its own.
+    @discardableResult
+    func duplicate(_ entry: SessionEntry) -> SessionEntry {
+        var copy = entry
+        copy.id = UUID()
+        copy.name = entry.name + " copy"
+        copy.savePassword = false
+        copy.source = .manual
+        if let i = entries.firstIndex(where: { $0.id == entry.id }) {
+            entries.insert(copy, at: i + 1)
+        } else {
+            entries.append(copy)
+        }
+        save()
+        return copy
+    }
+
     func upsert(_ macro: Macro) {
         if let i = macros.firstIndex(where: { $0.id == macro.id }) {
             macros[i] = macro

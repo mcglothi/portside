@@ -33,6 +33,7 @@ struct SessionEntry: Identifiable, Hashable {
     var source: Source = .manual
     var environment: HostEnvironment = .none
     var isProtected = false          // excluded from MultiExec unless explicitly confirmed
+    var runOnConnect: String?        // command sent to the shell shortly after connecting
 
     var subtitle: String {
         let userPart = user.map { "\($0)@" } ?? ""
@@ -77,7 +78,7 @@ struct SessionEntry: Identifiable, Hashable {
 extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
-        case source, environment, isProtected
+        case source, environment, isProtected, runOnConnect
     }
 
     init(from decoder: Decoder) throws {
@@ -94,6 +95,7 @@ extension SessionEntry: Codable {
         source = try c.decodeIfPresent(Source.self, forKey: .source) ?? .manual
         environment = try c.decodeIfPresent(HostEnvironment.self, forKey: .environment) ?? .none
         isProtected = try c.decodeIfPresent(Bool.self, forKey: .isProtected) ?? false
+        runOnConnect = try c.decodeIfPresent(String.self, forKey: .runOnConnect)
     }
 }
 

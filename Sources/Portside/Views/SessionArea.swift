@@ -57,6 +57,12 @@ struct TerminalPane: View {
 
     var body: some View {
         TerminalHostingView(session: session)
+            .overlay(alignment: .topTrailing) {
+                if session.findVisible {
+                    FindBar(session: session)
+                        .padding(8)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if !session.isRunning {
                     HStack(spacing: 10) {
@@ -74,6 +80,64 @@ struct TerminalPane: View {
                     .padding(.bottom, 18)
                 }
             }
+    }
+}
+
+/// iTerm-style find bar for scrollback search, driving SwiftTerm's search.
+struct FindBar: View {
+    @ObservedObject var session: TerminalSession
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            TextField("Find", text: $session.findTerm)
+                .textFieldStyle(.plain)
+                .frame(width: 160)
+                .focused($focused)
+                .onSubmit { session.findNext() }
+                .onChange(of: session.findTerm) { _, _ in session.findNext() }
+                .onKeyPress(.escape) { session.hideFind(); return .handled }
+
+            Button {
+                session.findCaseSensitive.toggle()
+                session.findNext()
+            } label: {
+                Text("Aa")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(session.findCaseSensitive ? Color.accentColor : .secondary)
+            .help("Match case")
+
+            Button { session.findPrevious() } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.plain)
+            .help("Previous match")
+
+            Button { session.findNext() } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.plain)
+            .help("Next match (return)")
+
+            Button { session.hideFind() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Close (esc)")
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+        .shadow(radius: 6, y: 2)
+        .onAppear { focused = true }
     }
 }
 

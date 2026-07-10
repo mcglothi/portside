@@ -22,6 +22,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @Published var title: String
     @Published var isRunning = true
     @Published var includedInMultiExec: Bool
+    // Per-terminal find bar (⌘F); drives SwiftTerm's scrollback search.
+    @Published var findVisible = false
+    @Published var findTerm = ""
+    @Published var findCaseSensitive = false
 
     var environment: HostEnvironment { entry?.environment ?? .none }
     var isProtected: Bool { entry?.isProtected ?? false }
@@ -75,6 +79,38 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     func sendText(_ text: String) {
         terminalView.send(txt: text)
+    }
+
+    // MARK: - Find (⌘F)
+
+    func showFind() {
+        findVisible = true
+    }
+
+    func hideFind() {
+        findVisible = false
+        terminalView.clearSearch()
+    }
+
+    func toggleFind() {
+        if findVisible { hideFind() } else { showFind() }
+    }
+
+    /// Searches forward from the current match; returns whether one was found.
+    @discardableResult
+    func findNext() -> Bool {
+        guard !findTerm.isEmpty else { terminalView.clearSearch(); return false }
+        return terminalView.findNext(findTerm, options: searchOptions)
+    }
+
+    @discardableResult
+    func findPrevious() -> Bool {
+        guard !findTerm.isEmpty else { terminalView.clearSearch(); return false }
+        return terminalView.findPrevious(findTerm, options: searchOptions)
+    }
+
+    private var searchOptions: SearchOptions {
+        SearchOptions(caseSensitive: findCaseSensitive)
     }
 
     /// Applies the global look to this terminal's view.
@@ -193,9 +229,21 @@ final class SessionManager: ObservableObject {
         }
 
         let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
-        add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
-                            entry: entry, appearance: appearance,
-                            environment: environment, cleanup: cleanup, logger: logger))
+        let session = TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
+                                      entry: entry, appearance: appearance,
+                                      environment: environment, cleanup: cleanup, logger: logger)
+        add(session)
+
+        // Optional per-host command, fired once the login shell has had a
+        // moment to come up. Shells buffer stdin, so a slightly early send
+        // still runs at the first prompt; only an interactive password prompt
+        // (no saved credential) would swallow it — hence the editor's note.
+        if let command = entry.runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !command.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
+                session?.sendText(command + "\r")
+            }
+        }
         onConnect?(entry)
     }
 

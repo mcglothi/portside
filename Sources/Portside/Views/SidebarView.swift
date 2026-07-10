@@ -397,6 +397,7 @@ struct SessionRow: View {
             }
             Button("Connect") { connect(entry) }
             Button("Edit…") { edit(entry) }
+            Button("Duplicate") { store.duplicate(entry) }
             if !moveTargets.isEmpty {
                 Menu("Move to") {
                     ForEach(moveTargets, id: \.self) { target in

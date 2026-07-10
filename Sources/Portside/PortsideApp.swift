@@ -50,6 +50,11 @@ struct PortsideApp: App {
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
                     .keyboardShortcut("k", modifiers: [.command])
             }
+            CommandGroup(after: .textEditing) {
+                Button("Find…") { sessions.selected?.toggleFind() }
+                    .keyboardShortcut("f", modifiers: [.command])
+                    .disabled(sessions.selected == nil || sessions.multiExecActive)
+            }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }
                     .keyboardShortcut("+", modifiers: .command)

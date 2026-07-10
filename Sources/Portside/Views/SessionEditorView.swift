@@ -58,6 +58,13 @@ struct SessionEditorView: View {
         )
     }
 
+    private var runOnConnectBinding: Binding<String> {
+        Binding(
+            get: { draft.runOnConnect ?? "" },
+            set: { draft.runOnConnect = $0.isEmpty ? nil : $0 }
+        )
+    }
+
     private var aliasBinding: Binding<String> {
         Binding(
             get: { draft.sshAlias ?? "" },
@@ -105,6 +112,14 @@ struct SessionEditorView: View {
                     SecureField("Password", text: $password,
                                 prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
                     Text("Stored in the macOS Keychain and supplied to ssh automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    TextField("Run on connect", text: runOnConnectBinding,
+                              prompt: Text("optional — e.g. tmux attach || tmux new"))
+                    Text("Sent to the shell a moment after connecting. Works with key, agent, or saved-password auth; skip it for hosts that prompt for a password interactively.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
