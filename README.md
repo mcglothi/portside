@@ -1,22 +1,31 @@
 # ⚓ Portside
 
-**A fast, beautiful, native macOS workbench for people who live on SSH.**
+**A fast, native macOS workbench for people who live on SSH.**
 
-Portside rebuilds the [MobaXterm](https://mobaxterm.mobatek.net/) workflow —
-saved sessions, folders, multi-host broadcast, macros — as a real Mac app,
-for people whose Linux boxes are servers they connect *to*, from a Mac.
-No Electron, no web view: SwiftUI and a native terminal, wrapped around the
-OpenSSH you already have configured.
+Portside is a session manager and terminal for operators who run fleets of
+Linux servers — plus their containers and Kubernetes pods — from a Mac. A
+searchable, foldered library of connections; multi-host broadcast with
+guardrails; SFTP, port forwarding, and credential glue, all in one native
+window. No Electron, no web view: SwiftUI and a real terminal, wrapped around
+the OpenSSH you already have configured.
 
 > Early days, moving fast. Built on the coast of Maine. ⛵
 
+![Portside's session library — hosts, containers, and Kubernetes pods organized in folders with environment badges](docs/screenshots/library.png)
+
+*One foldered library for hosts, containers, and Kubernetes pods — with prod/nonprod environment badges.*
+
+![Quick Connect — a fuzzy-search command palette across the whole library](docs/screenshots/quick-connect.png)
+
+*⌘K Quick Connect fuzzy-searches everything at once — hosts, containers, and pods.*
+
 ## Why
 
-The gap on macOS isn't a terminal emulator — iTerm2 and WezTerm are excellent.
-The gap is the *operator workflow* MobaXterm bundles: a session library you can
-organize, broadcast execution across a fleet with guardrails, credential glue,
-and file transfer, all in one surface. Portside exists to close that gap
-without giving up native speed and macOS polish.
+macOS has excellent terminal *emulators* — iTerm2 and WezTerm are superb. What
+it lacks is a native **operator workflow**: a session library you can organize,
+broadcast execution across a fleet with real safety UX, credential glue, file
+transfer, and container/Kubernetes access — in one fast surface. Portside
+exists to fill that gap without giving up native speed and macOS polish.
 
 **Opinionated bets:**
 - Win on **workflow density**, not protocol count. SSH-first, always.
@@ -38,8 +47,8 @@ without giving up native speed and macOS polish.
   have to remember a churning name.
 - **`~/.ssh/config` import** — seeds the library on first launch (follows
   `Include` directives); re-import merges new hosts anytime.
-- **MobaXterm migration** — import `.mxtsessions` files with their folder
-  structure intact, and `.mxtmacros` files decoded into editable macros.
+- **Import from MobaXterm** — bring over `.mxtsessions` / `.mxtmacros` files
+  with their folder structure intact.
 - **Export & import** — back up or move your library as portable JSON;
   sessions (with folders) and macros export separately and re-import into any
   Portside install. Passwords stay in the Keychain and never travel.
@@ -48,10 +57,10 @@ without giving up native speed and macOS polish.
   Find in scrollback with ⌘F.
 - **Quick Connect (⌘K)** — a fuzzy-search command palette over the whole
   library; empty query lists recent hosts so it doubles as fast reconnect.
-- **MultiExec** — the MobaXterm feature you miss: tile every session in a
-  grid and type into all of them at once. Per-terminal include toggles, a
-  broadcast command bar for deliberate one-shot commands, and a loud orange
-  banner so you always know when you're armed.
+- **MultiExec** — tile every session in a grid and type into all of them at
+  once. Per-terminal include toggles, a broadcast command bar for deliberate
+  one-shot commands, and a loud orange banner so you always know when you're
+  armed.
 - **Environment badges & protected hosts** — tag sessions prod / staging /
   dev / personal for color-coded badges in the sidebar and tabs. Protected
   hosts stay **out of MultiExec by default** and require explicit
@@ -62,8 +71,8 @@ without giving up native speed and macOS polish.
   connection (no re-auth), with drag/drop upload and drag-out download.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
-- **Recent connections** — the welcome screen keeps a MobaXterm-style "jump
-  back in" list of the hosts you last connected to, one click to reconnect.
+- **Recent connections** — the welcome screen keeps a "jump back in" list of
+  the hosts you last connected to, one click to reconnect.
 - **Session logging** — per-host log folders with compression and search.
 - **Keychain passwords** — per-host saved passwords supplied to ssh
   automatically; nothing ever lands in the JSON library.
@@ -92,4 +101,4 @@ open build/Portside.app
 ## Status & contributions
 
 Pre-1.0 and evolving quickly; expect sharp edges. Issues and ideas welcome —
-especially from fellow MobaXterm refugees.
+especially from fellow operators who live in the terminal.

@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {"id":"D0000000-0000-0000-0000-000000000101","name":"vm1","folder":"VMs/prod","hostname":"10.0.0.11","user":"admin","kind":"host","environment":"prod"},
+    {"id":"D0000000-0000-0000-0000-000000000102","name":"vm2","folder":"VMs/prod","hostname":"10.0.0.12","user":"admin","kind":"host","environment":"prod","isProtected":true},
+    {"id":"D0000000-0000-0000-0000-000000000103","name":"vm1","folder":"VMs/nonprod","hostname":"10.1.0.11","user":"deploy","kind":"host","environment":"staging"},
+    {"id":"D0000000-0000-0000-0000-000000000104","name":"vm2","folder":"VMs/nonprod","hostname":"10.1.0.12","user":"deploy","kind":"host","environment":"dev"},
+
+    {"id":"D0000000-0000-0000-0000-000000000201","name":"container1","folder":"Containers/prod","hostname":"10.0.0.11","user":"admin","kind":"container","environment":"prod","container":{"engine":"docker","name":"web","shell":"bash","user":""}},
+    {"id":"D0000000-0000-0000-0000-000000000202","name":"container2","folder":"Containers/prod","hostname":"10.0.0.12","user":"admin","kind":"container","environment":"prod","container":{"engine":"podman","name":"cache","shell":"sh","user":""}},
+    {"id":"D0000000-0000-0000-0000-000000000203","name":"container1","folder":"Containers/nonprod","kind":"container","environment":"dev","container":{"engine":"docker","name":"api-dev","shell":"sh","user":""}},
+    {"id":"D0000000-0000-0000-0000-000000000204","name":"container2","folder":"Containers/nonprod","hostname":"10.1.0.11","user":"deploy","kind":"container","environment":"staging","container":{"engine":"docker","name":"worker","shell":"sh","user":""}},
+
+    {"id":"D0000000-0000-0000-0000-000000000301","name":"pod1","folder":"Kubernetes/prod","hostname":"bastion","user":"admin","kind":"kubernetes","environment":"prod","kubernetes":{"context":"prod-cluster","namespace":"payments","pod":"api-7d9f8","container":"","shell":"bash"}},
+    {"id":"D0000000-0000-0000-0000-000000000302","name":"pod2","folder":"Kubernetes/prod","hostname":"bastion","user":"admin","kind":"kubernetes","environment":"prod","kubernetes":{"context":"prod-cluster","namespace":"web","pod":"frontend-5c8","container":"","shell":"sh"}},
+    {"id":"D0000000-0000-0000-0000-000000000303","name":"pod1","folder":"Kubernetes/nonprod","kind":"kubernetes","environment":"staging","kubernetes":{"context":"staging-cluster","namespace":"default","pod":"api-2ab","container":"","shell":"sh"}},
+    {"id":"D0000000-0000-0000-0000-000000000304","name":"pod2","folder":"Kubernetes/nonprod","kind":"kubernetes","environment":"dev","kubernetes":{"context":"dev-cluster","namespace":"default","pod":"worker-9f1","container":"","shell":"sh"}}
+  ],
+  "macros": [
+    {"id":"D0000000-0000-0000-0000-0000000000A1","name":"disk usage","text":"df -h","sendReturn":true},
+    {"id":"D0000000-0000-0000-0000-0000000000A2","name":"uptime & load","text":"uptime","sendReturn":true}
+  ]
+}
