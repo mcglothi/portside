@@ -15,6 +15,7 @@ struct SessionEditorView: View {
     // optional target is nil; only the active kind's copy is saved back.
     @State private var container: ContainerTarget
     @State private var kubernetes: KubernetesTarget
+    @State private var showingPicker = false
     private let isNew: Bool
     private let folders: [String]
     private let onComplete: (EditorResult<SessionEntry>) -> Void
@@ -157,7 +158,10 @@ struct SessionEditorView: View {
                 Text(engine.label).tag(engine)
             }
         }
-        TextField("Container", text: $container.name, prompt: Text("name or id — e.g. web"))
+        HStack {
+            TextField("Container", text: $container.name, prompt: Text("name or id — e.g. web"))
+            Button("Browse…") { showingPicker = true }
+        }
         TextField("Shell", text: $container.shell, prompt: Text("sh"))
         TextField("Exec as user", text: $container.user, prompt: Text("optional — e.g. root"))
         commandPreview(container.execCommand)
@@ -167,11 +171,24 @@ struct SessionEditorView: View {
         TextField("Context", text: $kubernetes.context,
                   prompt: Text("optional — e.g. nkp-prod or gke_proj_zone_cluster"))
         TextField("Namespace", text: $kubernetes.namespace, prompt: Text("optional — default"))
-        TextField("Pod", text: $kubernetes.pod, prompt: Text("e.g. api-7d9f8"))
+        HStack {
+            TextField("Pod", text: $kubernetes.pod, prompt: Text("e.g. api-7d9f8"))
+            Button("Browse…") { showingPicker = true }
+        }
         TextField("Container", text: $kubernetes.container,
                   prompt: Text("optional — for multi-container pods"))
         TextField("Shell", text: $kubernetes.shell, prompt: Text("sh"))
         commandPreview(kubernetes.execCommand)
+    }
+
+    /// The current editor state as an entry, so the picker can list against the
+    /// transport and engine/context the user has typed but not yet saved.
+    private var draftForPicker: SessionEntry {
+        var entry = draft
+        entry.port = Int(portText)
+        entry.container = container
+        entry.kubernetes = kubernetes
+        return entry
     }
 
     /// Live preview of the exec command the session will run.
@@ -248,6 +265,15 @@ struct SessionEditorView: View {
         }
         .padding(20)
         .frame(width: 460)
+        .sheet(isPresented: $showingPicker) {
+            ContainerPickerView(entry: draftForPicker) { picked in
+                if draft.kind == .kubernetes {
+                    kubernetes.pod = picked
+                } else {
+                    container.name = picked
+                }
+            }
+        }
     }
 }
 
