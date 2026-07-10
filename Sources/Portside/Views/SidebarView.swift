@@ -237,7 +237,11 @@ struct SidebarView: View {
                     Button("New Session…") { editingEntry = SessionEntry(name: "") }
                     Button("New Folder…") { newFolderName = ""; newFolderParent = "" }
                     Divider()
-                    Button("Import MobaXterm File…") { showingImporter = true }
+                    Button("Import…") { showingImporter = true }
+                    Button("Export Sessions…") { exportSessions() }
+                        .disabled(store.entries.isEmpty)
+                    Button("Export Macros…") { exportMacros() }
+                        .disabled(store.macros.isEmpty)
                     Button("Re-import ~/.ssh/config") {
                         let added = store.mergeSSHConfig()
                         importMessage = added == 0
@@ -246,6 +250,10 @@ struct SidebarView: View {
                     }
                 case .macros:
                     Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
+                    Divider()
+                    Button("Import…") { showingImporter = true }
+                    Button("Export Macros…") { exportMacros() }
+                        .disabled(store.macros.isEmpty)
                 case .tools:
                     Button("New Local Shell") { sessions.openLocalShell() }
                 }
@@ -290,15 +298,65 @@ struct SidebarView: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
-                let parsed = try MobaXtermImporter.importFile(at: url)
-                let added = store.addImported(entries: parsed.entries, macros: parsed.macros)
-                var parts = ["Imported \(added.sessions) session\(added.sessions == 1 ? "" : "s")"]
-                if added.macros > 0 { parts.append("\(added.macros) macro\(added.macros == 1 ? "" : "s")") }
-                if parsed.skippedNonSSH > 0 { parts.append("skipped \(parsed.skippedNonSSH) non-SSH entries") }
-                importMessage = parts.joined(separator: ", ") + "."
+                let data = try Data(contentsOf: url)
+                // Prefer Portside's own export; fall back to MobaXterm parsing.
+                if let doc = LibraryTransfer.decode(data) {
+                    let added = store.importExport(entries: doc.entries ?? [],
+                                                   folders: doc.folders ?? [],
+                                                   macros: doc.macros ?? [])
+                    importMessage = summary(sessions: added.sessions, macros: added.macros, skipped: 0)
+                } else {
+                    let parsed = try MobaXtermImporter.importFile(at: url)
+                    let added = store.addImported(entries: parsed.entries, macros: parsed.macros)
+                    importMessage = summary(sessions: added.sessions, macros: added.macros,
+                                            skipped: parsed.skippedNonSSH)
+                }
             } catch {
                 importMessage = "Import failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func summary(sessions: Int, macros: Int, skipped: Int) -> String {
+        if sessions == 0 && macros == 0 {
+            return "Nothing new to import — everything was already in the library."
+        }
+        var parts: [String] = []
+        if sessions > 0 { parts.append("\(sessions) session\(sessions == 1 ? "" : "s")") }
+        if macros > 0 { parts.append("\(macros) macro\(macros == 1 ? "" : "s")") }
+        var message = "Imported " + parts.joined(separator: " and ")
+        if skipped > 0 { message += ", skipped \(skipped) non-SSH entries" }
+        return message + "."
+    }
+
+    private func exportSessions() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "portside-sessions.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try LibraryTransfer.encodeSessions(entries: store.entries,
+                                                          folders: store.explicitFolders)
+            try data.write(to: url)
+            let n = store.entries.count
+            importMessage = "Exported \(n) session\(n == 1 ? "" : "s") to \(url.lastPathComponent)."
+        } catch {
+            importMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportMacros() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "portside-macros.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try LibraryTransfer.encodeMacros(store.macros)
+            try data.write(to: url)
+            let n = store.macros.count
+            importMessage = "Exported \(n) macro\(n == 1 ? "" : "s") to \(url.lastPathComponent)."
+        } catch {
+            importMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 }

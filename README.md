@@ -34,6 +34,9 @@ without giving up native speed and macOS polish.
   `Include` directives); re-import merges new hosts anytime.
 - **MobaXterm migration** — import `.mxtsessions` files with their folder
   structure intact, and `.mxtmacros` files decoded into editable macros.
+- **Export & import** — back up or move your library as portable JSON;
+  sessions (with folders) and macros export separately and re-import into any
+  Portside install. Passwords stay in the Keychain and never travel.
 - **Native terminal tabs** — [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
   rendering, sessions run through the OpenSSH subprocess. Local shells too (⌘T).
   Find in scrollback with ⌘F.

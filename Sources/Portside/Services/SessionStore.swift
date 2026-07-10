@@ -267,6 +267,44 @@ final class SessionStore: ObservableObject {
         return new.count
     }
 
+    /// Merges a Portside export. Entries get fresh ids and no saved-password
+    /// flag (Keychain secrets never travel in an export), standalone folders
+    /// merge by path, and macros dedupe by name. Returns what was added.
+    @discardableResult
+    func importExport(entries importedEntries: [SessionEntry],
+                      folders importedFolders: [String],
+                      macros importedMacros: [Macro]) -> (sessions: Int, macros: Int) {
+        for folder in importedFolders {
+            let clean = normalize(folder)
+            if !clean.isEmpty, !explicitFolders.contains(clean) {
+                explicitFolders.append(clean)
+            }
+        }
+
+        let existingKeys = Set(entries.map { "\($0.folder)|\($0.name)|\($0.hostname)" })
+        var addedSessions = 0
+        for var entry in importedEntries {
+            let key = "\(entry.folder)|\(entry.name)|\(entry.hostname)"
+            if existingKeys.contains(key) { continue }
+            entry.id = UUID()
+            entry.savePassword = false
+            entries.append(entry)
+            addedSessions += 1
+        }
+
+        let existingMacroNames = Set(macros.map(\.name))
+        var addedMacros = 0
+        for macro in importedMacros where !existingMacroNames.contains(macro.name) {
+            var copy = macro
+            copy.id = UUID()
+            macros.append(copy)
+            addedMacros += 1
+        }
+
+        save()
+        return (addedSessions, addedMacros)
+    }
+
     /// Adds imported entries, skipping exact duplicates (name + host + folder).
     @discardableResult
     func addImported(entries newEntries: [SessionEntry], macros newMacros: [Macro]) -> (sessions: Int, macros: Int) {
