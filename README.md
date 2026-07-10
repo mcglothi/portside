@@ -19,6 +19,18 @@ the OpenSSH you already have configured.
 
 *⌘K Quick Connect fuzzy-searches everything at once — hosts, containers, and pods.*
 
+![A live SSH session in a native terminal tab, inspecting a deploy on a remote host](docs/screenshots/terminal.png)
+
+*Real terminal tabs over the OpenSSH you already have configured — keys, agent, and `ProxyJump` chains included.*
+
+![MultiExec broadcasting the same command to two hosts at once, with a safety banner and per-terminal include toggles](docs/screenshots/multiexec.png)
+
+*MultiExec broadcasts your keystrokes to every included session — with a loud banner and per-terminal opt-in so you always know what's armed.*
+
+![The SFTP file browser riding the same SSH session as the terminal, listing a remote directory](docs/screenshots/sftp.png)
+
+*The SFTP browser rides the same SSH connection as your shell — no second login — with drag-and-drop transfer right beside the terminal.*
+
 ## Why
 
 macOS has excellent terminal *emulators* — iTerm2 and WezTerm are superb. What
