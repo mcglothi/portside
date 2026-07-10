@@ -36,6 +36,9 @@ without giving up native speed and macOS polish.
   structure intact, and `.mxtmacros` files decoded into editable macros.
 - **Native terminal tabs** — [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
   rendering, sessions run through the OpenSSH subprocess. Local shells too (⌘T).
+  Find in scrollback with ⌘F.
+- **Quick Connect (⌘K)** — a fuzzy-search command palette over the whole
+  library; empty query lists recent hosts so it doubles as fast reconnect.
 - **MultiExec** — the MobaXterm feature you miss: tile every session in a
   grid and type into all of them at once. Per-terminal include toggles, a
   broadcast command bar for deliberate one-shot commands, and a loud orange
@@ -45,7 +48,7 @@ without giving up native speed and macOS polish.
   hosts stay **out of MultiExec by default** and require explicit
   confirmation to join a broadcast.
 - **Macros** — named command sequences, run in the active terminal or across
-  the whole MultiExec grid.
+  the whole MultiExec grid. Per-host **run-on-connect** commands too.
 - **SFTP browser** — per-session remote file pane riding the same SSH
   connection (no re-auth), with drag/drop upload and drag-out download.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
