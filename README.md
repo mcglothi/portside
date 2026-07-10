@@ -46,15 +46,21 @@ without giving up native speed and macOS polish.
   confirmation to join a broadcast.
 - **Macros** — named command sequences, run in the active terminal or across
   the whole MultiExec grid.
+- **SFTP browser** — per-session remote file pane riding the same SSH
+  connection (no re-auth), with drag/drop upload and drag-out download.
+- **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
+  start/stop, and launch-at-startup, tunneled through any host in the library.
+- **Session logging** — per-host log folders with compression and search.
+- **Keychain passwords** — per-host saved passwords supplied to ssh
+  automatically; nothing ever lands in the JSON library.
+- **Auto-updates** — Sparkle-powered in-app updates from GitHub Releases.
 
 ## Roadmap
 
-- SFTP browser with drag/drop upload & download alongside the terminal
-- Keychain + Touch ID credential glue (Vaultwarden references later)
-- Port forwarding management UI
 - Session restore / pinned workspaces
+- Touch ID gating for saved credentials (Vaultwarden references later)
+- Quick Connect and split layouts
 - Serial connections
-- App Store-quality packaging, icon, updates
 
 ## Building
 

@@ -15,6 +15,7 @@ struct PortsideApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var store = SessionStore()
     @StateObject private var sessions = SessionManager()
+    @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
 
     var body: some Scene {
@@ -22,11 +23,15 @@ struct PortsideApp: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(sessions)
+                .environmentObject(tunnels)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
                     LogManager.runMaintenance(settings: store.logging)
+                    tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
+                        store.entry(id: id).map(store.resolved)
+                    }
                 }
                 .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }

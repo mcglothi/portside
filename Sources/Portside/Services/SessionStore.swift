@@ -6,6 +6,7 @@ import Foundation
 final class SessionStore: ObservableObject {
     @Published private(set) var entries: [SessionEntry] = []
     @Published private(set) var macros: [Macro] = []
+    @Published private(set) var forwards: [PortForward] = []
     /// Folders that exist independently of any session, so empty folders and
     /// subfolders can be created and persist.
     @Published private(set) var explicitFolders: [String] = []
@@ -19,6 +20,7 @@ final class SessionStore: ObservableObject {
     private struct Document: Codable {
         var entries: [SessionEntry]
         var macros: [Macro]
+        var forwards: [PortForward]?
         var explicitFolders: [String]?
         var appearance: TerminalAppearance?
         var customThemes: [TerminalTheme]?
@@ -71,6 +73,26 @@ final class SessionStore: ObservableObject {
     func delete(_ macro: Macro) {
         macros.removeAll { $0.id == macro.id }
         save()
+    }
+
+    func upsert(_ forward: PortForward) {
+        if let i = forwards.firstIndex(where: { $0.id == forward.id }) {
+            forwards[i] = forward
+        } else {
+            forwards.append(forward)
+        }
+        save()
+    }
+
+    func delete(_ forward: PortForward) {
+        forwards.removeAll { $0.id == forward.id }
+        save()
+    }
+
+    /// The library entry a forward tunnels through, if it still exists.
+    func entry(id: UUID?) -> SessionEntry? {
+        guard let id else { return nil }
+        return entries.first { $0.id == id }
     }
 
     func updateAppearance(_ appearance: TerminalAppearance) {
@@ -221,6 +243,7 @@ final class SessionStore: ObservableObject {
            let doc = try? JSONDecoder().decode(Document.self, from: data) {
             entries = doc.entries
             macros = doc.macros
+            forwards = doc.forwards ?? []
             explicitFolders = doc.explicitFolders ?? []
             appearance = doc.appearance ?? .default
             customThemes = doc.customThemes ?? []
@@ -240,7 +263,7 @@ final class SessionStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(Document(entries: entries, macros: macros,
+            try encoder.encode(Document(entries: entries, macros: macros, forwards: forwards,
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging))
                 .write(to: fileURL, options: .atomic)

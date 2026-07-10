@@ -26,6 +26,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 struct SidebarView: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var tunnels: TunnelManager
     @State private var section: SidebarSection = .hosts
     @State private var filter = ""
     @State private var editingEntry: SessionEntry?
@@ -40,6 +41,7 @@ struct SidebarView: View {
     @State private var renameFolderName = ""
     @State private var selection: Set<UUID> = []
     @State private var showingLogSearch = false
+    @State private var showingPortForwarding = false
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -67,7 +69,8 @@ struct SidebarView: View {
             switch section {
             case .hosts: hostsList
             case .macros: macrosList
-            case .tools: ToolsList(searchLogs: { showingLogSearch = true })
+            case .tools: ToolsList(searchLogs: { showingLogSearch = true },
+                                   portForwarding: { showingPortForwarding = true })
             }
         }
         .navigationTitle("Portside")
@@ -90,6 +93,11 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showingLogSearch) {
             LogSearchView().environmentObject(store)
+        }
+        .sheet(isPresented: $showingPortForwarding) {
+            PortForwardingView()
+                .environmentObject(store)
+                .environmentObject(tunnels)
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -425,7 +433,9 @@ struct SessionRow: View {
 /// they'll live.
 struct ToolsList: View {
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var tunnels: TunnelManager
     let searchLogs: () -> Void
+    let portForwarding: () -> Void
 
     var body: some View {
         List {
@@ -434,6 +444,26 @@ struct ToolsList: View {
                     sessions.openLocalShell()
                 } label: {
                     Label("New Local Shell", systemImage: "terminal")
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Network") {
+                Button {
+                    portForwarding()
+                } label: {
+                    HStack {
+                        Label("Port Forwarding…", systemImage: "arrow.left.arrow.right")
+                        if tunnels.activeCount > 0 {
+                            Spacer()
+                            Text("\(tunnels.activeCount)")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.green.opacity(0.25), in: Capsule())
+                                .help("\(tunnels.activeCount) active tunnel(s)")
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -446,8 +476,6 @@ struct ToolsList: View {
                 .buttonStyle(.plain)
             }
             Section("Coming soon") {
-                Label("Port Forwarding", systemImage: "arrow.left.arrow.right")
-                    .foregroundStyle(.tertiary)
                 Label("Quick Connect", systemImage: "bolt.horizontal")
                     .foregroundStyle(.tertiary)
                 Label("Split Layouts", systemImage: "rectangle.split.2x1")

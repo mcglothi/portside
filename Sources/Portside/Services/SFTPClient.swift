@@ -38,6 +38,16 @@ enum SSHControl {
             "-o", "ControlPersist=120",
         ]
     }
+
+    /// Reuse an existing master's socket but never become one. Long-lived
+    /// helpers (port forwards) use this so other sessions can't end up
+    /// piggybacking on a process the user may stop at any time.
+    static var passiveOptions: [String] {
+        [
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=\(controlDir)/%C",
+        ]
+    }
 }
 
 /// Drives the stock OpenSSH `sftp` binary in batch mode — no SSH library,
