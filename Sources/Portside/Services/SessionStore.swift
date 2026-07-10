@@ -7,6 +7,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var entries: [SessionEntry] = []
     @Published private(set) var macros: [Macro] = []
     @Published private(set) var forwards: [PortForward] = []
+    /// Most-recent-first connection history for the welcome screen.
+    @Published private(set) var recents: [RecentConnection] = []
     /// Folders that exist independently of any session, so empty folders and
     /// subfolders can be created and persist.
     @Published private(set) var explicitFolders: [String] = []
@@ -21,6 +23,7 @@ final class SessionStore: ObservableObject {
         var entries: [SessionEntry]
         var macros: [Macro]
         var forwards: [PortForward]?
+        var recents: [RecentConnection]?
         var explicitFolders: [String]?
         var appearance: TerminalAppearance?
         var customThemes: [TerminalTheme]?
@@ -93,6 +96,30 @@ final class SessionStore: ObservableObject {
     func entry(id: UUID?) -> SessionEntry? {
         guard let id else { return nil }
         return entries.first { $0.id == id }
+    }
+
+    // MARK: - Recent connections
+
+    /// Moves (or adds) the host to the front of the history. Capped well above
+    /// what the welcome screen shows so deleted hosts don't shrink the list.
+    func recordConnection(_ entry: SessionEntry) {
+        recents.removeAll { $0.entryID == entry.id }
+        recents.insert(RecentConnection(entryID: entry.id, date: Date()), at: 0)
+        if recents.count > 20 {
+            recents.removeLast(recents.count - 20)
+        }
+        save()
+    }
+
+    /// The history joined against the library — deleted hosts drop out.
+    func recentEntries(limit: Int) -> [(entry: SessionEntry, date: Date)] {
+        var result: [(SessionEntry, Date)] = []
+        for recent in recents {
+            guard let entry = entry(id: recent.entryID) else { continue }
+            result.append((entry, recent.date))
+            if result.count == limit { break }
+        }
+        return result
     }
 
     func updateAppearance(_ appearance: TerminalAppearance) {
@@ -244,6 +271,7 @@ final class SessionStore: ObservableObject {
             entries = doc.entries
             macros = doc.macros
             forwards = doc.forwards ?? []
+            recents = doc.recents ?? []
             explicitFolders = doc.explicitFolders ?? []
             appearance = doc.appearance ?? .default
             customThemes = doc.customThemes ?? []
@@ -264,6 +292,7 @@ final class SessionStore: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(Document(entries: entries, macros: macros, forwards: forwards,
+                                        recents: recents,
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging))
                 .write(to: fileURL, options: .atomic)

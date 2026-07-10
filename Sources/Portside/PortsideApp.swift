@@ -28,6 +28,9 @@ struct PortsideApp: App {
                 .onAppear {
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
+                    sessions.onConnect = { [weak store] entry in
+                        store?.recordConnection(entry)
+                    }
                     LogManager.runMaintenance(settings: store.logging)
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
                         store.entry(id: id).map(store.resolved)

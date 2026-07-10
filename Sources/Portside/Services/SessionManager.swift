@@ -123,6 +123,9 @@ final class SessionManager: ObservableObject {
     @Published var filesPaneVisible = false
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
+    /// Fires on every host connection (all paths — single, group, MultiExec);
+    /// the app wires it to the store's recent-connections history.
+    var onConnect: ((SessionEntry) -> Void)?
 
     private var keyMonitor: Any?
 
@@ -192,6 +195,7 @@ final class SessionManager: ObservableObject {
         add(TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
                             entry: entry, appearance: appearance,
                             environment: environment, cleanup: cleanup, logger: logger))
+        onConnect?(entry)
     }
 
     func openLocalShell() {

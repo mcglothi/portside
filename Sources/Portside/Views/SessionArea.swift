@@ -273,6 +273,11 @@ struct TabChip: View {
 
 struct EmptyStateView: View {
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var store: SessionStore
+
+    private var recents: [(entry: SessionEntry, date: Date)] {
+        store.recentEntries(limit: 8)
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -284,7 +289,64 @@ struct EmptyStateView: View {
             Text("Pick a host from the sidebar, or open a local shell.")
                 .foregroundStyle(.secondary)
             Button("New Local Shell") { sessions.openLocalShell() }
+
+            if !recents.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Jump back in")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .padding(.leading, 10)
+                    ForEach(recents, id: \.entry.id) { recent in
+                        RecentConnectionRow(entry: recent.entry, date: recent.date) {
+                            sessions.connect(to: store.resolved(recent.entry))
+                        }
+                    }
+                }
+                .frame(maxWidth: 400)
+                .padding(.top, 24)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// One recent host on the welcome screen; click reconnects.
+struct RecentConnectionRow: View {
+    let entry: SessionEntry
+    let date: Date
+    let connect: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: connect) {
+            HStack(spacing: 8) {
+                Image(systemName: "server.rack")
+                    .foregroundStyle(.secondary)
+                Text(entry.name)
+                    .lineLimit(1)
+                Text(entry.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                EnvironmentBadge(environment: entry.environment)
+                Text(date, format: .relative(presentation: .named))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(minWidth: 70, alignment: .trailing)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(hovering ? Color.primary.opacity(0.07) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Reconnect to \(entry.name)")
     }
 }

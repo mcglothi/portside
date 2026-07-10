@@ -103,6 +103,12 @@ struct ConnectionDefaults: Codable, Equatable {
     var identityFile: String?
 }
 
+/// One entry in the "jump back in" history: which host, connected when.
+struct RecentConnection: Codable, Hashable {
+    var entryID: UUID
+    var date: Date
+}
+
 struct Macro: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
