@@ -50,6 +50,8 @@ without giving up native speed and macOS polish.
   connection (no re-auth), with drag/drop upload and drag-out download.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
+- **Recent connections** — the welcome screen keeps a MobaXterm-style "jump
+  back in" list of the hosts you last connected to, one click to reconnect.
 - **Session logging** — per-host log folders with compression and search.
 - **Keychain passwords** — per-host saved passwords supplied to ssh
   automatically; nothing ever lands in the JSON library.
