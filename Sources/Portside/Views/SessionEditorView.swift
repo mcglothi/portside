@@ -11,6 +11,10 @@ struct SessionEditorView: View {
     @State private var portText: String
     @State private var password = ""
     @State private var hasSavedPassword: Bool
+    // Working copies so the editor can bind to fields even when the draft's
+    // optional target is nil; only the active kind's copy is saved back.
+    @State private var container: ContainerTarget
+    @State private var kubernetes: KubernetesTarget
     private let isNew: Bool
     private let folders: [String]
     private let onComplete: (EditorResult<SessionEntry>) -> Void
@@ -19,6 +23,8 @@ struct SessionEditorView: View {
         _draft = State(initialValue: entry)
         _portText = State(initialValue: entry.port.map(String.init) ?? "")
         _hasSavedPassword = State(initialValue: CredentialStore.password(for: entry.id) != nil)
+        _container = State(initialValue: entry.container ?? ContainerTarget())
+        _kubernetes = State(initialValue: entry.kubernetes ?? KubernetesTarget())
         isNew = entry.name.isEmpty
         self.folders = folders
         self.onComplete = onComplete
@@ -73,7 +79,109 @@ struct SessionEditorView: View {
     }
 
     private var canSave: Bool {
-        !draft.name.isEmpty && (!draft.hostname.isEmpty || !(draft.sshAlias ?? "").isEmpty)
+        guard !draft.name.isEmpty else { return false }
+        switch draft.kind {
+        case .host:
+            return !draft.hostname.isEmpty || !(draft.sshAlias ?? "").isEmpty
+        case .container:
+            return !container.name.trimmingCharacters(in: .whitespaces).isEmpty
+        case .kubernetes:
+            return !kubernetes.pod.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
+    // MARK: - Field groups
+
+    @ViewBuilder private var folderRow: some View {
+        HStack {
+            TextField("Folder", text: $draft.folder, prompt: Text("e.g. prod/web — empty for top level"))
+            if !folders.isEmpty {
+                Menu {
+                    ForEach(folders, id: \.self) { folder in
+                        Button(folder) { draft.folder = folder }
+                    }
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder private var transportHeader: some View {
+        Text(draft.kind == .container
+             ? "Connect via — the SSH host the container runs on. Leave Host blank to run on this Mac."
+             : "Connect via — an SSH host with cluster access. Leave Host blank to use this Mac.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var sshFields: some View {
+        TextField(draft.kind == .host ? "Host" : "Host (via)", text: $draft.hostname,
+                  prompt: Text(draft.kind == .host ? "hostname or IP" : "blank = this Mac"))
+        TextField("User", text: userBinding, prompt: Text("optional"))
+        TextField("Port", text: $portText, prompt: Text("22"))
+        TextField("~/.ssh/config alias", text: aliasBinding, prompt: Text("optional — connects via ssh <alias>"))
+        HStack {
+            TextField("Identity file (key)", text: identityBinding,
+                      prompt: Text("optional — e.g. ~/.ssh/id_ed25519"))
+            Button("Browse…") { browseForKey() }
+        }
+    }
+
+    @ViewBuilder private var passwordFields: some View {
+        Toggle("Save password in Keychain", isOn: $draft.savePassword)
+        if draft.savePassword {
+            SecureField("Password", text: $password,
+                        prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
+            Text("Stored in the macOS Keychain and supplied to ssh automatically.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var runOnConnectField: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            TextField("Run on connect", text: runOnConnectBinding,
+                      prompt: Text("optional — e.g. tmux attach || tmux new"))
+            Text("Sent to the shell a moment after connecting. Works with key, agent, or saved-password auth; skip it for hosts that prompt for a password interactively.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var containerFields: some View {
+        Picker("Engine", selection: $container.engine) {
+            ForEach(ContainerTarget.Engine.allCases) { engine in
+                Text(engine.label).tag(engine)
+            }
+        }
+        TextField("Container", text: $container.name, prompt: Text("name or id — e.g. web"))
+        TextField("Shell", text: $container.shell, prompt: Text("sh"))
+        TextField("Exec as user", text: $container.user, prompt: Text("optional — e.g. root"))
+        commandPreview(container.execCommand)
+    }
+
+    @ViewBuilder private var kubernetesFields: some View {
+        TextField("Context", text: $kubernetes.context,
+                  prompt: Text("optional — e.g. nkp-prod or gke_proj_zone_cluster"))
+        TextField("Namespace", text: $kubernetes.namespace, prompt: Text("optional — default"))
+        TextField("Pod", text: $kubernetes.pod, prompt: Text("e.g. api-7d9f8"))
+        TextField("Container", text: $kubernetes.container,
+                  prompt: Text("optional — for multi-container pods"))
+        TextField("Shell", text: $kubernetes.shell, prompt: Text("sh"))
+        commandPreview(kubernetes.execCommand)
+    }
+
+    /// Live preview of the exec command the session will run.
+    @ViewBuilder private func commandPreview(_ command: String?) -> some View {
+        if let command {
+            Text(command)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
     }
 
     var body: some View {
@@ -82,46 +190,28 @@ struct SessionEditorView: View {
                 .font(.headline)
             Form {
                 TextField("Name", text: $draft.name)
-                HStack {
-                    TextField("Folder", text: $draft.folder, prompt: Text("e.g. prod/web — empty for top level"))
-                    if !folders.isEmpty {
-                        Menu {
-                            ForEach(folders, id: \.self) { folder in
-                                Button(folder) { draft.folder = folder }
-                            }
-                        } label: {
-                            Image(systemName: "folder")
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
+                folderRow
+                Picker("Type", selection: $draft.kind) {
+                    ForEach(SessionKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
                     }
                 }
-                TextField("Host", text: $draft.hostname)
-                TextField("User", text: userBinding, prompt: Text("optional"))
-                TextField("Port", text: $portText, prompt: Text("22"))
-                TextField("~/.ssh/config alias", text: aliasBinding, prompt: Text("optional — connects via ssh <alias>"))
 
-                HStack {
-                    TextField("Identity file (key)", text: identityBinding,
-                              prompt: Text("optional — e.g. ~/.ssh/id_ed25519"))
-                    Button("Browse…") { browseForKey() }
-                }
-
-                Toggle("Save password in Keychain", isOn: $draft.savePassword)
-                if draft.savePassword {
-                    SecureField("Password", text: $password,
-                                prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
-                    Text("Stored in the macOS Keychain and supplied to ssh automatically.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    TextField("Run on connect", text: runOnConnectBinding,
-                              prompt: Text("optional — e.g. tmux attach || tmux new"))
-                    Text("Sent to the shell a moment after connecting. Works with key, agent, or saved-password auth; skip it for hosts that prompt for a password interactively.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                switch draft.kind {
+                case .host:
+                    sshFields
+                    passwordFields
+                    runOnConnectField
+                case .container:
+                    transportHeader
+                    sshFields
+                    passwordFields
+                    containerFields
+                case .kubernetes:
+                    transportHeader
+                    sshFields
+                    passwordFields
+                    kubernetesFields
                 }
 
                 Picker("Environment", selection: $draft.environment) {
@@ -145,6 +235,9 @@ struct SessionEditorView: View {
                 Button("Save") {
                     draft.port = Int(portText)
                     draft.folder = draft.folder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                    // Persist only the active kind's target.
+                    draft.container = draft.kind == .container ? container : nil
+                    draft.kubernetes = draft.kind == .kubernetes ? kubernetes : nil
                     persistCredentials()
                     onComplete(.save(draft))
                     dismiss()
@@ -154,7 +247,7 @@ struct SessionEditorView: View {
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 460)
     }
 }
 

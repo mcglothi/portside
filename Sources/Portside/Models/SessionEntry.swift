@@ -16,6 +16,83 @@ enum HostEnvironment: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// What a session actually drops you into. All three share the same transport
+/// (an SSH host, or this Mac for local containers/pods); only the shell at the
+/// far end differs.
+enum SessionKind: String, Codable, CaseIterable, Identifiable {
+    case host, container, kubernetes
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .host: return "SSH Host"
+        case .container: return "Container"
+        case .kubernetes: return "Kubernetes"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .host: return "server.rack"
+        case .container: return "shippingbox"
+        case .kubernetes: return "circle.hexagongrid"
+        }
+    }
+}
+
+/// A docker/podman/nerdctl container to exec into.
+struct ContainerTarget: Codable, Hashable {
+    enum Engine: String, Codable, CaseIterable, Identifiable {
+        case docker, podman, nerdctl
+        var id: String { rawValue }
+        var label: String { rawValue }
+    }
+
+    var engine: Engine = .docker
+    var name = ""
+    var shell = "sh"       // Alpine-safe default
+    var user = ""          // optional -u
+
+    /// `docker exec -it [-u user] <name> <shell>`; nil until a name is set.
+    var execCommand: String? {
+        let container = name.trimmingCharacters(in: .whitespaces)
+        guard !container.isEmpty else { return nil }
+        var parts = [engine.rawValue, "exec", "-it"]
+        let u = user.trimmingCharacters(in: .whitespaces)
+        if !u.isEmpty { parts += ["-u", u] }
+        parts.append(container)
+        parts.append(shell.isEmpty ? "sh" : shell)
+        return parts.joined(separator: " ")
+    }
+}
+
+/// A Kubernetes pod to exec into. `context` selects the cluster (NKP, GKE, …)
+/// so the same host/kubeconfig can reach many clusters.
+struct KubernetesTarget: Codable, Hashable {
+    var context = ""
+    var namespace = ""
+    var pod = ""
+    var container = ""     // optional -c for multi-container pods
+    var shell = "sh"
+
+    /// `kubectl [--context c] [-n ns] exec -it <pod> [-c container] -- <shell>`.
+    var execCommand: String? {
+        let pod = pod.trimmingCharacters(in: .whitespaces)
+        guard !pod.isEmpty else { return nil }
+        var parts = ["kubectl"]
+        let ctx = context.trimmingCharacters(in: .whitespaces)
+        if !ctx.isEmpty { parts += ["--context", ctx] }
+        let ns = namespace.trimmingCharacters(in: .whitespaces)
+        if !ns.isEmpty { parts += ["-n", ns] }
+        parts += ["exec", "-it", pod]
+        let c = container.trimmingCharacters(in: .whitespaces)
+        if !c.isEmpty { parts += ["-c", c] }
+        parts += ["--", shell.isEmpty ? "sh" : shell]
+        return parts.joined(separator: " ")
+    }
+}
+
 struct SessionEntry: Identifiable, Hashable {
     enum Source: String, Codable {
         case manual, sshConfig, mobaxterm
@@ -34,12 +111,57 @@ struct SessionEntry: Identifiable, Hashable {
     var environment: HostEnvironment = .none
     var isProtected = false          // excluded from MultiExec unless explicitly confirmed
     var runOnConnect: String?        // command sent to the shell shortly after connecting
+    var kind: SessionKind = .host
+    var container: ContainerTarget?  // set when kind == .container
+    var kubernetes: KubernetesTarget?// set when kind == .kubernetes
+
+    var icon: String { kind.icon }
+
+    /// Container/pod sessions with no SSH host run on this Mac.
+    var usesLocalTransport: Bool {
+        kind != .host && hostname.isEmpty && (sshAlias?.isEmpty ?? true)
+    }
+
+    /// The command to send once the transport shell is up: the container/pod
+    /// exec for those kinds, or the host's run-on-connect string.
+    var postConnectCommand: String? {
+        switch kind {
+        case .host:
+            let command = runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (command?.isEmpty ?? true) ? nil : command
+        case .container:
+            return container?.execCommand
+        case .kubernetes:
+            return kubernetes?.execCommand
+        }
+    }
+
+    /// The remote file browser only makes sense for a plain SSH host.
+    var supportsFileBrowser: Bool { kind == .host }
 
     var subtitle: String {
-        let userPart = user.map { "\($0)@" } ?? ""
-        let portPart = port.map { ":\($0)" } ?? ""
-        let target = hostname.isEmpty ? (sshAlias ?? "") : hostname
-        return userPart + target + portPart
+        switch kind {
+        case .host:
+            let userPart = user.map { "\($0)@" } ?? ""
+            let portPart = port.map { ":\($0)" } ?? ""
+            let target = hostname.isEmpty ? (sshAlias ?? "") : hostname
+            return userPart + target + portPart
+        case .container:
+            let engine = container?.engine.rawValue ?? "docker"
+            let name = container?.name ?? ""
+            return "\(engine): \(name)\(transportSuffix)"
+        case .kubernetes:
+            let ns = kubernetes?.namespace ?? ""
+            let pod = kubernetes?.pod ?? ""
+            let nsPart = ns.isEmpty ? "" : "\(ns)/"
+            return "k8s: \(nsPart)\(pod)\(transportSuffix)"
+        }
+    }
+
+    private var transportSuffix: String {
+        if usesLocalTransport { return " · local" }
+        let host = hostname.isEmpty ? (sshAlias ?? "") : hostname
+        return host.isEmpty ? "" : " · via \(host)"
     }
 
     private var identityArgs: [String] {
@@ -79,6 +201,7 @@ extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
+        case kind, container, kubernetes
     }
 
     init(from decoder: Decoder) throws {
@@ -96,6 +219,9 @@ extension SessionEntry: Codable {
         environment = try c.decodeIfPresent(HostEnvironment.self, forKey: .environment) ?? .none
         isProtected = try c.decodeIfPresent(Bool.self, forKey: .isProtected) ?? false
         runOnConnect = try c.decodeIfPresent(String.self, forKey: .runOnConnect)
+        kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .host
+        container = try c.decodeIfPresent(ContainerTarget.self, forKey: .container)
+        kubernetes = try c.decodeIfPresent(KubernetesTarget.self, forKey: .kubernetes)
     }
 }
 

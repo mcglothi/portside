@@ -35,7 +35,8 @@ struct SessionArea: View {
                     Label("Files", systemImage: "folder")
                 }
                 .toggleStyle(.button)
-                .disabled(sessions.multiExecActive || sessions.selected?.entry == nil)
+                .disabled(sessions.multiExecActive
+                    || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
                 .help("Show the remote file browser for this session")
             }
             ToolbarItem {
@@ -385,7 +386,7 @@ struct RecentConnectionRow: View {
     var body: some View {
         Button(action: connect) {
             HStack(spacing: 8) {
-                Image(systemName: "server.rack")
+                Image(systemName: entry.icon)
                     .foregroundStyle(.secondary)
                 Text(entry.name)
                     .lineLimit(1)

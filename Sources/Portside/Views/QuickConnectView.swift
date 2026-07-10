@@ -151,7 +151,7 @@ private struct QuickConnectRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "server.rack")
+            Image(systemName: entry.icon)
                 .foregroundStyle(selected ? Color.white : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.name)

@@ -31,9 +31,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     var isProtected: Bool { entry?.isProtected ?? false }
 
     private var _sftp: SFTPBrowserModel?
-    /// Lazy per-session file browser; nil for local shells.
+    /// Lazy per-session file browser; only for plain SSH hosts (not local
+    /// shells or container/pod sessions).
     @MainActor var sftp: SFTPBrowserModel? {
-        guard let entry else { return nil }
+        guard let entry, entry.supportsFileBrowser else { return nil }
         if _sftp == nil {
             _sftp = SFTPBrowserModel(entry: entry)
         }
@@ -214,32 +215,42 @@ final class SessionManager: ObservableObject {
     }
 
     func connect(to entry: SessionEntry) {
-        // ControlMaster options so this interactive session becomes the
-        // multiplexing master the SFTP pane piggybacks on.
-        let args = SSHControl.options + entry.sshArgs
-
-        // If the host has a saved password, set up the askpass helper so ssh
-        // auto-authenticates; otherwise it just prompts in the terminal.
-        var environment = SwiftTerm.Terminal.getEnvironmentVariables()
-        var cleanup: (() -> Void)?
-        if entry.savePassword, let password = CredentialStore.password(for: entry.id),
-           let injected = AskpassInjector.environment(for: password) {
-            environment += injected.env
-            cleanup = injected.cleanup
-        }
-
         let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
-        let session = TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
+        let session: TerminalSession
+
+        if entry.usesLocalTransport {
+            // A container/pod that runs on this Mac: a local login shell we
+            // then drive into the container. The login shell (-l) gives
+            // docker/kubectl/gcloud their usual PATH.
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            session = TerminalSession(title: entry.name, executable: shell, args: ["-l"],
+                                      entry: entry, appearance: appearance, logger: logger)
+        } else {
+            // ControlMaster options so this interactive session becomes the
+            // multiplexing master the SFTP pane piggybacks on.
+            let args = SSHControl.options + entry.sshArgs
+
+            // If the host has a saved password, set up the askpass helper so ssh
+            // auto-authenticates; otherwise it just prompts in the terminal.
+            var environment = SwiftTerm.Terminal.getEnvironmentVariables()
+            var cleanup: (() -> Void)?
+            if entry.savePassword, let password = CredentialStore.password(for: entry.id),
+               let injected = AskpassInjector.environment(for: password) {
+                environment += injected.env
+                cleanup = injected.cleanup
+            }
+            session = TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
                                       entry: entry, appearance: appearance,
                                       environment: environment, cleanup: cleanup, logger: logger)
+        }
         add(session)
 
-        // Optional per-host command, fired once the login shell has had a
-        // moment to come up. Shells buffer stdin, so a slightly early send
-        // still runs at the first prompt; only an interactive password prompt
-        // (no saved credential) would swallow it — hence the editor's note.
-        if let command = entry.runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !command.isEmpty {
+        // Post-connect command: the container/pod exec for those kinds, or a
+        // host's run-on-connect. Fired once the shell has had a moment to come
+        // up — shells buffer stdin, so a slightly early send still runs at the
+        // first prompt; only an interactive password prompt (no saved
+        // credential) would swallow it, hence the editor's note.
+        if let command = entry.postConnectCommand {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
                 session?.sendText(command + "\r")
             }

@@ -415,7 +415,7 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "server.rack")
+            Image(systemName: entry.icon)
                 .foregroundStyle(isSelected ? Color.white : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.name)
