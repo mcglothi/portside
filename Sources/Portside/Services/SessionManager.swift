@@ -121,6 +121,7 @@ final class SessionManager: ObservableObject {
     @Published var selectedID: UUID?
     @Published var multiExecActive = false
     @Published var filesPaneVisible = false
+    @Published var showQuickConnect = false
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     /// Fires on every host connection (all paths — single, group, MultiExec);

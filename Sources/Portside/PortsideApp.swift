@@ -47,6 +47,8 @@ struct PortsideApp: App {
             CommandGroup(after: .newItem) {
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut("t", modifiers: [.command])
+                Button("Quick Connect…") { sessions.showQuickConnect = true }
+                    .keyboardShortcut("k", modifiers: [.command])
             }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }
