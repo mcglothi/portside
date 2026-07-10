@@ -476,8 +476,6 @@ struct ToolsList: View {
                 .buttonStyle(.plain)
             }
             Section("Coming soon") {
-                Label("Quick Connect", systemImage: "bolt.horizontal")
-                    .foregroundStyle(.tertiary)
                 Label("Split Layouts", systemImage: "rectangle.split.2x1")
                     .foregroundStyle(.tertiary)
             }
