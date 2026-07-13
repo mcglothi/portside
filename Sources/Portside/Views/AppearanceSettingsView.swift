@@ -5,15 +5,20 @@ import UniformTypeIdentifiers
 struct AppearanceSettingsView: View {
     @EnvironmentObject var store: SessionStore
     @State private var showingThemeImporter = false
+    @State private var showingGallery = false
+    @State private var showingFontGallery = false
     @State private var importError: String?
 
     /// Fixed-pitch families make the terminal legible; offer those first.
-    private static let monospacedFamilies: [String] = {
+    /// State (not static) so the list can refresh after a font install.
+    @State private var monospacedFamilies: [String] = Self.scanFamilies()
+
+    private static func scanFamilies() -> [String] {
         NSFontManager.shared.availableFontFamilies.filter { family in
             guard let font = NSFont(name: family, size: 12) else { return false }
             return font.isFixedPitch
         }.sorted()
-    }()
+    }
 
     private var appearance: Binding<TerminalAppearance> {
         Binding(get: { store.appearance }, set: { store.updateAppearance($0) })
@@ -34,7 +39,12 @@ struct AppearanceSettingsView: View {
         Form {
             Section("Font") {
                 Picker("Family", selection: appearance.fontName) {
-                    ForEach(Self.monospacedFamilies, id: \.self) { family in
+                    // Keep the current selection visible even if it isn't a
+                    // detected fixed-pitch family (e.g. just installed).
+                    let families = monospacedFamilies.contains(store.appearance.fontName)
+                        ? monospacedFamilies
+                        : ([store.appearance.fontName] + monospacedFamilies)
+                    ForEach(families, id: \.self) { family in
                         Text(family).tag(family)
                     }
                 }
@@ -44,6 +54,13 @@ struct AppearanceSettingsView: View {
                     Text("\(Int(store.appearance.fontSize)) pt")
                         .monospacedDigit()
                         .frame(width: 44, alignment: .trailing)
+                }
+                HStack {
+                    Button("Browse Fonts…") { showingFontGallery = true }
+                    Spacer()
+                    Text("Nerd Fonts collection")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -64,6 +81,7 @@ struct AppearanceSettingsView: View {
                 ColorPicker("Background", selection: colorBinding(\.backgroundHex), supportsOpacity: false)
                 ColorPicker("Cursor", selection: colorBinding(\.cursorHex), supportsOpacity: false)
                 HStack {
+                    Button("Browse Gallery…") { showingGallery = true }
                     Button("Import Theme…") { showingThemeImporter = true }
                     Spacer()
                     Text("iTerm2 .itermcolors or Portside .json")
@@ -78,6 +96,14 @@ struct AppearanceSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 460, idealWidth: 480, minHeight: 560, idealHeight: 640)
+        .sheet(isPresented: $showingGallery) {
+            ThemeGalleryView().environmentObject(store)
+        }
+        .sheet(isPresented: $showingFontGallery, onDismiss: {
+            monospacedFamilies = Self.scanFamilies()
+        }) {
+            FontGalleryView().environmentObject(store)
+        }
         .fileImporter(
             isPresented: $showingThemeImporter,
             allowedContentTypes: [.json, .propertyList, .xml, .data],
@@ -93,17 +119,9 @@ struct AppearanceSettingsView: View {
     }
 
     private var preview: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("tim@portside:~$ ls -la")
-            Text("drwxr-xr-x  4 tim  staff   128 deploy/")
-            Text("-rw-r--r--  1 tim  staff  2048 notes.md")
-        }
-        .font(.custom(store.appearance.fontName, size: store.appearance.fontSize))
-        .foregroundStyle(Color(nsColor: store.appearance.foreground))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color(nsColor: store.appearance.background))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        TerminalPreviewView(theme: store.appearance.asTheme,
+                            fontName: store.appearance.fontName,
+                            fontSize: store.appearance.fontSize)
     }
 
     private func importTheme(_ result: Result<[URL], Error>) {
@@ -117,8 +135,8 @@ struct AppearanceSettingsView: View {
             let data = try Data(contentsOf: url)
             let name = url.deletingPathExtension().lastPathComponent
             let theme = try TerminalTheme.imported(from: data, name: name)
-            store.addCustomTheme(theme)
-            store.updateAppearance(store.appearance.applying(theme))
+            let stored = store.addCustomTheme(theme)
+            store.updateAppearance(store.appearance.applying(stored))
         } catch {
             importError = error.localizedDescription
         }

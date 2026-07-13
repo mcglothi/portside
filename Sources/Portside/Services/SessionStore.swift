@@ -146,11 +146,19 @@ final class SessionStore: ObservableObject {
         save()
     }
 
-    /// Adds (or replaces by name) an imported theme and returns it.
-    func addCustomTheme(_ theme: TerminalTheme) {
+    /// Adds (or replaces by name) an imported theme and returns the stored
+    /// copy. Names colliding with a built-in get a suffix so `allThemes` ids
+    /// (which are the names) stay unique.
+    @discardableResult
+    func addCustomTheme(_ theme: TerminalTheme) -> TerminalTheme {
+        var theme = theme
+        if TerminalTheme.builtIns.contains(where: { $0.name == theme.name }) {
+            theme.name += " (Imported)"
+        }
         customThemes.removeAll { $0.name == theme.name }
         customThemes.append(theme)
         save()
+        return theme
     }
 
     func updateDefaults(_ defaults: ConnectionDefaults) {

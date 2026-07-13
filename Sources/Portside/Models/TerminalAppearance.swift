@@ -26,6 +26,12 @@ struct TerminalAppearance: Equatable {
     var background: NSColor { HexColor.nsColor(backgroundHex) }
     var cursor: NSColor { HexColor.nsColor(cursorHex) }
 
+    /// The current colors as a theme, e.g. for previews.
+    var asTheme: TerminalTheme {
+        TerminalTheme(name: themeName, foreground: foregroundHex, background: backgroundHex,
+                      cursor: cursorHex, ansi: ansiHex)
+    }
+
     /// Swaps in a theme's colors while keeping the current font.
     func applying(_ theme: TerminalTheme) -> TerminalAppearance {
         var copy = self
@@ -91,7 +97,22 @@ struct TerminalTheme: Codable, Identifiable, Equatable, Hashable {
         )
     }
 
-    static let builtIns: [TerminalTheme] = [systemDefault, solarizedDark, dracula, nord]
+    /// System Default plus the curated set bundled from
+    /// mbadolato/iTerm2-Color-Schemes (regenerate with
+    /// `Scripts/update_bundled_themes.py`). Falls back to the hardcoded trio
+    /// if the resource bundle is missing (e.g. bare SPM binary moved out of
+    /// the .app).
+    static let builtIns: [TerminalTheme] = [systemDefault] + bundled
+
+    private static let bundled: [TerminalTheme] = {
+        guard let url = Bundle.module.url(forResource: "BundledThemes", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let themes = try? JSONDecoder().decode([TerminalTheme].self, from: data),
+              !themes.isEmpty else {
+            return [solarizedDark, dracula, nord]
+        }
+        return themes
+    }()
 
     static let systemDefault = TerminalTheme(
         name: "System Default",

@@ -20,6 +20,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/Portside "$APP/Contents/MacOS/Portside"
 
+# SPM resource bundle (bundled themes etc.); Bundle.module finds it via
+# Bundle.main.resourceURL inside the .app.
+ditto .build/release/Portside_Portside.bundle "$APP/Contents/Resources/Portside_Portside.bundle"
+
 # Embed Sparkle.framework (with its XPC helpers) and point the binary at it.
 FRAMEWORK_SRC="$(find .build/artifacts -type d -path '*macos-arm64_x86_64/Sparkle.framework' | head -1)"
 if [ -z "$FRAMEWORK_SRC" ]; then

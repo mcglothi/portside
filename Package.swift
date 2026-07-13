@@ -14,7 +14,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "Sparkle", package: "Sparkle")
-            ]
+            ],
+            resources: [.process("Resources")]
         )
     ]
 )
