@@ -16,11 +16,12 @@ enum HostEnvironment: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// What a session actually drops you into. All three share the same transport
-/// (an SSH host, or this Mac for local containers/pods); only the shell at the
-/// far end differs.
+/// What a session actually drops you into. Host/container/kubernetes share
+/// the same transport (an SSH host, or this Mac for local containers/pods);
+/// only the shell at the far end differs. Serial talks straight to a local
+/// /dev/cu.* device — no child process at all.
 enum SessionKind: String, Codable, CaseIterable, Identifiable {
-    case host, container, kubernetes
+    case host, container, kubernetes, serial
 
     var id: String { rawValue }
 
@@ -29,6 +30,7 @@ enum SessionKind: String, Codable, CaseIterable, Identifiable {
         case .host: return "SSH Host"
         case .container: return "Container"
         case .kubernetes: return "Kubernetes"
+        case .serial: return "Serial Port"
         }
     }
 
@@ -37,6 +39,7 @@ enum SessionKind: String, Codable, CaseIterable, Identifiable {
         case .host: return "server.rack"
         case .container: return "shippingbox"
         case .kubernetes: return "circle.hexagongrid"
+        case .serial: return "cable.connector"
         }
     }
 }
@@ -93,6 +96,57 @@ struct KubernetesTarget: Codable, Hashable {
     }
 }
 
+/// A local serial device (USB adapter, console cable) and its line settings.
+/// The classic switch-stack default is 9600 8N1; modern USB consoles mostly
+/// run 115200, so that's the starting value.
+struct SerialTarget: Codable, Hashable {
+    enum Parity: String, Codable, CaseIterable, Identifiable {
+        case none, even, odd
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+        /// The letter in the "8N1"-style summary.
+        var letter: String {
+            switch self {
+            case .none: return "N"
+            case .even: return "E"
+            case .odd: return "O"
+            }
+        }
+    }
+
+    enum FlowControl: String, Codable, CaseIterable, Identifiable {
+        case none, rtsCts, xonXoff
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .none: return "None"
+            case .rtsCts: return "Hardware (RTS/CTS)"
+            case .xonXoff: return "Software (XON/XOFF)"
+            }
+        }
+    }
+
+    var devicePath = ""
+    var baudRate = 115200
+    var dataBits = 8            // 7 or 8
+    var parity: Parity = .none
+    var stopBits = 1            // 1 or 2
+    var flowControl: FlowControl = .none
+
+    static let baudRates = [300, 1200, 2400, 4800, 9600, 19200, 38400,
+                            57600, 115200, 230400, 460800, 921600]
+
+    /// "115200 8N1" — the shorthand every console jockey reads at a glance.
+    var summary: String {
+        "\(baudRate) \(dataBits)\(parity.letter)\(stopBits)"
+    }
+
+    /// "cu.usbserial-0001" — the device without the /dev/ noise.
+    var deviceName: String {
+        (devicePath as NSString).lastPathComponent
+    }
+}
+
 struct SessionEntry: Identifiable, Hashable {
     enum Source: String, Codable {
         case manual, sshConfig, mobaxterm
@@ -114,20 +168,25 @@ struct SessionEntry: Identifiable, Hashable {
     var kind: SessionKind = .host
     var container: ContainerTarget?  // set when kind == .container
     var kubernetes: KubernetesTarget?// set when kind == .kubernetes
+    var serial: SerialTarget?        // set when kind == .serial
     var preferMosh = false           // connect with mosh instead of ssh (hosts only)
 
     var icon: String { kind.icon }
 
-    /// Container/pod sessions with no SSH host run on this Mac.
+    /// Container/pod sessions with no SSH host run on this Mac. (Serial is
+    /// local too, but bridges a device fd instead of spawning a shell —
+    /// SessionManager branches on the kind before consulting this.)
     var usesLocalTransport: Bool {
-        kind != .host && hostname.isEmpty && (sshAlias?.isEmpty ?? true)
+        (kind == .container || kind == .kubernetes)
+            && hostname.isEmpty && (sshAlias?.isEmpty ?? true)
     }
 
     /// The command to send once the transport shell is up: the container/pod
-    /// exec for those kinds, or the host's run-on-connect string.
+    /// exec for those kinds, or the host's run-on-connect string. Serial
+    /// reuses run-on-connect (handy for waking a console with a newline).
     var postConnectCommand: String? {
         switch kind {
-        case .host:
+        case .host, .serial:
             let command = runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (command?.isEmpty ?? true) ? nil : command
         case .container:
@@ -158,6 +217,9 @@ struct SessionEntry: Identifiable, Hashable {
             let pod = kubernetes?.pod ?? ""
             let nsPart = ns.isEmpty ? "" : "\(ns)/"
             return "k8s: \(nsPart)\(pod)\(transportSuffix)"
+        case .serial:
+            guard let serial, !serial.devicePath.isEmpty else { return "no device" }
+            return "\(serial.deviceName) · \(serial.summary)"
         }
     }
 
@@ -228,7 +290,7 @@ extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
-        case kind, container, kubernetes, preferMosh
+        case kind, container, kubernetes, serial, preferMosh
     }
 
     init(from decoder: Decoder) throws {
@@ -249,6 +311,7 @@ extension SessionEntry: Codable {
         kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .host
         container = try c.decodeIfPresent(ContainerTarget.self, forKey: .container)
         kubernetes = try c.decodeIfPresent(KubernetesTarget.self, forKey: .kubernetes)
+        serial = try c.decodeIfPresent(SerialTarget.self, forKey: .serial)
         preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
     }
 }
