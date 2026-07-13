@@ -46,7 +46,7 @@ enum ContainerLister {
             }
             parts += ["get", "pods", "--no-headers"]
             return parts.joined(separator: " ")
-        case .host, .serial:
+        case .host, .serial, .telnet:
             return nil
         }
     }

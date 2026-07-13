@@ -22,7 +22,7 @@ struct EnvironmentBadge: View {
     }
 }
 
-/// Transport marker (mosh, serial; telnet to come). Same visual language
+/// Transport marker (mosh, serial, telnet). Same visual language
 /// as the environment badges so rows read as one line of chips.
 struct TransportBadge: View {
     let entry: SessionEntry
@@ -33,6 +33,9 @@ struct TransportBadge: View {
         }
         if entry.kind == .serial {
             CapsuleBadge(text: "serial", color: .orange)
+        }
+        if entry.kind == .telnet {
+            CapsuleBadge(text: "unencrypted", color: .red)
         }
     }
 }
