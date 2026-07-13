@@ -114,6 +114,7 @@ struct SessionEntry: Identifiable, Hashable {
     var kind: SessionKind = .host
     var container: ContainerTarget?  // set when kind == .container
     var kubernetes: KubernetesTarget?// set when kind == .kubernetes
+    var preferMosh = false           // connect with mosh instead of ssh (hosts only)
 
     var icon: String { kind.icon }
 
@@ -136,8 +137,10 @@ struct SessionEntry: Identifiable, Hashable {
         }
     }
 
-    /// The remote file browser only makes sense for a plain SSH host.
-    var supportsFileBrowser: Bool { kind == .host }
+    /// The remote file browser only makes sense for a plain SSH host — and
+    /// not mosh: sftp rides the ssh ControlMaster socket, which a mosh
+    /// session (UDP after bootstrap) never opens.
+    var supportsFileBrowser: Bool { kind == .host && !preferMosh }
 
     var subtitle: String {
         switch kind {
@@ -181,6 +184,30 @@ struct SessionEntry: Identifiable, Hashable {
         return args
     }
 
+    /// mosh bootstraps over its own ssh, so identity/port ride inside --ssh
+    /// (which mosh word-splits — hence the quoting around the key path).
+    /// Aliases resolve through ~/.ssh/config exactly like plain ssh.
+    var moshArgs: [String] {
+        var args: [String] = []
+        var sshCommand = ["ssh"]
+        if let path = identityFile, !path.isEmpty {
+            sshCommand += ["-i", "'\((path as NSString).expandingTildeInPath)'"]
+        }
+        let usingAlias = !(sshAlias?.isEmpty ?? true)
+        if !usingAlias, let port {
+            sshCommand += ["-p", String(port)]
+        }
+        if sshCommand.count > 1 {
+            args.append("--ssh=\(sshCommand.joined(separator: " "))")
+        }
+        if usingAlias {
+            args.append(sshAlias!)
+        } else {
+            args.append(user.map { "\($0)@\(hostname)" } ?? hostname)
+        }
+        return args
+    }
+
     /// Same target as `sshArgs`, but sftp spells the port flag -P.
     var sftpTargetArgs: [String] {
         if let alias = sshAlias, !alias.isEmpty {
@@ -201,7 +228,7 @@ extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
-        case kind, container, kubernetes
+        case kind, container, kubernetes, preferMosh
     }
 
     init(from decoder: Decoder) throws {
@@ -222,6 +249,7 @@ extension SessionEntry: Codable {
         kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .host
         container = try c.decodeIfPresent(ContainerTarget.self, forKey: .container)
         kubernetes = try c.decodeIfPresent(KubernetesTarget.self, forKey: .kubernetes)
+        preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
     }
 }
 

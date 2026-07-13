@@ -142,6 +142,23 @@ struct SessionEditorView: View {
         }
     }
 
+    @ViewBuilder private var moshToggle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle("Connect with mosh", isOn: $draft.preferMosh)
+            if draft.preferMosh {
+                if MoshLocator.isAvailable {
+                    Text("Roams across networks and survives sleep. Needs mosh-server on the host. The file browser and tunnels need plain ssh, so they're unavailable on mosh sessions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("mosh isn't installed — falling back to ssh. Install with: brew install mosh")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
     @ViewBuilder private var runOnConnectField: some View {
         VStack(alignment: .leading, spacing: 2) {
             TextField("Run on connect", text: runOnConnectBinding,
@@ -217,6 +234,7 @@ struct SessionEditorView: View {
                 switch draft.kind {
                 case .host:
                     sshFields
+                    moshToggle
                     passwordFields
                     runOnConnectField
                 case .container:

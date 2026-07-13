@@ -262,11 +262,26 @@ final class SessionManager: ObservableObject {
                                       entry: entry, appearance: appearance, logger: logger)
         } else {
             // ControlMaster options so this interactive session becomes the
-            // multiplexing master the SFTP pane piggybacks on.
-            let args = SSHControl.options + entry.sshArgs
+            // multiplexing master the SFTP pane piggybacks on. mosh (when
+            // asked for and installed) runs its own ssh bootstrap and skips
+            // ControlMaster — the file pane is disabled for mosh sessions.
+            let executable: String
+            let args: [String]
+            if entry.preferMosh, let mosh = MoshLocator.find() {
+                executable = mosh
+                args = entry.moshArgs
+            } else {
+                if entry.preferMosh {
+                    NSLog("Portside: mosh requested for \(entry.name) but not installed; using ssh")
+                }
+                executable = "/usr/bin/ssh"
+                args = SSHControl.options + entry.sshArgs
+            }
 
             // If the host has a saved password, set up the askpass helper so ssh
             // auto-authenticates; otherwise it just prompts in the terminal.
+            // (mosh's bootstrap ssh inherits the same environment, so saved
+            // passwords work there too.)
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
             var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
@@ -276,7 +291,7 @@ final class SessionManager: ObservableObject {
                 expireSecret = injected.expireSecret
                 cleanup = injected.cleanup
             }
-            session = TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
+            session = TerminalSession(title: entry.name, executable: executable, args: args,
                                       entry: entry, appearance: appearance,
                                       environment: environment, expireSecret: expireSecret,
                                       cleanup: cleanup, logger: logger)
