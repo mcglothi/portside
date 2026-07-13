@@ -9,10 +9,16 @@ enum LogManager {
     // MARK: - Layout
 
     /// Folder name for a host: prefer the real hostname, then an ssh alias,
-    /// then the display name. Sanitized for the filesystem.
+    /// then the display name; serial sessions key on the device so one
+    /// console cable's sessions gather together. Sanitized for the filesystem.
     static func hostKey(for entry: SessionEntry) -> String {
-        let raw = !entry.hostname.isEmpty ? entry.hostname
-            : (entry.sshAlias?.isEmpty == false ? entry.sshAlias! : entry.name)
+        let raw: String
+        if entry.kind == .serial, let device = entry.serial?.deviceName, !device.isEmpty {
+            raw = device
+        } else {
+            raw = !entry.hostname.isEmpty ? entry.hostname
+                : (entry.sshAlias?.isEmpty == false ? entry.sshAlias! : entry.name)
+        }
         let allowed = CharacterSet(charactersIn:
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
         let cleaned = String(raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })

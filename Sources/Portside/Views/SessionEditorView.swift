@@ -15,6 +15,8 @@ struct SessionEditorView: View {
     // optional target is nil; only the active kind's copy is saved back.
     @State private var container: ContainerTarget
     @State private var kubernetes: KubernetesTarget
+    @State private var serial: SerialTarget
+    @State private var availableDevices: [String] = []
     @State private var showingPicker = false
     private let isNew: Bool
     private let folders: [String]
@@ -26,6 +28,7 @@ struct SessionEditorView: View {
         _hasSavedPassword = State(initialValue: CredentialStore.password(for: entry.id) != nil)
         _container = State(initialValue: entry.container ?? ContainerTarget())
         _kubernetes = State(initialValue: entry.kubernetes ?? KubernetesTarget())
+        _serial = State(initialValue: entry.serial ?? SerialTarget())
         isNew = entry.name.isEmpty
         self.folders = folders
         self.onComplete = onComplete
@@ -88,6 +91,8 @@ struct SessionEditorView: View {
             return !container.name.trimmingCharacters(in: .whitespaces).isEmpty
         case .kubernetes:
             return !kubernetes.pod.trimmingCharacters(in: .whitespaces).isEmpty
+        case .serial:
+            return !serial.devicePath.isEmpty
         }
     }
 
@@ -198,6 +203,63 @@ struct SessionEditorView: View {
         commandPreview(kubernetes.execCommand)
     }
 
+    @ViewBuilder private var serialFields: some View {
+        Picker("Device", selection: $serial.devicePath) {
+            if serial.devicePath.isEmpty {
+                Text("None").tag("")
+            } else if !availableDevices.contains(serial.devicePath) {
+                // Saved sessions should still show their device even when the
+                // adapter is unplugged right now, rather than silently blank.
+                Text("\(serial.deviceName) (not connected)").tag(serial.devicePath)
+            }
+            ForEach(availableDevices, id: \.self) { path in
+                Text((path as NSString).lastPathComponent).tag(path)
+            }
+        }
+        .onAppear { refreshDevices() }
+        HStack {
+            Text("No devices found — check the cable, or")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .opacity(availableDevices.isEmpty ? 1 : 0)
+            Button("Refresh") { refreshDevices() }
+                .font(.caption)
+        }
+        Picker("Baud", selection: $serial.baudRate) {
+            ForEach(SerialTarget.baudRates, id: \.self) { rate in
+                Text(String(rate)).tag(rate)
+            }
+        }
+        Picker("Data bits", selection: $serial.dataBits) {
+            Text("8").tag(8)
+            Text("7").tag(7)
+        }
+        Picker("Parity", selection: $serial.parity) {
+            ForEach(SerialTarget.Parity.allCases) { p in
+                Text(p.label).tag(p)
+            }
+        }
+        Picker("Stop bits", selection: $serial.stopBits) {
+            Text("1").tag(1)
+            Text("2").tag(2)
+        }
+        Picker("Flow control", selection: $serial.flowControl) {
+            ForEach(SerialTarget.FlowControl.allCases) { f in
+                Text(f.label).tag(f)
+            }
+        }
+        Text("\(serial.summary) — the classic console shorthand (baud, data bits, parity, stop bits).")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func refreshDevices() {
+        availableDevices = SerialPortLocator.list()
+        if serial.devicePath.isEmpty, let first = availableDevices.first {
+            serial.devicePath = first
+        }
+    }
+
     /// The current editor state as an entry, so the picker can list against the
     /// transport and engine/context the user has typed but not yet saved.
     private var draftForPicker: SessionEntry {
@@ -247,6 +309,8 @@ struct SessionEditorView: View {
                     sshFields
                     passwordFields
                     kubernetesFields
+                case .serial:
+                    serialFields
                 }
 
                 Picker("Environment", selection: $draft.environment) {
@@ -273,6 +337,7 @@ struct SessionEditorView: View {
                     // Persist only the active kind's target.
                     draft.container = draft.kind == .container ? container : nil
                     draft.kubernetes = draft.kind == .kubernetes ? kubernetes : nil
+                    draft.serial = draft.kind == .serial ? serial : nil
                     persistCredentials()
                     onComplete(.save(draft))
                     dismiss()

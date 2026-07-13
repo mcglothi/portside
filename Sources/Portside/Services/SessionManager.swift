@@ -7,6 +7,10 @@ import SwiftTerm
 final class LoggingTerminalView: LocalProcessTerminalView {
     var logger: SessionLogger?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+    /// When set, input bytes go here instead of the child pty — the serial
+    /// fd-bridge. Sits below the mirror hook, so MultiExec broadcast works
+    /// on serial sessions the same as on ssh ones.
+    var serialWriter: ((ArraySlice<UInt8>) -> Void)?
     private var suppressInputMirror = false
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
@@ -24,7 +28,11 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         if !suppressInputMirror {
             onUserInput?(data)
         }
-        super.send(source: source, data: data)
+        if let serialWriter {
+            serialWriter(data)
+        } else {
+            super.send(source: source, data: data)
+        }
     }
 
     /// Auto-replies the terminal emits when the host queries it (device
@@ -85,6 +93,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     private var expireSecret: (() -> Void)?
     private var cleanup: (() -> Void)?
     private let logger: SessionLogger?
+    private var serialPort: SerialPort?
 
     init(title: String, executable: String, args: [String], entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
@@ -112,6 +121,57 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
                 self?.expireSecret = nil
             }
         }
+    }
+
+    /// A serial session: no child process — the terminal view talks to the
+    /// device fd through SerialPort. Output still tees through the logger
+    /// (dataReceived) and input through the MultiExec mirror (send), because
+    /// both hooks live on the view, not the process.
+    init(title: String, serial target: SerialTarget, entry: SessionEntry? = nil,
+         appearance: TerminalAppearance = .default,
+         logger: SessionLogger? = nil) {
+        self.title = title
+        self.entry = entry
+        self.logger = logger
+        self.includedInMultiExec = !(entry?.isProtected ?? false)
+        let view = LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.logger = logger
+        self.terminalView = view
+        super.init()
+        terminalView.processDelegate = self
+        apply(appearance: appearance)
+
+        do {
+            let port = try SerialPort(target: target)
+            serialPort = port
+            terminalView.serialWriter = { [weak port] data in port?.write(data) }
+            port.onData = { [weak self] bytes in
+                let copy = Array(bytes)[...]
+                DispatchQueue.main.async { self?.terminalView.dataReceived(slice: copy) }
+            }
+            port.onClosed = { [weak self] message in
+                DispatchQueue.main.async {
+                    guard let self, self.isRunning else { return }
+                    if let message {
+                        self.terminalView.feed(text: "\r\n[portside: \(message)]\r\n")
+                    }
+                    self.logger?.close()
+                    self.isRunning = false
+                }
+            }
+            terminalView.feed(text: "[connected to \(target.deviceName) at \(target.summary)]\r\n")
+        } catch {
+            terminalView.feed(text: "portside: \(error.localizedDescription)\r\n")
+            isRunning = false
+        }
+    }
+
+    /// Releases the transport (closes the device fd so the port frees up
+    /// immediately) and the log. Called when the tab closes.
+    func shutdown() {
+        serialPort?.close()
+        serialPort = nil
+        closeLog()
     }
 
     private func runCleanup() {
@@ -253,7 +313,11 @@ final class SessionManager: ObservableObject {
         let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
         let session: TerminalSession
 
-        if entry.usesLocalTransport {
+        if entry.kind == .serial {
+            // Straight to the device — no child process, no ssh machinery.
+            session = TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
+                                      entry: entry, appearance: appearance, logger: logger)
+        } else if entry.usesLocalTransport {
             // A container/pod that runs on this Mac: a local login shell we
             // then drive into the container. The login shell (-l) gives
             // docker/kubectl/gcloud their usual PATH.
@@ -343,7 +407,7 @@ final class SessionManager: ObservableObject {
     func resetZoom() { selected?.resetZoom(appearance: appearance) }
 
     func close(_ session: TerminalSession) {
-        session.closeLog()
+        session.shutdown()
         sessions.removeAll { $0.id == session.id }
         if selectedID == session.id {
             selectedID = sessions.last?.id

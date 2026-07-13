@@ -167,6 +167,7 @@ private struct QuickConnectRow: View {
                     .font(.caption2)
                     .foregroundStyle(selected ? Color.white : .secondary)
             }
+            TransportBadge(entry: entry)
             EnvironmentBadge(environment: entry.environment)
         }
         .padding(.horizontal, 12)
