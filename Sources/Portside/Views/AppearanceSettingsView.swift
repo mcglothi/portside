@@ -95,7 +95,7 @@ struct AppearanceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 460, idealWidth: 480, minHeight: 560, idealHeight: 640)
+        .frame(minWidth: 460, idealWidth: 480, minHeight: 700, idealHeight: 780)
         .sheet(isPresented: $showingGallery) {
             ThemeGalleryView().environmentObject(store)
         }

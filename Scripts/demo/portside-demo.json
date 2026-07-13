@@ -1,0 +1,172 @@
+{
+  "appearance": {
+    "fontName": "Menlo",
+    "fontSize": 13,
+    "themeName": "Tokyo Night",
+    "foregroundHex": "#C0CAF5",
+    "backgroundHex": "#1A1B26",
+    "cursorHex": "#C0CAF5",
+    "ansiHex": [
+      "#15161E",
+      "#F7768E",
+      "#9ECE6A",
+      "#E0AF68",
+      "#7AA2F7",
+      "#BB9AF7",
+      "#7DCFFF",
+      "#A9B1D6",
+      "#414868",
+      "#F7768E",
+      "#9ECE6A",
+      "#E0AF68",
+      "#7AA2F7",
+      "#BB9AF7",
+      "#7DCFFF",
+      "#C0CAF5"
+    ]
+  },
+  "customThemes": [],
+  "explicitFolders": [
+    "prod",
+    "nonprod",
+    "personal"
+  ],
+  "entries": [
+    {
+      "id": "489367F5-128D-453B-ABE2-86304542BE0B",
+      "name": "web-01",
+      "folder": "prod",
+      "hostname": "web-01.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": false,
+      "kind": "host",
+      "user": "deploy"
+    },
+    {
+      "id": "E4F612DD-18D3-45AA-9572-69E163ADCCAF",
+      "name": "web-02",
+      "folder": "prod",
+      "hostname": "web-02.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": false,
+      "kind": "host",
+      "user": "deploy"
+    },
+    {
+      "id": "D579320E-BC98-4962-9E48-BA39146A25F0",
+      "name": "db-primary",
+      "folder": "prod",
+      "hostname": "db-primary.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": true,
+      "kind": "host",
+      "user": "postgres"
+    },
+    {
+      "id": "DFD7E9C1-2F1F-4A1D-8D7B-CA2F9595327B",
+      "name": "edge-lb",
+      "folder": "prod",
+      "hostname": "edge-lb.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": false,
+      "kind": "host",
+      "user": "ops"
+    },
+    {
+      "id": "25F7E00C-F18F-4C94-BFBC-1117F0BCB02B",
+      "name": "api container",
+      "folder": "prod",
+      "hostname": "web-01.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": false,
+      "kind": "container",
+      "user": "deploy",
+      "container": {
+        "engine": "docker",
+        "name": "acme-api",
+        "shell": "sh",
+        "user": ""
+      }
+    },
+    {
+      "id": "11685BCF-14FA-40C7-B7C7-E51BCD369BDD",
+      "name": "checkout pod",
+      "folder": "prod",
+      "hostname": "",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "prod",
+      "isProtected": false,
+      "kind": "kubernetes",
+      "kubernetes": {
+        "context": "prod-east",
+        "namespace": "shop",
+        "pod": "checkout-7d9f4",
+        "container": "",
+        "shell": "sh"
+      }
+    },
+    {
+      "id": "D4134364-18DB-4B1D-89C1-332F4D0F5625",
+      "name": "staging-web",
+      "folder": "nonprod",
+      "hostname": "web.stg.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "staging",
+      "isProtected": false,
+      "kind": "host",
+      "user": "deploy"
+    },
+    {
+      "id": "07A10942-4F90-4238-BA36-7192F0ED996F",
+      "name": "ci-runner",
+      "folder": "nonprod",
+      "hostname": "runner-01.stg.acme.internal",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "dev",
+      "isProtected": false,
+      "kind": "host",
+      "user": "ci"
+    },
+    {
+      "id": "998F58D0-8E25-44D3-BA0A-D92B7A3F8885",
+      "name": "bastion",
+      "folder": "",
+      "hostname": "",
+      "savePassword": false,
+      "source": "sshConfig",
+      "environment": "none",
+      "isProtected": false,
+      "kind": "host",
+      "user": "ops",
+      "sshAlias": "bastion"
+    },
+    {
+      "id": "EE33E773-4780-4AF7-9CDD-EFF99D82A010",
+      "name": "homelab",
+      "folder": "personal",
+      "hostname": "homelab.local",
+      "savePassword": false,
+      "source": "manual",
+      "environment": "personal",
+      "isProtected": false,
+      "kind": "host",
+      "user": "pi"
+    }
+  ],
+  "forwards": [],
+  "macros": [],
+  "recents": []
+}

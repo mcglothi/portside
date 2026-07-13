@@ -136,7 +136,7 @@ struct FontGalleryView: View {
 
     private func fontSample(family: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("tim@portside:~$ echo ahoy")
+            Text("user@portside:~$ echo ahoy")
             Text("0123456789 !=> -> ~ {} []")
             Text("The quick brown fox jumps over the lazy dog")
         }

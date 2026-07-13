@@ -30,7 +30,7 @@ struct TerminalPreviewView: View {
     // Text concatenation needs `foregroundColor` (returns Text), not
     // `foregroundStyle` (returns some View).
     private var promptLine: Text {
-        Text("tim@portside").foregroundColor(ansi(10))
+        Text("user@portside").foregroundColor(ansi(10))
             + Text(":")
             + Text("~/deploy").foregroundColor(ansi(12)).bold()
             + Text("$ cat main.swift")
