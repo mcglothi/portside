@@ -18,10 +18,10 @@ enum HostEnvironment: String, Codable, CaseIterable, Identifiable {
 
 /// What a session actually drops you into. Host/container/kubernetes share
 /// the same transport (an SSH host, or this Mac for local containers/pods);
-/// only the shell at the far end differs. Serial talks straight to a local
-/// /dev/cu.* device — no child process at all.
+/// only the shell at the far end differs. Serial and telnet have direct
+/// transports — no child process at all.
 enum SessionKind: String, Codable, CaseIterable, Identifiable {
-    case host, container, kubernetes, serial
+    case host, container, kubernetes, serial, telnet
 
     var id: String { rawValue }
 
@@ -31,6 +31,7 @@ enum SessionKind: String, Codable, CaseIterable, Identifiable {
         case .container: return "Container"
         case .kubernetes: return "Kubernetes"
         case .serial: return "Serial Port"
+        case .telnet: return "Telnet"
         }
     }
 
@@ -40,6 +41,7 @@ enum SessionKind: String, Codable, CaseIterable, Identifiable {
         case .container: return "shippingbox"
         case .kubernetes: return "circle.hexagongrid"
         case .serial: return "cable.connector"
+        case .telnet: return "network"
         }
     }
 }
@@ -147,6 +149,20 @@ struct SerialTarget: Codable, Hashable {
     }
 }
 
+/// An unencrypted TCP terminal endpoint. Telnet defaults to its conventional
+/// port while remaining explicit in saved sessions and log paths.
+struct TelnetTarget: Codable, Hashable {
+    var host = ""
+    var port = 23
+
+    /// Network.framework requires a non-zero 16-bit port. Treat a malformed
+    /// value in an older or hand-edited library as the conventional default.
+    var resolvedPort: UInt16 {
+        guard (1...65_535).contains(port) else { return 23 }
+        return UInt16(port)
+    }
+}
+
 struct SessionEntry: Identifiable, Hashable {
     enum Source: String, Codable {
         case manual, sshConfig, mobaxterm
@@ -169,6 +185,7 @@ struct SessionEntry: Identifiable, Hashable {
     var container: ContainerTarget?  // set when kind == .container
     var kubernetes: KubernetesTarget?// set when kind == .kubernetes
     var serial: SerialTarget?        // set when kind == .serial
+    var telnet: TelnetTarget?        // set when kind == .telnet
     var preferMosh = false           // connect with mosh instead of ssh (hosts only)
 
     var icon: String { kind.icon }
@@ -182,11 +199,11 @@ struct SessionEntry: Identifiable, Hashable {
     }
 
     /// The command to send once the transport shell is up: the container/pod
-    /// exec for those kinds, or the host's run-on-connect string. Serial
-    /// reuses run-on-connect (handy for waking a console with a newline).
+    /// exec for those kinds, or the host's run-on-connect string. Direct
+    /// terminal transports reuse it (handy for waking a console with a newline).
     var postConnectCommand: String? {
         switch kind {
-        case .host, .serial:
+        case .host, .serial, .telnet:
             let command = runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (command?.isEmpty ?? true) ? nil : command
         case .container:
@@ -220,6 +237,9 @@ struct SessionEntry: Identifiable, Hashable {
         case .serial:
             guard let serial, !serial.devicePath.isEmpty else { return "no device" }
             return "\(serial.deviceName) · \(serial.summary)"
+        case .telnet:
+            guard let telnet, !telnet.host.isEmpty else { return "no host" }
+            return "\(telnet.host):\(telnet.port)"
         }
     }
 
@@ -290,7 +310,7 @@ extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
-        case kind, container, kubernetes, serial, preferMosh
+        case kind, container, kubernetes, serial, telnet, preferMosh
     }
 
     init(from decoder: Decoder) throws {
@@ -312,6 +332,7 @@ extension SessionEntry: Codable {
         container = try c.decodeIfPresent(ContainerTarget.self, forKey: .container)
         kubernetes = try c.decodeIfPresent(KubernetesTarget.self, forKey: .kubernetes)
         serial = try c.decodeIfPresent(SerialTarget.self, forKey: .serial)
+        telnet = try c.decodeIfPresent(TelnetTarget.self, forKey: .telnet)
         preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
     }
 }

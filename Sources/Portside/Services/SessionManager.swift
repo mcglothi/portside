@@ -7,10 +7,9 @@ import SwiftTerm
 final class LoggingTerminalView: LocalProcessTerminalView {
     var logger: SessionLogger?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
-    /// When set, input bytes go here instead of the child pty — the serial
-    /// fd-bridge. Sits below the mirror hook, so MultiExec broadcast works
-    /// on serial sessions the same as on ssh ones.
-    var serialWriter: ((ArraySlice<UInt8>) -> Void)?
+    /// When set, input bytes go here instead of the child pty. Sits below the
+    /// mirror hook, so MultiExec broadcast works for direct transports too.
+    var transportWriter: ((ArraySlice<UInt8>) -> Void)?
     private var suppressInputMirror = false
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
@@ -28,8 +27,8 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         if !suppressInputMirror {
             onUserInput?(data)
         }
-        if let serialWriter {
-            serialWriter(data)
+        if let transportWriter {
+            transportWriter(data)
         } else {
             super.send(source: source, data: data)
         }
@@ -94,6 +93,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     private var cleanup: (() -> Void)?
     private let logger: SessionLogger?
     private var serialPort: SerialPort?
+    private var telnetPort: TelnetPort?
 
     init(title: String, executable: String, args: [String], entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
@@ -144,7 +144,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         do {
             let port = try SerialPort(target: target)
             serialPort = port
-            terminalView.serialWriter = { [weak port] data in port?.write(data) }
+            terminalView.transportWriter = { [weak port] data in port?.write(data) }
             port.onData = { [weak self] bytes in
                 let copy = Array(bytes)[...]
                 DispatchQueue.main.async { self?.terminalView.dataReceived(slice: copy) }
@@ -166,11 +166,54 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         }
     }
 
+    /// A telnet session: the terminal view writes to a TCP connection and the
+    /// transport filters IAC negotiation before output reaches SwiftTerm.
+    init(title: String, telnet target: TelnetTarget, entry: SessionEntry? = nil,
+         appearance: TerminalAppearance = .default,
+         logger: SessionLogger? = nil) {
+        self.title = title
+        self.entry = entry
+        self.logger = logger
+        self.includedInMultiExec = !(entry?.isProtected ?? false)
+        let view = LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.logger = logger
+        self.terminalView = view
+        super.init()
+        terminalView.processDelegate = self
+        apply(appearance: appearance)
+
+        let port = TelnetPort(target: target)
+        telnetPort = port
+        terminalView.transportWriter = { [weak port] data in port?.write(data) }
+        port.onData = { [weak self] bytes in
+            let copy = Array(bytes)[...]
+            DispatchQueue.main.async { self?.terminalView.dataReceived(slice: copy) }
+        }
+        port.onConnected = { [weak self] in
+            DispatchQueue.main.async {
+                self?.terminalView.feed(text: "[connected to \(target.host):\(target.port) via telnet]\r\n")
+            }
+        }
+        port.onClosed = { [weak self] message in
+            DispatchQueue.main.async {
+                guard let self, self.isRunning else { return }
+                if let message {
+                    self.terminalView.feed(text: "\r\n[portside: \(message)]\r\n")
+                }
+                self.logger?.close()
+                self.isRunning = false
+            }
+        }
+        port.start()
+    }
+
     /// Releases the transport (closes the device fd so the port frees up
     /// immediately) and the log. Called when the tab closes.
     func shutdown() {
         serialPort?.close()
         serialPort = nil
+        telnetPort?.close()
+        telnetPort = nil
         closeLog()
     }
 
@@ -316,6 +359,9 @@ final class SessionManager: ObservableObject {
         if entry.kind == .serial {
             // Straight to the device — no child process, no ssh machinery.
             session = TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
+                                      entry: entry, appearance: appearance, logger: logger)
+        } else if entry.kind == .telnet {
+            session = TerminalSession(title: entry.name, telnet: entry.telnet ?? TelnetTarget(),
                                       entry: entry, appearance: appearance, logger: logger)
         } else if entry.usesLocalTransport {
             // A container/pod that runs on this Mac: a local login shell we

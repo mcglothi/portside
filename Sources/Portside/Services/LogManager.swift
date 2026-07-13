@@ -9,12 +9,14 @@ enum LogManager {
     // MARK: - Layout
 
     /// Folder name for a host: prefer the real hostname, then an ssh alias,
-    /// then the display name; serial sessions key on the device so one
-    /// console cable's sessions gather together. Sanitized for the filesystem.
+    /// then the display name; serial sessions key on the device and telnet
+    /// sessions on host:port. Sanitized for the filesystem.
     static func hostKey(for entry: SessionEntry) -> String {
         let raw: String
         if entry.kind == .serial, let device = entry.serial?.deviceName, !device.isEmpty {
             raw = device
+        } else if entry.kind == .telnet, let target = entry.telnet, !target.host.isEmpty {
+            raw = "\(target.host):\(target.port)"
         } else {
             raw = !entry.hostname.isEmpty ? entry.hostname
                 : (entry.sshAlias?.isEmpty == false ? entry.sshAlias! : entry.name)

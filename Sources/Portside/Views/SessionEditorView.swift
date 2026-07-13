@@ -16,6 +16,7 @@ struct SessionEditorView: View {
     @State private var container: ContainerTarget
     @State private var kubernetes: KubernetesTarget
     @State private var serial: SerialTarget
+    @State private var telnet: TelnetTarget
     @State private var availableDevices: [String] = []
     @State private var showingPicker = false
     private let isNew: Bool
@@ -29,6 +30,7 @@ struct SessionEditorView: View {
         _container = State(initialValue: entry.container ?? ContainerTarget())
         _kubernetes = State(initialValue: entry.kubernetes ?? KubernetesTarget())
         _serial = State(initialValue: entry.serial ?? SerialTarget())
+        _telnet = State(initialValue: entry.telnet ?? TelnetTarget())
         isNew = entry.name.isEmpty
         self.folders = folders
         self.onComplete = onComplete
@@ -93,6 +95,8 @@ struct SessionEditorView: View {
             return !kubernetes.pod.trimmingCharacters(in: .whitespaces).isEmpty
         case .serial:
             return !serial.devicePath.isEmpty
+        case .telnet:
+            return !telnet.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -253,6 +257,14 @@ struct SessionEditorView: View {
             .foregroundStyle(.secondary)
     }
 
+    @ViewBuilder private var telnetFields: some View {
+        TextField("Host", text: $telnet.host, prompt: Text("hostname or IP"))
+        TextField("Port", value: $telnet.port, format: .number)
+        Text("Telnet is unencrypted. Use it only on trusted networks or for legacy console servers.")
+            .font(.caption)
+            .foregroundStyle(.red)
+    }
+
     private func refreshDevices() {
         availableDevices = SerialPortLocator.list()
         if serial.devicePath.isEmpty, let first = availableDevices.first {
@@ -311,6 +323,8 @@ struct SessionEditorView: View {
                     kubernetesFields
                 case .serial:
                     serialFields
+                case .telnet:
+                    telnetFields
                 }
 
                 Picker("Environment", selection: $draft.environment) {
@@ -338,6 +352,7 @@ struct SessionEditorView: View {
                     draft.container = draft.kind == .container ? container : nil
                     draft.kubernetes = draft.kind == .kubernetes ? kubernetes : nil
                     draft.serial = draft.kind == .serial ? serial : nil
+                    draft.telnet = draft.kind == .telnet ? telnet : nil
                     persistCredentials()
                     onComplete(.save(draft))
                     dismiss()
