@@ -20,17 +20,35 @@ final class AskpassInjectorTests: XCTestCase {
         XCTAssertTrue(secret.hasPrefix(stateDir + "/"))
     }
 
-    func testHelperOnlySuppliesSavedPasswordOnceForPasswordPrompt() throws {
-        let injected = try XCTUnwrap(AskpassInjector.environment(for: "secret-password"))
+    func testSecondPasswordPromptFallsBackToDialogNotSavedPassword() throws {
+        let injected = try XCTUnwrap(AskpassInjector.environment(for: "stale-password"))
         defer { injected.cleanup() }
+        let env = try envWithFakeOsascript(injected.env, returning: "typed-password")
 
-        let first = runHelper(injected.env, prompt: "user@example.com's password:")
+        let first = runHelper(env, prompt: "user@example.com's password:")
         XCTAssertEqual(first.status, 0)
-        XCTAssertEqual(first.output, "secret-password\n")
+        XCTAssertEqual(first.output, "stale-password\n")
 
-        let second = runHelper(injected.env, prompt: "user@example.com's password:")
-        XCTAssertNotEqual(second.status, 0)
-        XCTAssertEqual(second.output, "")
+        // Server rejected the saved password; the retry must never repeat it
+        // (auth-attempt burn) but must let the user type the current one.
+        let second = runHelper(env, prompt: "user@example.com's password:")
+        XCTAssertEqual(second.status, 0)
+        XCTAssertEqual(second.output, "typed-password\n")
+    }
+
+    func testExpiredSecretFallsBackToDialogForLatePasswordPrompt() throws {
+        let injected = try XCTUnwrap(AskpassInjector.environment(for: "gone-password"))
+        defer { injected.cleanup() }
+        let env = try envWithFakeOsascript(injected.env, returning: "typed-late")
+
+        injected.expireSecret()
+
+        // The helper must survive secret expiry (30s timer) so prompts on
+        // slow MFA/ProxyJump connections still reach the user.
+        let result = runHelper(env, prompt: "user@example.com's password:")
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.output, "typed-late\n")
+        XCTAssertFalse(result.output.contains("gone-password"))
     }
 
     func testHelperSuppliesPassphrasePrompt() throws {
@@ -45,22 +63,27 @@ final class AskpassInjectorTests: XCTestCase {
     func testMfaPromptFallsBackToDialogInsteadOfSavedPassword() throws {
         let injected = try XCTUnwrap(AskpassInjector.environment(for: "do-not-leak"))
         defer { injected.cleanup() }
+        let env = try envWithFakeOsascript(injected.env, returning: "123456")
 
-        let fakeBin = FileManager.default.temporaryDirectory
-            .appendingPathComponent("portside-askpass-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: fakeBin, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: fakeBin) }
-
-        let fakeOsascript = fakeBin.appendingPathComponent("osascript")
-        try "#!/bin/sh\nprintf '123456\\n'\n".write(to: fakeOsascript, atomically: false, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeOsascript.path)
-
-        var env = injected.env
-        env.append("PATH=\(fakeBin.path):/usr/bin:/bin")
         let result = runHelper(env, prompt: "Verification code:")
 
         XCTAssertEqual(result.status, 0)
         XCTAssertEqual(result.output, "123456\n")
+    }
+
+    /// Prepends a fake `osascript` to PATH so dialog fallbacks are testable
+    /// (and tests never pop real dialogs).
+    private func envWithFakeOsascript(_ pairs: [String], returning answer: String) throws -> [String] {
+        let fakeBin = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-askpass-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fakeBin, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: fakeBin) }
+
+        let fakeOsascript = fakeBin.appendingPathComponent("osascript")
+        try "#!/bin/sh\nprintf '%s\\n' '\(answer)'\n".write(to: fakeOsascript, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeOsascript.path)
+
+        return pairs + ["PATH=\(fakeBin.path):/usr/bin:/bin"]
     }
 
     private func envDictionary(_ pairs: [String]) -> [String: String] {

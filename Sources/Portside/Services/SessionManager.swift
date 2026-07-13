@@ -14,6 +14,12 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         super.dataReceived(slice: slice)
     }
 
+    /// Everything written to the pty funnels through this delegate method:
+    /// keyboard/paste/IME input, but also programmatic sends (`send(txt:)`)
+    /// and the terminal's own query responses. Only genuine user input may
+    /// mirror to MultiExec peers — the other paths suppress themselves,
+    /// otherwise a broadcast command re-mirrors from every target (running
+    /// N× per host) and DA/DSR auto-replies get typed into peers as garbage.
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if !suppressInputMirror {
             onUserInput?(data)
@@ -21,9 +27,26 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         super.send(source: source, data: data)
     }
 
+    /// Auto-replies the terminal emits when the host queries it (device
+    /// attributes, cursor position) are not user input.
+    override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        withMirrorSuppressed { super.send(source: source, data: data) }
+    }
+
+    /// App-generated text (broadcast bar, macros, post-connect commands).
+    /// Callers that fan out to several sessions do so themselves.
+    func sendProgrammatic(_ txt: String) {
+        withMirrorSuppressed { send(txt: txt) }
+    }
+
+    /// Input arriving from a MultiExec peer; must not mirror back out.
     func sendMirroredInput(_ data: ArraySlice<UInt8>) {
+        withMirrorSuppressed { super.send(source: self, data: data) }
+    }
+
+    private func withMirrorSuppressed(_ body: () -> Void) {
         suppressInputMirror = true
-        super.send(source: self, data: data)
+        body()
         suppressInputMirror = false
     }
 }
@@ -32,7 +55,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 /// (either `ssh` or a local login shell) running inside it.
 final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
     let id = UUID()
-    let terminalView: LocalProcessTerminalView
+    let terminalView: LoggingTerminalView
     let entry: SessionEntry?
     @Published var title: String
     @Published var isRunning = true
@@ -56,16 +79,21 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         return _sftp
     }
 
-    /// Removes any on-disk askpass secret once ssh no longer needs it.
+    /// Shreds the on-disk askpass password once ssh has had its chance —
+    /// the helper script stays alive for late interactive prompts (slow MFA,
+    /// ProxyJump hops), which `cleanup` removes when the process exits.
+    private var expireSecret: (() -> Void)?
     private var cleanup: (() -> Void)?
     private let logger: SessionLogger?
 
     init(title: String, executable: String, args: [String], entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
-         environment: [String]? = nil, cleanup: (() -> Void)? = nil,
+         environment: [String]? = nil,
+         expireSecret: (() -> Void)? = nil, cleanup: (() -> Void)? = nil,
          logger: SessionLogger? = nil) {
         self.title = title
         self.entry = entry
+        self.expireSecret = expireSecret
         self.cleanup = cleanup
         self.logger = logger
         // Protected hosts must be opted in to MultiExec explicitly.
@@ -77,13 +105,18 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.processDelegate = self
         apply(appearance: appearance)
         terminalView.startProcess(executable: executable, args: args, environment: environment)
-        // Bound how long the secret lives on disk even if auth stalls.
-        if cleanup != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.runCleanup() }
+        // Bound how long the password lives on disk even if auth stalls.
+        if expireSecret != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                self?.expireSecret?()
+                self?.expireSecret = nil
+            }
         }
     }
 
     private func runCleanup() {
+        expireSecret?()
+        expireSecret = nil
         cleanup?()
         cleanup = nil
     }
@@ -94,15 +127,11 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     }
 
     func sendText(_ text: String) {
-        terminalView.send(txt: text)
+        terminalView.sendProgrammatic(text)
     }
 
     func sendMirroredInput(_ data: ArraySlice<UInt8>) {
-        if let view = terminalView as? LoggingTerminalView {
-            view.sendMirroredInput(data)
-        } else {
-            terminalView.send(txt: String(decoding: data, as: UTF8.self))
-        }
+        terminalView.sendMirroredInput(data)
     }
 
     // MARK: - Find (⌘F)
@@ -239,15 +268,18 @@ final class SessionManager: ObservableObject {
             // If the host has a saved password, set up the askpass helper so ssh
             // auto-authenticates; otherwise it just prompts in the terminal.
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
+            var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
             if entry.savePassword, let password = CredentialStore.password(for: entry.id),
                let injected = AskpassInjector.environment(for: password) {
                 environment += injected.env
+                expireSecret = injected.expireSecret
                 cleanup = injected.cleanup
             }
             session = TerminalSession(title: entry.name, executable: "/usr/bin/ssh", args: args,
                                       entry: entry, appearance: appearance,
-                                      environment: environment, cleanup: cleanup, logger: logger)
+                                      environment: environment, expireSecret: expireSecret,
+                                      cleanup: cleanup, logger: logger)
         }
         add(session)
 
@@ -327,11 +359,9 @@ final class SessionManager: ObservableObject {
     }
 
     private func add(_ session: TerminalSession) {
-        if let view = session.terminalView as? LoggingTerminalView {
-            view.onUserInput = { [weak self, weak session] data in
-                guard let self, let session else { return }
-                self.mirrorUserInput(data, from: session)
-            }
+        session.terminalView.onUserInput = { [weak self, weak session] data in
+            guard let self, let session else { return }
+            self.mirrorUserInput(data, from: session)
         }
         sessions.append(session)
         selectedID = session.id

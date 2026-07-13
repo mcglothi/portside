@@ -52,8 +52,12 @@ enum CredentialStore {
 /// 0600 file we point it at, so the secret never appears in the process's
 /// environment or argv.
 enum AskpassInjector {
-    /// The env additions plus a cleanup closure that removes the on-disk secret.
-    static func environment(for password: String) -> (env: [String], cleanup: () -> Void)? {
+    /// The env additions plus two teardown stages: `expireSecret` shreds just
+    /// the password file (safe to run early — the helper script survives so
+    /// late interactive prompts still get the dialog), and `cleanup` removes
+    /// the whole per-connection dir once ssh has exited.
+    static func environment(for password: String)
+        -> (env: [String], expireSecret: () -> Void, cleanup: () -> Void)? {
         guard !password.isEmpty else { return nil }
         do {
             let dir = try makePrivateDir()
@@ -68,8 +72,9 @@ enum AskpassInjector {
                 "PORTSIDE_ASKPASS_STATE_DIR=\(dir.path)",
                 "DISPLAY=:0",   // harmless; older ssh required it for askpass
             ]
+            let expireSecret = { _ = try? FileManager.default.removeItem(at: secretFile) }
             let cleanup = { _ = try? FileManager.default.removeItem(at: dir) }
-            return (env, cleanup)
+            return (env, expireSecret, cleanup)
         } catch {
             NSLog("Portside: askpass setup failed: \(error)")
             return nil
@@ -127,17 +132,23 @@ prompt="${1:-}"
 state_dir="${PORTSIDE_ASKPASS_STATE_DIR:-$(dirname "$PORTSIDE_ASKPASS_FILE")}"
 attempt_file="$state_dir/password-attempted"
 
+# The saved secret answers the first password/passphrase prompt, exactly
+# once — a second prompt means the server rejected it, and blind retries
+# just burn auth attempts (fail2ban). Capped or already-expired secrets
+# fall through to the dialog so the user can type the right one.
 if printf '%s\\n' "$prompt" | grep -Eiq '(^|[^[:alpha:]])(password|passphrase)([^[:alpha:]]|$)'; then
-    if [ -e "$attempt_file" ]; then
-        exit 1
+    if [ ! -e "$attempt_file" ] && [ -r "$PORTSIDE_ASKPASS_FILE" ]; then
+        : > "$attempt_file" && cat "$PORTSIDE_ASKPASS_FILE" && exit 0
     fi
-    : > "$attempt_file" || exit 1
-    cat "$PORTSIDE_ASKPASS_FILE"
-    exit $?
 fi
 
+# Interactive fallback: MFA codes, host-key confirmations, rejected or
+# expired passwords. Input is hidden unless this is a yes/no confirmation
+# (the prompt text rides an env var to keep it out of AppleScript source).
+hidden="with hidden answer"
+case "$prompt" in *yes/no*) hidden="" ;; esac
 export PORTSIDE_ASKPASS_PROMPT="$prompt"
-answer="$(osascript -e 'set promptText to system attribute "PORTSIDE_ASKPASS_PROMPT"' -e 'text returned of (display dialog promptText default answer "" with title "Portside SSH Prompt" buttons {"Cancel", "OK"} default button "OK" cancel button "Cancel")' 2>/dev/null)" || exit 1
+answer="$(osascript -e 'set promptText to system attribute "PORTSIDE_ASKPASS_PROMPT"' -e "text returned of (display dialog promptText default answer \\"\\" with title \\"Portside SSH Prompt\\" buttons {\\"Cancel\\", \\"OK\\"} default button \\"OK\\" cancel button \\"Cancel\\" $hidden)" 2>/dev/null)" || exit 1
 printf '%s\\n' "$answer"
 """
 }
