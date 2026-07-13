@@ -6,10 +6,25 @@ import SwiftTerm
 /// before feeding it to the terminal.
 final class LoggingTerminalView: LocalProcessTerminalView {
     var logger: SessionLogger?
+    var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+    private var suppressInputMirror = false
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         logger?.append(slice)
         super.dataReceived(slice: slice)
+    }
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if !suppressInputMirror {
+            onUserInput?(data)
+        }
+        super.send(source: source, data: data)
+    }
+
+    func sendMirroredInput(_ data: ArraySlice<UInt8>) {
+        suppressInputMirror = true
+        super.send(source: self, data: data)
+        suppressInputMirror = false
     }
 }
 
@@ -80,6 +95,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     func sendText(_ text: String) {
         terminalView.send(txt: text)
+    }
+
+    func sendMirroredInput(_ data: ArraySlice<UInt8>) {
+        if let view = terminalView as? LoggingTerminalView {
+            view.sendMirroredInput(data)
+        } else {
+            terminalView.send(txt: String(decoding: data, as: UTF8.self))
+        }
     }
 
     // MARK: - Find (⌘F)
@@ -168,11 +191,6 @@ final class SessionManager: ObservableObject {
     private var keyMonitor: Any?
 
     init() {
-        // MobaXterm-style MultiExec: while armed, a keystroke typed into any
-        // included terminal is mirrored to every other included terminal.
-        // Peers get the translated byte sequence written to their ptys —
-        // forwarding the NSEvent itself doesn't work because text input
-        // routes through the focused view's input context.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
 
@@ -183,18 +201,6 @@ final class SessionManager: ObservableObject {
                let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
                 DispatchQueue.main.async { self.close(dead) }
                 return nil
-            }
-
-            guard self.multiExecActive,
-                  !event.modifierFlags.contains(.command),
-                  let focused = event.window?.firstResponder as? LocalProcessTerminalView,
-                  let focusedSession = self.sessions.first(where: { $0.terminalView === focused }),
-                  focusedSession.includedInMultiExec,
-                  let bytes = Self.terminalSequence(for: event)
-            else { return event }
-
-            for peer in self.multiExecTargets where peer.terminalView !== focused {
-                peer.sendText(bytes)
             }
             return event
         }
@@ -321,36 +327,23 @@ final class SessionManager: ObservableObject {
     }
 
     private func add(_ session: TerminalSession) {
+        if let view = session.terminalView as? LoggingTerminalView {
+            view.onUserInput = { [weak self, weak session] data in
+                guard let self, let session else { return }
+                self.mirrorUserInput(data, from: session)
+            }
+        }
         sessions.append(session)
         selectedID = session.id
     }
 
-    /// Translates a key event into the byte sequence a terminal would send.
-    /// Plain characters and control combos come through in `characters`
-    /// already encoded (⌃C is \u{03}); function keys arrive as private-use
-    /// scalars and need mapping to their escape sequences.
-    private static func terminalSequence(for event: NSEvent) -> String? {
-        guard let chars = event.characters, !chars.isEmpty,
-              let scalar = chars.unicodeScalars.first
-        else { return nil }
-
-        guard (0xF700...0xF8FF).contains(scalar.value) else { return chars }
-
-        switch Int(scalar.value) {
-        case NSUpArrowFunctionKey: return "\u{1B}[A"
-        case NSDownArrowFunctionKey: return "\u{1B}[B"
-        case NSRightArrowFunctionKey: return "\u{1B}[C"
-        case NSLeftArrowFunctionKey: return "\u{1B}[D"
-        case NSHomeFunctionKey: return "\u{1B}[H"
-        case NSEndFunctionKey: return "\u{1B}[F"
-        case NSPageUpFunctionKey: return "\u{1B}[5~"
-        case NSPageDownFunctionKey: return "\u{1B}[6~"
-        case NSDeleteFunctionKey: return "\u{1B}[3~"
-        case NSF1FunctionKey: return "\u{1B}OP"
-        case NSF2FunctionKey: return "\u{1B}OQ"
-        case NSF3FunctionKey: return "\u{1B}OR"
-        case NSF4FunctionKey: return "\u{1B}OS"
-        default: return nil
+    /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty.
+    /// This catches paste and composed text paths that NSEvent-only mirroring
+    /// misses, while `sendMirroredInput` prevents feedback loops in peers.
+    private func mirrorUserInput(_ data: ArraySlice<UInt8>, from focused: TerminalSession) {
+        guard multiExecActive, focused.includedInMultiExec else { return }
+        for peer in multiExecTargets where peer !== focused {
+            peer.sendMirroredInput(data)
         }
     }
 }
