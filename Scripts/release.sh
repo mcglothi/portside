@@ -60,3 +60,4 @@ gh release create "v$VERSION" \
 
 echo "==> Done. Installed apps will see v$VERSION on their next update check."
 echo "    Reinstall locally with: cp -R build/Portside.app /Applications/"
+echo "    Homebrew cask bump:     version \"$VERSION\" / sha256 \"$(shasum -a 256 "$ZIP" | cut -d' ' -f1)\""

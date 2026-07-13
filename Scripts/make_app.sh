@@ -85,8 +85,20 @@ PLIST
 # EdDSA signature). Sign nested code first, then the app.
 SIGN_IDENTITY="${PORTSIDE_SIGN_IDENTITY:-}"
 if [ -n "$SIGN_IDENTITY" ]; then
-    codesign --force --options runtime --deep --sign "$SIGN_IDENTITY" \
-        "$APP/Contents/Frameworks/Sparkle.framework"
+    # Sparkle's documented order: its nested XPC services and helpers first
+    # (--deep is deprecated and mis-signs them), then the framework, then us.
+    SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+    # XPC services only exist in sandboxed distributions; SPM's is empty.
+    for XPC in "$SPARKLE/Versions/B/XPCServices/"*.xpc; do
+        [ -e "$XPC" ] || continue
+        codesign --force --options runtime --preserve-metadata=entitlements \
+            --sign "$SIGN_IDENTITY" "$XPC"
+    done
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+        "$SPARKLE/Versions/B/Autoupdate"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+        "$SPARKLE/Versions/B/Updater.app"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$SPARKLE"
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP"
     echo "Built $APP (version ${VERSION}, build ${BUILD}) — Developer ID: $SIGN_IDENTITY"
 else

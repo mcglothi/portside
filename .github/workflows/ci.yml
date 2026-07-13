@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build
+      - name: Verify bundled themes resource
+        run: |
+          python3 - <<'EOF'
+          import json
+          themes = json.load(open("Sources/Portside/Resources/BundledThemes.json"))
+          assert len(themes) >= 30, f"expected >=30 themes, got {len(themes)}"
+          for t in themes:
+              assert len(t["ansi"]) == 16, f"{t['name']}: ansi palette must have 16 entries"
+              for key in ("foreground", "background", "cursor"):
+                  assert t[key].startswith("#") and len(t[key]) == 7, f"{t['name']}: bad {key}"
+          print(f"OK: {len(themes)} themes validated")
+          EOF
