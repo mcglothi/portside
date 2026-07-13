@@ -11,6 +11,17 @@ the OpenSSH you already have configured.
 
 > Early days, moving fast. Built on the coast of Maine. ⛵
 
+## Install
+
+Grab the latest notarized build from [Releases](https://github.com/mcglothi/portside/releases/latest), or:
+
+```sh
+brew install mcglothi/tap/portside
+```
+
+Builds are Developer ID signed and notarized by Apple, and keep themselves
+current via Sparkle. Requires macOS 14+.
+
 ![Portside's session library — hosts, containers, and Kubernetes pods organized in folders with environment badges](docs/screenshots/library.png)
 
 *One foldered library for hosts, containers, and Kubernetes pods — with prod/nonprod environment badges.*

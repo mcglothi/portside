@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portside — a native macOS workbench for people who live on SSH</title>
+<meta name="description" content="Portside is a fast, native macOS SSH session manager and terminal: foldered session library, multi-host broadcast with guardrails, SFTP, port forwarding, containers and Kubernetes — no Electron.">
+<meta property="og:title" content="Portside — native macOS SSH workbench">
+<meta property="og:description" content="Session library, MultiExec with safety UX, SFTP, themes and Nerd Fonts galleries. SwiftUI + OpenSSH, no Electron.">
+<meta property="og:image" content="https://mcglothi.github.io/portside/screenshots/library.png">
+<style>
+  :root {
+    --bg: #16161e;
+    --bg-panel: #1a1b26;
+    --bg-raise: #24283b;
+    --fg: #c0caf5;
+    --fg-dim: #787fa5;
+    --accent: #7aa2f7;
+    --green: #9ece6a;
+    --border: #2c3047;
+    --radius: 10px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  code, .mono { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 0;
+  }
+  .brand { font-weight: 700; font-size: 20px; color: var(--fg); }
+  .brand span { color: var(--accent); }
+  nav a { margin-left: 20px; color: var(--fg-dim); font-size: 15px; }
+  nav a:hover { color: var(--fg); text-decoration: none; }
+
+  .hero { text-align: center; padding: 56px 0 40px; }
+  .hero h1 {
+    font-size: clamp(30px, 5vw, 46px); line-height: 1.15;
+    letter-spacing: -0.02em; margin-bottom: 16px;
+  }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero p.sub {
+    color: var(--fg-dim); font-size: 19px; max-width: 640px; margin: 0 auto 32px;
+  }
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block; padding: 12px 24px; border-radius: var(--radius);
+    font-weight: 600; font-size: 16px;
+  }
+  .btn-primary { background: var(--accent); color: #16161e; }
+  .btn-primary:hover { filter: brightness(1.1); text-decoration: none; }
+  .btn-ghost { border: 1px solid var(--border); color: var(--fg); }
+  .btn-ghost:hover { border-color: var(--fg-dim); text-decoration: none; }
+  .brew {
+    margin-top: 18px; display: inline-block; background: var(--bg-panel);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 18px; font-size: 14px; color: var(--green);
+  }
+  .brew::before { content: "$ "; color: var(--fg-dim); }
+  .fineprint { margin-top: 14px; color: var(--fg-dim); font-size: 13px; }
+
+  .shot { margin: 44px auto 0; }
+  .shot img {
+    width: 100%; border-radius: 12px; border: 1px solid var(--border);
+    box-shadow: 0 24px 80px rgba(0,0,0,.55);
+  }
+
+  section.features { padding: 72px 0 24px; }
+  h2.section {
+    text-align: center; font-size: 28px; margin-bottom: 40px; letter-spacing: -0.01em;
+  }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px;
+  }
+  .card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px;
+  }
+  .card h3 { font-size: 17px; margin-bottom: 8px; color: var(--fg); }
+  .card p { color: var(--fg-dim); font-size: 15px; }
+  .card .glyph { font-size: 22px; display: block; margin-bottom: 10px; }
+
+  section.gallery { padding: 56px 0; }
+  .pair {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px;
+  }
+  @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+  .pair figure img, .single img {
+    width: 100%; border-radius: 10px; border: 1px solid var(--border);
+  }
+  figcaption { color: var(--fg-dim); font-size: 13.5px; margin-top: 8px; text-align: center; }
+
+  footer {
+    border-top: 1px solid var(--border); margin-top: 40px;
+    padding: 32px 0 48px; color: var(--fg-dim); font-size: 14px; text-align: center;
+  }
+  footer a { color: var(--fg-dim); text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">⚓ Port<span>side</span></div>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#gallery">Screenshots</a>
+      <a href="https://github.com/mcglothi/portside">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>A fast, native macOS workbench<br>for people who <em>live on SSH</em>.</h1>
+    <p class="sub">
+      A foldered session library, multi-host broadcast with real guardrails,
+      SFTP, port forwarding, containers and Kubernetes — one native window.
+      SwiftUI and OpenSSH. No Electron, no cloud account.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/mcglothi/portside/releases/latest">Download for macOS</a>
+      <a class="btn btn-ghost" href="https://github.com/mcglothi/portside">View source</a>
+    </div>
+    <div class="brew mono">brew install mcglothi/tap/portside</div>
+    <p class="fineprint">Notarized by Apple · auto-updates via Sparkle · macOS 14+ · MIT licensed</p>
+    <div class="shot">
+      <img src="screenshots/library.png" alt="Portside's session library: hosts, containers, and Kubernetes pods in folders with environment badges">
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <h2 class="section">Built for operators, not just terminals</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="glyph">🗂️</span>
+        <h3>A real session library</h3>
+        <p>Hosts, containers, and Kubernetes pods in nested folders with prod/staging badges. Seeds itself from your <code>~/.ssh/config</code>; imports from MobaXterm.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">📡</span>
+        <h3>MultiExec with guardrails</h3>
+        <p>Broadcast keystrokes across a fleet with a loud armed banner, per-terminal opt-in, and protected hosts that refuse to join uninvited.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">📦</span>
+        <h3>Containers &amp; K8s, first-class</h3>
+        <p>Save a docker/podman container or a kubectl pod like any host — browse live <code>docker ps</code> / <code>get pods</code> instead of remembering churning names.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔁</span>
+        <h3>SFTP &amp; port forwarding</h3>
+        <p>The file browser rides your existing SSH session — no second login — with drag-and-drop transfer. Tunnels managed beside your terminals.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🎨</span>
+        <h3>Themes &amp; Nerd Fonts, built in</h3>
+        <p>31 bundled color schemes plus in-app galleries: browse ~600 themes and the entire Nerd Fonts collection, preview live, install with one click.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔒</span>
+        <h3>Local-first and trustworthy</h3>
+        <p>Your library is a JSON file on your disk. Passwords live in the macOS Keychain. Signed, notarized, auto-updating — and MIT-licensed open source.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="gallery" id="gallery">
+    <h2 class="section">See it in action</h2>
+    <div class="pair">
+      <figure>
+        <img src="screenshots/theme-gallery.png" alt="Theme Gallery: search hundreds of schemes with live preview">
+        <figcaption>Theme Gallery — search ~600 schemes, preview live, install in one click.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/font-gallery.png" alt="Font Gallery: install Nerd Fonts from inside the app">
+        <figcaption>Font Gallery — the Nerd Fonts collection, installed straight into your Mac.</figcaption>
+      </figure>
+    </div>
+    <div class="pair">
+      <figure>
+        <img src="screenshots/multiexec.png" alt="MultiExec broadcasting a command to multiple hosts with safety banner">
+        <figcaption>MultiExec — broadcast with a loud banner and per-terminal opt-in.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/sftp.png" alt="SFTP browser beside the terminal on the same SSH session">
+        <figcaption>SFTP rides the same connection as your shell — no second login.</figcaption>
+      </figure>
+    </div>
+    <div class="pair">
+      <figure>
+        <img src="screenshots/quick-connect.png" alt="Quick Connect fuzzy search palette">
+        <figcaption>⌘K Quick Connect — fuzzy-search hosts, containers, and pods.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/terminal.png" alt="A live SSH session in a native terminal tab">
+        <figcaption>Real terminal tabs over the OpenSSH you already have configured.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      MIT licensed · <a href="https://github.com/mcglothi/portside">GitHub</a> ·
+      <a href="https://github.com/mcglothi/portside/blob/main/SECURITY.md">Security policy</a> ·
+      <a href="https://github.com/mcglothi/portside/releases">Releases</a>
+    </p>
+    <p style="margin-top:8px">Built on the coast of Maine ⛵</p>
+  </footer>
+</div>
+</body>
+</html>
