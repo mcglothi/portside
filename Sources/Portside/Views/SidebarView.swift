@@ -431,6 +431,7 @@ struct SessionRow: View {
                     .foregroundStyle(isSelected ? Color.white : Color.secondary)
                     .help("Protected host")
             }
+            TransportBadge(entry: entry)
             EnvironmentBadge(environment: entry.environment)
         }
         .padding(.vertical, 3)
