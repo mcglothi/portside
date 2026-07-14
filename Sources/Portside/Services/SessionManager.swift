@@ -56,6 +56,20 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         body()
         suppressInputMirror = false
     }
+
+    /// SwiftUI re-parents the persistent terminal view on every tab switch and
+    /// hands it a transient zero frame before the real size arrives. Letting
+    /// that through resizes the terminal to 2×1 — reflowing the whole buffer
+    /// and SIGWINCHing the pty — and immediately back. Shells that don't
+    /// repaint their prompt on SIGWINCH (bash, many remote hosts) are left
+    /// showing the last line as a 1–2 character fragment (issue #9). Dropping
+    /// the degenerate frame makes tab switches side-effect-free: the real
+    /// size lands in the next call, and a same-size re-attach never touches
+    /// the terminal at all.
+    override func setFrameSize(_ newSize: NSSize) {
+        if newSize.width < 1 || newSize.height < 1 { return }
+        super.setFrameSize(newSize)
+    }
 }
 
 /// One live terminal tab: owns the SwiftTerm view and the child process
