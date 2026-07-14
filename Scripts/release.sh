@@ -28,6 +28,7 @@ echo "==> Packaging"
 rm -rf build/updates
 mkdir -p build/updates
 ZIP="build/updates/Portside-$VERSION.zip"
+DMG="build/Portside-$VERSION.dmg"
 ditto -c -k --keepParent build/Portside.app "$ZIP"
 
 # Notarization (only when set up). Requires make_app to have Developer-ID
@@ -45,14 +46,28 @@ else
     echo "==> Skipping notarization (set PORTSIDE_NOTARY_PROFILE + PORTSIDE_SIGN_IDENTITY to enable)"
 fi
 
+# The ZIP remains the Sparkle/Homebrew artifact. The DMG is a separate,
+# Finder-friendly direct download with the conventional Applications alias.
+./Scripts/create_dmg.sh build/Portside.app "$DMG" "Portside"
+if [ -n "$NOTARY_PROFILE" ]; then
+    echo "==> Notarizing disk image"
+    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+    echo "==> Stapling disk image"
+    xcrun stapler staple "$DMG"
+fi
+
 echo "==> Signing + generating appcast"
 "$SPARKLE_BIN/generate_appcast" \
     --download-url-prefix "https://github.com/$REPO/releases/download/v$VERSION/" \
     build/updates/
 
+# Keep the DMG out of generate_appcast: Sparkle consumes the ZIP enclosure.
+mv "$DMG" "build/updates/Portside-$VERSION.dmg"
+
 echo "==> Publishing GitHub release v$VERSION"
 gh release create "v$VERSION" \
     "build/updates/Portside-$VERSION.zip" \
+    "build/updates/Portside-$VERSION.dmg" \
     "build/updates/appcast.xml" \
     --repo "$REPO" \
     --title "Portside $VERSION" \
