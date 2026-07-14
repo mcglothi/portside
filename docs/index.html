@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portside — a native macOS workbench for people who live on SSH</title>
-<meta name="description" content="Portside is a fast, native macOS SSH session manager and terminal: foldered session library, multi-host broadcast with guardrails, SFTP, port forwarding, containers and Kubernetes — no Electron.">
-<meta property="og:title" content="Portside — native macOS SSH workbench">
-<meta property="og:description" content="Session library, MultiExec with safety UX, SFTP, themes and Nerd Fonts galleries. SwiftUI + OpenSSH, no Electron.">
+<title>Portside — a native macOS remote terminal workbench</title>
+<meta name="description" content="Portside is a fast, native macOS remote terminal workbench for SSH, mosh, serial consoles, telnet, containers, and Kubernetes — with MultiExec guardrails, SFTP, and port forwarding.">
+<meta property="og:title" content="Portside — native macOS remote terminal workbench">
+<meta property="og:description" content="SSH, mosh, serial, and telnet sessions in one local-first library, with MultiExec safety UX, SFTP, containers, and Kubernetes.">
 <meta property="og:image" content="https://mcglothi.github.io/portside/screenshots/library.png">
 <style>
   :root {
@@ -18,7 +18,7 @@
     --accent: #7aa2f7;
     --green: #9ece6a;
     --border: #2c3047;
-    --radius: 10px;
+    --radius: 8px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -42,7 +42,7 @@
   .hero { text-align: center; padding: 56px 0 40px; }
   .hero h1 {
     font-size: clamp(30px, 5vw, 46px); line-height: 1.15;
-    letter-spacing: -0.02em; margin-bottom: 16px;
+    letter-spacing: 0; margin-bottom: 12px;
   }
   .hero h1 em { font-style: normal; color: var(--accent); }
   .hero p.sub {
@@ -73,7 +73,7 @@
 
   section.features { padding: 72px 0 24px; }
   h2.section {
-    text-align: center; font-size: 28px; margin-bottom: 40px; letter-spacing: -0.01em;
+    text-align: center; font-size: 28px; margin-bottom: 40px; letter-spacing: 0;
   }
   .grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px;
@@ -92,7 +92,7 @@
   }
   @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
   .pair figure img, .single img {
-    width: 100%; border-radius: 10px; border: 1px solid var(--border);
+    width: 100%; border-radius: 8px; border: 1px solid var(--border);
   }
   figcaption { color: var(--fg-dim); font-size: 13.5px; margin-top: 8px; text-align: center; }
 
@@ -115,20 +115,20 @@
   </header>
 
   <section class="hero">
-    <h1>A fast, native macOS workbench<br>for people who <em>live on SSH</em>.</h1>
+    <h1><em>Portside</em></h1>
     <p class="sub">
-      A foldered session library, multi-host broadcast with real guardrails,
-      SFTP, port forwarding, containers and Kubernetes — one native window.
-      SwiftUI and OpenSSH. No Electron, no cloud account.
+      A native macOS workbench for SSH, mosh, serial consoles, and telnet.
+      Keep hosts, containers, and Kubernetes pods in one foldered library,
+      with MultiExec guardrails, SFTP, and port forwarding close at hand.
     </p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/mcglothi/portside/releases/latest">Download for macOS</a>
       <a class="btn btn-ghost" href="https://github.com/mcglothi/portside">View source</a>
     </div>
     <div class="brew mono">brew install mcglothi/tap/portside</div>
-    <p class="fineprint">Notarized by Apple · auto-updates via Sparkle · macOS 14+ · MIT licensed</p>
+    <p class="fineprint">Portside 0.6 · notarized by Apple · auto-updates via Sparkle · macOS 14+ · MIT licensed</p>
     <div class="shot">
-      <img src="screenshots/library.png" alt="Portside's session library: hosts, containers, and Kubernetes pods in folders with environment badges">
+      <img src="screenshots/library.png" alt="Portside's foldered session library with transport and environment badges">
     </div>
   </section>
 
@@ -138,7 +138,7 @@
       <div class="card">
         <span class="glyph">🗂️</span>
         <h3>A real session library</h3>
-        <p>Hosts, containers, and Kubernetes pods in nested folders with prod/staging badges. Seeds itself from your <code>~/.ssh/config</code>; imports from MobaXterm.</p>
+        <p>SSH and mosh hosts, containers, Kubernetes pods, serial consoles, and telnet endpoints in nested folders with transport and environment badges.</p>
       </div>
       <div class="card">
         <span class="glyph">📡</span>
@@ -156,6 +156,11 @@
         <p>The file browser rides your existing SSH session — no second login — with drag-and-drop transfer. Tunnels managed beside your terminals.</p>
       </div>
       <div class="card">
+        <span class="glyph">🔌</span>
+        <h3>SSH, mosh &amp; console transports</h3>
+        <p>Roam across networks with mosh, bridge directly to <code>/dev/cu.*</code> serial devices, or reach legacy telnet endpoints with a clear unencrypted warning.</p>
+      </div>
+      <div class="card">
         <span class="glyph">🎨</span>
         <h3>Themes &amp; Nerd Fonts, built in</h3>
         <p>31 bundled color schemes plus in-app galleries: browse ~600 themes and the entire Nerd Fonts collection, preview live, install with one click.</p>
@@ -164,6 +169,16 @@
         <span class="glyph">🔒</span>
         <h3>Local-first and trustworthy</h3>
         <p>Your library is a JSON file on your disk. Passwords live in the macOS Keychain. Signed, notarized, auto-updating — and MIT-licensed open source.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">⌘</span>
+        <h3>Quick Connect &amp; recents</h3>
+        <p>Press <code>⌘K</code> to fuzzy-search every saved target, or jump straight back into the sessions you used most recently.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🧾</span>
+        <h3>Macros &amp; session logs</h3>
+        <p>Replay named command sequences in one terminal or across MultiExec, with searchable per-target logs and automatic compression.</p>
       </div>
     </div>
   </section>
@@ -193,7 +208,7 @@
     <div class="pair">
       <figure>
         <img src="screenshots/quick-connect.png" alt="Quick Connect fuzzy search palette">
-        <figcaption>⌘K Quick Connect — fuzzy-search hosts, containers, and pods.</figcaption>
+        <figcaption>⌘K Quick Connect — fuzzy-search every saved target and recent connection.</figcaption>
       </figure>
       <figure>
         <img src="screenshots/terminal.png" alt="A live SSH session in a native terminal tab">
