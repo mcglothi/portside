@@ -304,14 +304,46 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         port.start()
     }
 
-    /// Releases the transport (closes the device fd so the port frees up
-    /// immediately) and the log. Called when the tab closes.
+    /// Releases the transport and the log. Called when the tab closes.
+    ///
+    /// For local-shell/ssh sessions, closing a tab must guarantee the child
+    /// actually goes away, and `terminalView.terminate()` alone doesn't:
+    /// - It only sends SIGTERM, relying on the shell's own graceful-exit path.
+    ///   Reproduced with a plain local shell here: zsh frameworks (oh-my-zsh /
+    ///   powerlevel10k) run async zshexit/EXIT-trap cleanup on SIGTERM that
+    ///   can hang indefinitely — `ps` shows the process stuck in "trying to
+    ///   exit" (STAT `E`) forever, while the exact same pid dies immediately
+    ///   from a bare SIGHUP or SIGKILL. Not something Portside can fix in the
+    ///   user's shell config, so it needs a forceful fallback.
+    /// - Even when the process does eventually exit, SwiftTerm's own reaper
+    ///   (a DispatchSourceProcess watching for `.exit`) is torn down by
+    ///   `LocalProcess.deinit` the moment we drop our last reference — right
+    ///   after this call returns, via `sessions.removeAll`. A delayed exit is
+    ///   then never waited on, so the process sits as a permanent zombie.
+    ///
+    /// So: ask nicely first (terminate(), which also promptly closes the pty
+    /// master), then independently of SwiftTerm's own lifecycle, escalate to
+    /// SIGKILL-ing the whole process group (covers any children the shell
+    /// itself spawned, e.g. a foreground ssh) and reap it ourselves if it's
+    /// still around after a short grace period. The closure only captures the
+    /// plain pid, not self/terminalView, so it doesn't matter that the
+    /// session is gone from `sessions` by the time it runs.
     func shutdown() {
+        let pid = terminalView.process.shellPid
+        terminalView.terminate()
         serialPort?.close()
         serialPort = nil
         telnetPort?.close()
         telnetPort = nil
         closeLog()
+        guard pid != 0 else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4) {
+            if kill(pid, 0) == 0 {
+                kill(-pid, SIGKILL)
+            }
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+        }
     }
 
     private func runCleanup() {
