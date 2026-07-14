@@ -66,6 +66,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Tim McGlothin</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Portside needs local network access to reach mosh servers over UDP on hosts you connect to.</string>
     <key>SUFeedURL</key>
     <string>${FEED_URL}</string>
     <key>SUPublicEDKey</key>
