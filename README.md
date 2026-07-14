@@ -79,7 +79,12 @@ exists to fill that gap without giving up native speed and macOS polish.
   Portside install. Passwords stay in the Keychain and never travel.
 - **Native terminal tabs** — [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
   rendering across OpenSSH, mosh, serial, and telnet sessions. Local shells too
-  (⌘T). Find in scrollback with ⌘F.
+  (⌘T). Find in scrollback with ⌘F, per-tab zoom with ⌘+/−/0. See the tested
+  [compatibility matrix](docs/COMPATIBILITY.md) for exactly what's supported.
+- **Terminal appearance & behavior** — pick from hundreds of built-in themes and
+  Nerd Fonts (or import your own), set a configurable scrollback depth (default
+  10,000 lines), and optionally switch on GPU (Metal) rendering — all in
+  Settings, applied live to open terminals.
 - **Mosh roaming** — opt any SSH host into mosh for sessions that survive sleep
   and network changes. Portside respects your SSH alias, key, port, and saved
   password during bootstrap, and falls back to SSH when mosh is unavailable.
