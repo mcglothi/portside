@@ -114,6 +114,18 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ## Roadmap
 
+### Next release — terminal foundation
+
+- Increase scrollback substantially and make its retention configurable.
+- Enable SwiftTerm's Metal renderer behind a safe preference; benchmark and
+  validate it before making performance claims.
+- Publish a tested terminal-compatibility matrix covering true color, Unicode,
+  links, mouse input, image protocols, and known gaps.
+- Add the highest-value terminal comforts: per-profile font/theme choices and
+  shell integration or prompt markers.
+- Investigate configurable font ligatures, but do not claim support until it is
+  deliberate and tested.
+
 - Session restore / pinned workspaces
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Split panes and pinned layouts
