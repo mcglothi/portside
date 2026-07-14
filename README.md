@@ -116,15 +116,21 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ### Next release — terminal foundation
 
-- Increase scrollback substantially and make its retention configurable.
-- Enable SwiftTerm's Metal renderer behind a safe preference; benchmark and
-  validate it before making performance claims.
-- Publish a tested terminal-compatibility matrix covering true color, Unicode,
-  links, mouse input, image protocols, and known gaps.
+- ✅ Configurable scrollback — retention is now adjustable (Settings → Terminal),
+  defaulting to 10,000 lines.
+- ✅ GPU (Metal) rendering behind a safe, off-by-default preference, with
+  automatic fallback to CoreGraphics. Formal benchmarking still to come before
+  any performance claims.
+- ✅ Tested terminal-compatibility matrix — see
+  [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for observed support across
+  color, Unicode, mouse, links, and image protocols (with the known gaps).
 - Add the highest-value terminal comforts: per-profile font/theme choices and
   shell integration or prompt markers.
-- Investigate configurable font ligatures, but do not claim support until it is
-  deliberate and tested.
+- Font ligatures and inline image protocols (Sixel / iTerm2) are current
+  SwiftTerm limitations, tracked in the compatibility matrix rather than
+  promised here.
+
+### Later
 
 - Session restore / pinned workspaces
 - Touch ID gating for saved credentials (Vaultwarden references later)
