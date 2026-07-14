@@ -70,6 +70,89 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         if newSize.width < 1 || newSize.height < 1 { return }
         super.setFrameSize(newSize)
     }
+
+    // MARK: Selection auto-scroll (issue #7)
+    //
+    // SwiftTerm computes an autoScrollDelta during selection drags but never
+    // schedules the timer that would consume it, so dragging past the top or
+    // bottom edge doesn't scroll. Its mouseDragged/mouseUp are public but not
+    // open, so instead of overriding we watch the app's own mouse events with
+    // a local monitor: while a drag on a focused terminal sits outside the
+    // vertical bounds, a timer scrolls the viewport and re-delivers the last
+    // drag event (mouseDragged is callable) so the selection extends to the
+    // newly revealed rows.
+
+    private var selectionAutoScroll: Timer?
+    private var lastDragEvent: NSEvent?
+
+    private static let selectionAutoScrollMonitor: Void = {
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { event in
+            guard let view = event.window?.firstResponder as? LoggingTerminalView else { return event }
+            if event.type == .leftMouseUp {
+                view.stopSelectionAutoScroll()
+                view.lastDragEvent = nil
+            } else {
+                view.lastDragEvent = event
+                view.updateSelectionAutoScroll(for: event)
+            }
+            return event
+        }
+    }()
+
+    static func installSelectionAutoScrollMonitor() {
+        _ = selectionAutoScrollMonitor
+    }
+
+    private func updateSelectionAutoScroll(for event: NSEvent) {
+        // When the remote app owns the mouse (vim etc.), SwiftTerm reports the
+        // drag to it instead of selecting; don't fight over the viewport.
+        if allowMouseReporting && getTerminal().mouseMode != .off {
+            stopSelectionAutoScroll()
+            return
+        }
+        let loc = convert(event.locationInWindow, from: nil)
+        if loc.y < 0 || loc.y > bounds.height {
+            startSelectionAutoScroll()
+        } else {
+            stopSelectionAutoScroll()
+        }
+    }
+
+    private func startSelectionAutoScroll() {
+        guard selectionAutoScroll == nil else { return }
+        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+            self?.selectionAutoScrollTick()
+        }
+        // Fire during both normal dispatch and mouse-tracking runloop modes.
+        RunLoop.current.add(timer, forMode: .default)
+        RunLoop.current.add(timer, forMode: .eventTracking)
+        selectionAutoScroll = timer
+    }
+
+    private func stopSelectionAutoScroll() {
+        selectionAutoScroll?.invalidate()
+        selectionAutoScroll = nil
+    }
+
+    private func selectionAutoScrollTick() {
+        guard let event = lastDragEvent, window != nil else {
+            stopSelectionAutoScroll()
+            return
+        }
+        let loc = convert(event.locationInWindow, from: nil)
+        // Unflipped coordinates: y grows upward, so above the view means
+        // y > height (scroll back into history) and below means y < 0.
+        if loc.y > bounds.height {
+            scrollUp(lines: min(10, 1 + Int((loc.y - bounds.height) / 20)))
+        } else if loc.y < 0 {
+            scrollDown(lines: min(10, 1 + Int(-loc.y / 20)))
+        } else {
+            stopSelectionAutoScroll()
+            return
+        }
+        // Same pointer position now maps to a different buffer row.
+        mouseDragged(with: event)
+    }
 }
 
 /// One live terminal tab: owns the SwiftTerm view and the child process
@@ -385,6 +468,7 @@ final class SessionManager: ObservableObject {
     private var keyMonitor: Any?
 
     init() {
+        LoggingTerminalView.installSelectionAutoScrollMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
 
