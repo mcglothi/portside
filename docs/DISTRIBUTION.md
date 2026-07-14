@@ -1,14 +1,8 @@
 # Distributing Portside to other people
 
-Today Portside is **ad-hoc signed**. That's fine for you and a few trusted
-people, but anyone who downloads a release will hit Gatekeeper on first launch
-("Apple cannot check it for malicious software") and must approve it manually in
-**System Settings → Privacy & Security → Open Anyway**.
-
-To make it open with no friction, the app must be **Developer ID signed and
-notarized**. The build/release scripts are already wired for this — they just
-need credentials. Until the environment variables below are set, everything
-stays ad-hoc and nothing changes.
+Portside releases should be **Developer ID signed and notarized** so they open
+without a Gatekeeper exception. The release scripts support this distribution
+path, while still allowing ad-hoc signing for local development builds.
 
 ## One-time setup
 
@@ -40,8 +34,12 @@ export PORTSIDE_NOTARY_PROFILE="portside-notary"
 Scripts/release.sh 0.3.0 "What changed"
 ```
 The pipeline will hardened-runtime sign, submit to Apple, wait for the ticket,
-staple it to the app, then publish the stapled zip + appcast. Downloaders get a
-clean first launch.
+staple it to the app, then publish a stapled ZIP, a stapled DMG, and the
+appcast. Downloaders get a clean first launch.
+
+The DMG is the recommended direct download: open it and drag Portside to the
+Applications alias in the Finder window. The ZIP remains the update artifact
+for Sparkle and the Homebrew cask.
 
 ## Notes
 
