@@ -278,6 +278,34 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.caretColor = appearance.cursor
     }
 
+    /// Sets this terminal's scrollback (history) depth. The view is built with
+    /// SwiftTerm's default (500), so we resize the live buffer after the fact.
+    func apply(scrollback lines: Int) {
+        terminalView.getTerminal().changeScrollback(lines)
+    }
+
+    /// Whether this session should render via Metal. Applied lazily once the
+    /// view is in a window (see `applyMetalIfNeeded`), since SwiftTerm requires
+    /// the view to be on-screen before switching renderers.
+    var prefersMetal = false
+    /// Last value we actually pushed to SwiftTerm, so a failed switch (Metal
+    /// unavailable) isn't retried and re-logged on every layout pass.
+    private var metalAppliedFor: Bool?
+
+    /// Switches the SwiftTerm renderer to match `prefersMetal`, but only when
+    /// the view is on-screen. No-op until then and idempotent afterward. Called
+    /// from `TerminalHostingView.updateNSView` and the live settings path.
+    func applyMetalIfNeeded() {
+        guard terminalView.window != nil else { return }
+        guard metalAppliedFor != prefersMetal else { return }
+        metalAppliedFor = prefersMetal
+        do {
+            try terminalView.setUseMetal(prefersMetal)
+        } catch {
+            NSLog("Portside: Metal renderer unavailable, staying on CoreGraphics: \(error)")
+        }
+    }
+
     /// Per-session text zoom (⌘+/⌘-); clamped to a sane range.
     func zoom(by delta: CGFloat) {
         let current = terminalView.font
@@ -316,6 +344,7 @@ final class SessionManager: ObservableObject {
     @Published var showQuickConnect = false
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
+    var terminalSettings = TerminalSettings()
     /// Fires on every host connection (all paths — single, group, MultiExec);
     /// the app wires it to the store's recent-connections history.
     var onConnect: ((SessionEntry) -> Void)?
@@ -446,6 +475,16 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    /// Re-applies terminal behavior (scrollback, renderer) to every open terminal.
+    func applyTerminalSettings(_ terminal: TerminalSettings) {
+        self.terminalSettings = terminal
+        for session in sessions {
+            session.apply(scrollback: terminal.resolvedScrollback)
+            session.prefersMetal = terminal.useMetalRenderer
+            session.applyMetalIfNeeded()
+        }
+    }
+
     // MARK: - Zoom (current session)
 
     func zoomIn() { selected?.zoom(by: 1) }
@@ -488,6 +527,8 @@ final class SessionManager: ObservableObject {
             guard let self, let session else { return }
             self.mirrorUserInput(data, from: session)
         }
+        session.apply(scrollback: terminalSettings.resolvedScrollback)
+        session.prefersMetal = terminalSettings.useMetalRenderer
         sessions.append(session)
         selectedID = session.id
     }

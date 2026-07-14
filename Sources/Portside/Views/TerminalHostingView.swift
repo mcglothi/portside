@@ -10,6 +10,9 @@ struct TerminalHostingView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
+        // The view is in the hierarchy here, so the window is available — the
+        // one moment SwiftTerm needs to switch to the Metal renderer.
+        session.applyMetalIfNeeded()
         guard autoFocus else { return }
         DispatchQueue.main.async {
             nsView.window?.makeFirstResponder(nsView)

@@ -18,6 +18,7 @@ final class SessionStore: ObservableObject {
     /// Fallback user/key applied to sessions that don't specify their own.
     @Published var defaults = ConnectionDefaults()
     @Published var logging = LoggingSettings()
+    @Published var terminal = TerminalSettings()
 
     private struct Document: Codable {
         var entries: [SessionEntry]
@@ -29,6 +30,7 @@ final class SessionStore: ObservableObject {
         var customThemes: [TerminalTheme]?
         var defaults: ConnectionDefaults?
         var logging: LoggingSettings?
+        var terminal: TerminalSettings?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -168,6 +170,11 @@ final class SessionStore: ObservableObject {
 
     func updateLogging(_ logging: LoggingSettings) {
         self.logging = logging
+        save()
+    }
+
+    func updateTerminal(_ terminal: TerminalSettings) {
+        self.terminal = terminal
         save()
     }
 
@@ -342,6 +349,7 @@ final class SessionStore: ObservableObject {
             customThemes = doc.customThemes ?? []
             defaults = doc.defaults ?? ConnectionDefaults()
             logging = doc.logging ?? LoggingSettings()
+            terminal = doc.terminal ?? TerminalSettings()
         } else {
             entries = SSHConfigImporter.importEntries()
             save()
@@ -359,7 +367,8 @@ final class SessionStore: ObservableObject {
             try encoder.encode(Document(entries: entries, macros: macros, forwards: forwards,
                                         recents: recents,
                                         explicitFolders: explicitFolders, appearance: appearance,
-                                        customThemes: customThemes, defaults: defaults, logging: logging))
+                                        customThemes: customThemes, defaults: defaults, logging: logging,
+                                        terminal: terminal))
                 .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")
