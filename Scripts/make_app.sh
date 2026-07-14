@@ -20,8 +20,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/Portside "$APP/Contents/MacOS/Portside"
 
-# SPM resource bundle (bundled themes etc.); Bundle.module finds it via
-# Bundle.main.resourceURL inside the .app.
+# SPM resource bundle (bundled themes etc.); TerminalTheme.resourceBundle
+# looks for it in Contents/Resources. (Not Bundle.module — SwiftPM's generated
+# accessor for executables checks the .app root and the build machine's
+# absolute .build path, then fatalErrors; see the 0.7.0 Settings crash.)
 ditto .build/release/Portside_Portside.bundle "$APP/Contents/Resources/Portside_Portside.bundle"
 
 # Embed Sparkle.framework (with its XPC helpers) and point the binary at it.

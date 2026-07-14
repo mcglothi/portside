@@ -104,8 +104,30 @@ struct TerminalTheme: Codable, Identifiable, Equatable, Hashable {
     /// the .app).
     static let builtIns: [TerminalTheme] = [systemDefault] + bundled
 
+    /// Locates the SwiftPM resource bundle WITHOUT Bundle.module. The accessor
+    /// SwiftPM generates for executable targets traps (fatalError → SIGTRAP)
+    /// when the bundle is missing instead of returning nil, and it looks in
+    /// the wrong place for a packaged .app: Bundle.main.bundleURL (the .app
+    /// root) rather than Contents/Resources where make_app.sh puts it. Its
+    /// only other candidate is the build machine's absolute .build path, so
+    /// 0.7.0 opened Settings fine on the machine that built it and crashed
+    /// on everyone else's.
+    private static let resourceBundle: Bundle? = {
+        let name = "Portside_Portside.bundle"
+        let candidates = [
+            Bundle.main.resourceURL,  // packaged .app: Contents/Resources
+            Bundle.main.bundleURL,    // bare SPM binary: the executable's directory
+        ]
+        for base in candidates {
+            if let base, let bundle = Bundle(url: base.appendingPathComponent(name)) {
+                return bundle
+            }
+        }
+        return nil
+    }()
+
     private static let bundled: [TerminalTheme] = {
-        guard let url = Bundle.module.url(forResource: "BundledThemes", withExtension: "json"),
+        guard let url = resourceBundle?.url(forResource: "BundledThemes", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let themes = try? JSONDecoder().decode([TerminalTheme].self, from: data),
               !themes.isEmpty else {
