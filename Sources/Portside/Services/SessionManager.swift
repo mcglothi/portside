@@ -477,7 +477,6 @@ final class SessionManager: ObservableObject {
     /// every tab is a single leaf; splitting (0.9) grows the trees.
     @Published var tabs: [Tab] = []
     @Published var selectedTabID: UUID? { didSet { notifyWorkspaceChanged() } }
-    @Published var multiExecActive = false
     @Published var filesPaneVisible = false
     @Published var showQuickConnect = false
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
@@ -568,28 +567,32 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    var multiExecTargets: [TerminalSession] {
-        sessions.filter { $0.includedInMultiExec && $0.isRunning }
+    func connect(to entry: SessionEntry) {
+        let session = makeSession(for: entry)
+        add(session)
+        postConnect(session, entry: entry)
     }
 
-    func connect(to entry: SessionEntry) {
+    /// Builds a session for an entry (transport, logging, saved-password
+    /// askpass) without placing it in a tab — so a group can be assembled into
+    /// a single split tab.
+    private func makeSession(for entry: SessionEntry) -> TerminalSession {
         let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
-        let session: TerminalSession
 
         if entry.kind == .serial {
             // Straight to the device — no child process, no ssh machinery.
-            session = TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
+                                   entry: entry, appearance: appearance, logger: logger)
         } else if entry.kind == .telnet {
-            session = TerminalSession(title: entry.name, telnet: entry.telnet ?? TelnetTarget(),
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, telnet: entry.telnet ?? TelnetTarget(),
+                                   entry: entry, appearance: appearance, logger: logger)
         } else if entry.usesLocalTransport {
             // A container/pod that runs on this Mac: a local login shell we
             // then drive into the container. The login shell (-l) gives
             // docker/kubectl/gcloud their usual PATH.
             let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            session = TerminalSession(title: entry.name, executable: shell, args: ["-l"],
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, executable: shell, args: ["-l"],
+                                   entry: entry, appearance: appearance, logger: logger)
         } else {
             // ControlMaster options so this interactive session becomes the
             // multiplexing master the SFTP pane piggybacks on. mosh (when
@@ -621,18 +624,19 @@ final class SessionManager: ObservableObject {
                 expireSecret = injected.expireSecret
                 cleanup = injected.cleanup
             }
-            session = TerminalSession(title: entry.name, executable: executable, args: args,
-                                      entry: entry, appearance: appearance,
-                                      environment: environment, expireSecret: expireSecret,
-                                      cleanup: cleanup, logger: logger)
+            return TerminalSession(title: entry.name, executable: executable, args: args,
+                                   entry: entry, appearance: appearance,
+                                   environment: environment, expireSecret: expireSecret,
+                                   cleanup: cleanup, logger: logger)
         }
-        add(session)
+    }
 
-        // Post-connect command: the container/pod exec for those kinds, or a
-        // host's run-on-connect. Fired once the shell has had a moment to come
-        // up — shells buffer stdin, so a slightly early send still runs at the
-        // first prompt; only an interactive password prompt (no saved
-        // credential) would swallow it, hence the editor's note.
+    /// Sends the post-connect command (container/pod exec, or a host's
+    /// run-on-connect) once the shell has had a moment to come up, and records
+    /// the connection. Shells buffer stdin, so a slightly early send still runs
+    /// at the first prompt; only an interactive password prompt (no saved
+    /// credential) would swallow it, hence the editor's note.
+    private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
         if let command = entry.postConnectCommand {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
                 session?.sendText(command + "\r")
@@ -699,13 +703,63 @@ final class SessionManager: ObservableObject {
         close(session)
     }
 
-    /// Opens several hosts at once, optionally arming MultiExec so keystrokes
-    /// broadcast to the whole group — the "launch a group and drive them
-    /// together" workflow. Entries should already be resolved (defaults applied).
+    /// Opens several hosts at once. With `multiExec`, they open as one tab split
+    /// into a grid and armed for broadcast — the "launch a group and drive them
+    /// together" workflow; otherwise each opens as its own tab. Entries should
+    /// already be resolved (defaults applied).
     func connectAll(_ entries: [SessionEntry], multiExec: Bool) {
         guard !entries.isEmpty else { return }
-        for entry in entries { connect(to: entry) }
-        if multiExec { multiExecActive = true }
+        if multiExec {
+            openGroupTab(entries)
+        } else {
+            for entry in entries { connect(to: entry) }
+        }
+    }
+
+    /// Opens a group of hosts as a single tab, arranged in a grid and armed for
+    /// broadcast.
+    private func openGroupTab(_ entries: [SessionEntry]) {
+        let created = entries.map { makeSession(for: $0) }
+        created.forEach(prepare)
+        let tab = Tab(root: gridTree(of: created), activePaneID: created[0].id)
+        tab.broadcastArmed = true
+        tabs.append(tab)
+        selectedTabID = tab.id
+        for (session, entry) in zip(created, entries) { postConnect(session, entry: entry) }
+    }
+
+    /// Arranges sessions into a roughly-square grid: rows of columns, so many
+    /// hosts stay readable instead of one very wide row.
+    private func gridTree(of sessions: [TerminalSession]) -> PaneNode<TerminalSession> {
+        guard sessions.count > 1 else { return .leaf(sessions[0]) }
+        let cols = Int(ceil(Double(sessions.count).squareRoot()))
+        let rows = stride(from: 0, to: sessions.count, by: cols).map { start in
+            Array(sessions[start..<min(start + cols, sessions.count)])
+        }
+        let rowNodes = rows.map { row -> PaneNode<TerminalSession> in
+            row.count == 1
+                ? .leaf(row[0])
+                : .split(id: UUID(), orientation: .horizontal,
+                         children: row.map { .leaf($0) },
+                         fractions: equalFractions(row.count))
+        }
+        return rowNodes.count == 1
+            ? rowNodes[0]
+            : .split(id: UUID(), orientation: .vertical, children: rowNodes,
+                     fractions: equalFractions(rowNodes.count))
+    }
+
+    private func equalFractions(_ count: Int) -> [CGFloat] {
+        Array(repeating: 1 / CGFloat(count), count: count)
+    }
+
+    // MARK: - Broadcast (MultiExec)
+
+    /// Arms/disarms broadcast for the selected tab.
+    func setBroadcastArmed(_ armed: Bool) {
+        guard let tab = selectedTab else { return }
+        objectWillChange.send()
+        tab.broadcastArmed = armed
     }
 
     // MARK: - Workspace restore
@@ -821,9 +875,6 @@ final class SessionManager: ObservableObject {
                 notifyWorkspaceChanged()
             }
         }
-        if sessions.isEmpty {
-            multiExecActive = false
-        }
     }
 
     /// Closes every pane in a tab (the tab-bar close button).
@@ -831,19 +882,26 @@ final class SessionManager: ObservableObject {
         for session in tab.leaves { close(session) }
     }
 
-    /// Sends a full command line to every included session (command-bar path).
+    /// The included, running panes of a tab — the broadcast targets.
+    private func broadcastTargets(in tab: Tab) -> [TerminalSession] {
+        tab.leaves.filter { $0.includedInMultiExec && $0.isRunning }
+    }
+
+    /// Sends a full command line to the armed tab's included panes (command bar).
     func broadcast(_ command: String) {
-        guard !command.isEmpty else { return }
-        for session in multiExecTargets {
+        guard !command.isEmpty, let tab = selectedTab, tab.broadcastArmed else { return }
+        for session in broadcastTargets(in: tab) {
             session.sendText(command + "\r")
         }
     }
 
+    /// Runs a macro across the armed tab's included panes, or in the focused
+    /// pane when no tab is armed.
     func run(_ macro: Macro) {
         let payload = macro.text.replacingOccurrences(of: "\n", with: "\r")
             + (macro.sendReturn ? "\r" : "")
-        if multiExecActive {
-            for session in multiExecTargets {
+        if let tab = selectedTab, tab.broadcastArmed {
+            for session in broadcastTargets(in: tab) {
                 session.sendText(payload)
             }
         } else {
@@ -877,12 +935,14 @@ final class SessionManager: ObservableObject {
         selectedTabID = tab.id   // didSet fires the open-tab persist
     }
 
-    /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty.
-    /// This catches paste and composed text paths that NSEvent-only mirroring
-    /// misses, while `sendMirroredInput` prevents feedback loops in peers.
+    /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty to
+    /// the other included panes of the *same* tab. Catches paste and composed
+    /// text paths that NSEvent-only mirroring misses, while `sendMirroredInput`
+    /// prevents feedback loops in peers.
     private func mirrorUserInput(_ data: ArraySlice<UInt8>, from focused: TerminalSession) {
-        guard multiExecActive, focused.includedInMultiExec else { return }
-        for peer in multiExecTargets where peer !== focused {
+        guard let tab = tabs.first(where: { $0.contains(focused.id) }),
+              tab.broadcastArmed, focused.includedInMultiExec else { return }
+        for peer in broadcastTargets(in: tab) where peer !== focused {
             peer.sendMirroredInput(data)
         }
     }

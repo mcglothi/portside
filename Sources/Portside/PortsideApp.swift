@@ -64,7 +64,7 @@ struct PortsideApp: App {
             CommandGroup(after: .textEditing) {
                 Button("Find…") { sessions.selected?.toggleFind() }
                     .keyboardShortcut("f", modifiers: [.command])
-                    .disabled(sessions.selected == nil || sessions.multiExecActive)
+                    .disabled(sessions.selected == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }

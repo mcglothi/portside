@@ -93,6 +93,11 @@ final class Tab: Identifiable, ObservableObject {
         activePaneID = session.id
     }
 
+    init(root: PaneNode<TerminalSession>, activePaneID: UUID) {
+        self.root = root
+        self.activePaneID = activePaneID
+    }
+
     var leaves: [TerminalSession] { root.leaves }
 
     /// The focused leaf, falling back to the first if the active id is stale.
