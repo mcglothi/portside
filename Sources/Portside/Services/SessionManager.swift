@@ -505,9 +505,14 @@ final class SessionManager: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
 
-            // A terminal whose process has exited closes on Return (keyCode 36)
-            // or Enter (76), matching the "press Enter to close" affordance.
-            if event.keyCode == 36 || event.keyCode == 76,
+            // A terminal whose process has exited closes on Return (keyCode 36 /
+            // keypad Enter 76) or a second Ctrl-D — matching the "press ⏎ to
+            // close" affordance and the common muscle memory of ⌃D to log out,
+            // ⌃D again to close. A live ⌃D is left alone so it still sends EOF.
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            let isCtrlD = event.keyCode == 2 && mods == .control   // keyCode 2 == "d"
+            if isReturn || isCtrlD,
                let focused = event.window?.firstResponder as? LocalProcessTerminalView,
                let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
                 DispatchQueue.main.async { self.close(dead) }

@@ -129,7 +129,7 @@ struct TerminalPane: View {
                     HStack(spacing: 10) {
                         Image(systemName: "power")
                             .foregroundStyle(.secondary)
-                        Text("Session ended — press ⏎ or click to close")
+                        Text("Session ended — press ⏎ or ⌃D to close")
                             .font(.callout)
                         Button("Close") { sessions.close(session) }
                             .keyboardShortcut(.defaultAction)
