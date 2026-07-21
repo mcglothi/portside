@@ -18,7 +18,12 @@ struct PaneNodeView: View {
     var body: some View {
         switch node {
         case .leaf(let session):
+            // Identity tied to the session so switching tabs (a single leaf,
+            // not in a ForEach) recreates the terminal's NSViewRepresentable and
+            // swaps to the new session's view — otherwise the cached NSView from
+            // makeNSView keeps showing the previous session.
             PaneLeafView(session: session, tab: tab)
+                .id(session.id)
         case .split(_, let orientation, let children, _):
             container(orientation, children)
         }
