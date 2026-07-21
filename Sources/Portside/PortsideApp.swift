@@ -32,8 +32,17 @@ struct PortsideApp: App {
                     sessions.onConnect = { [weak store] entry in
                         store?.recordConnection(entry)
                     }
+                    sessions.onWorkspaceChange = { [weak store] snapshot in
+                        store?.saveWorkspace(snapshot)
+                    }
                     LogManager.runMaintenance(settings: store.logging)
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
+                        store.entry(id: id).map(store.resolved)
+                    }
+                    // Reopen the last session's tabs (after appearance/logging/
+                    // terminal are wired above, which restore's connect() uses).
+                    sessions.bootstrapRestore(snapshot: store.workspace,
+                                              mode: store.terminal.restoreMode) { id in
                         store.entry(id: id).map(store.resolved)
                     }
                 }

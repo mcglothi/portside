@@ -32,6 +32,19 @@ struct TerminalSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("On Launch") {
+                Picker("Previous sessions", selection: Binding(
+                    get: { store.terminal.restoreMode },
+                    set: { var t = store.terminal; t.restoreMode = $0; store.updateTerminal(t) })) {
+                    ForEach(RestoreMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                Text("Reopen the tabs you had open when you last quit. Hosts reconnect, local shells start fresh; MultiExec reopens as a group but stays disarmed until you turn it on. Deleted hosts are skipped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(minWidth: 480, idealWidth: 520, minHeight: 240)
