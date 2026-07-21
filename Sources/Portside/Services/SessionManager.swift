@@ -421,34 +421,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// unavailable) isn't retried and re-logged on every layout pass.
     private var metalAppliedFor: Bool?
 
-    /// SwiftTerm's Metal renderer resolves its shaders through the SwiftPM-
-    /// generated Bundle.module accessor, which traps (fatalError → SIGTRAP)
-    /// instead of returning nil when SwiftTerm_SwiftTerm.bundle can't be
-    /// found — and in a packaged .app it looks for the bundle at the .app
-    /// root, where we can't ship it without breaking code signing. Only hand
-    /// SwiftTerm `useMetal = true` when its lookup will succeed (true for
-    /// `swift run`/dev builds, where the bundle sits next to the executable).
-    /// Packaged builds stay on CoreGraphics until SwiftTerm's lookup is fixed
-    /// upstream.
-    private static let metalShadersLocatable = FileManager.default.fileExists(
-        atPath: Bundle.main.bundleURL.appendingPathComponent("SwiftTerm_SwiftTerm.bundle").path)
-
     /// Switches the SwiftTerm renderer to match `prefersMetal`, but only when
     /// the view is on-screen. No-op until then and idempotent afterward. Called
     /// from `TerminalHostingView.updateNSView` and the live settings path.
-    private var warnedMetalUnavailable = false
-
     func applyMetalIfNeeded() {
         guard terminalView.window != nil else { return }
-        if prefersMetal && !Self.metalShadersLocatable && !warnedMetalUnavailable {
-            warnedMetalUnavailable = true
-            NSLog("Portside: Metal renderer unavailable in this build (shader bundle not found), staying on CoreGraphics")
-        }
-        let wantMetal = prefersMetal && Self.metalShadersLocatable
-        guard metalAppliedFor != wantMetal else { return }
-        metalAppliedFor = wantMetal
+        guard metalAppliedFor != prefersMetal else { return }
+        metalAppliedFor = prefersMetal
         do {
-            try terminalView.setUseMetal(wantMetal)
+            try terminalView.setUseMetal(prefersMetal)
         } catch {
             NSLog("Portside: Metal renderer unavailable, staying on CoreGraphics: \(error)")
         }

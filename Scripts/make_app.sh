@@ -26,6 +26,11 @@ cp .build/release/Portside "$APP/Contents/MacOS/Portside"
 # absolute .build path, then fatalErrors; see the 0.7.0 Settings crash.)
 ditto .build/release/Portside_Portside.bundle "$APP/Contents/Resources/Portside_Portside.bundle"
 
+# SwiftTerm's Metal shader bundle. Its renderer (as of 1.15.0, our upstream
+# fix in migueldeicaza/SwiftTerm#593) probes Bundle.main.resourceURL for this
+# alongside its other candidates, so it belongs in Contents/Resources too.
+ditto .build/release/SwiftTerm_SwiftTerm.bundle "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
+
 # Embed Sparkle.framework (with its XPC helpers) and point the binary at it.
 FRAMEWORK_SRC="$(find .build/artifacts -type d -path '*macos-arm64_x86_64/Sparkle.framework' | head -1)"
 if [ -z "$FRAMEWORK_SRC" ]; then
