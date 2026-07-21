@@ -767,6 +767,44 @@ final class SessionManager: ObservableObject {
         tab.broadcastArmed = armed
     }
 
+    // MARK: - Grid view
+
+    /// The tab, if any, that Grid View consolidated all tabs into.
+    private var gridViewTabID: UUID?
+
+    /// True while all sessions are tiled into a single Grid View tab.
+    var isGridView: Bool {
+        gridViewTabID != nil && tabs.contains { $0.id == gridViewTabID }
+    }
+
+    /// Grid View is available whenever there's more than one tab to tile (or to
+    /// toggle back off).
+    var canGridView: Bool { tabs.count > 1 || isGridView }
+
+    /// Tiles every open tab's panes into one grid tab (to watch several at
+    /// once), or splits that grid back into individual tabs. Broadcast is not
+    /// armed here — that's the separate MultiExec control.
+    func setGridView(_ on: Bool) {
+        if on {
+            guard tabs.count > 1 else { return }
+            let leaves = tabs.flatMap(\.leaves)
+            let active = selectedTab?.activeLeaf?.id ?? leaves.first?.id ?? UUID()
+            let grid = Tab(root: gridTree(of: leaves), activePaneID: active)
+            tabs = [grid]
+            gridViewTabID = grid.id
+            selectedTabID = grid.id   // didSet persists the layout
+        } else {
+            guard let id = gridViewTabID,
+                  let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+            let grid = tabs[index]
+            let previouslyActive = grid.activePaneID
+            let restored = grid.leaves.map { Tab(session: $0) }
+            tabs.replaceSubrange(index...index, with: restored)
+            gridViewTabID = nil
+            selectedTabID = restored.first { $0.contains(previouslyActive) }?.id ?? restored.first?.id
+        }
+    }
+
     // MARK: - Workspace restore
 
     /// The current open layout, for persistence. Broadcast-armed state is

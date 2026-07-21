@@ -29,14 +29,25 @@ struct SessionArea: View {
             }
             ToolbarItem {
                 Toggle(isOn: Binding(
+                    get: { sessions.isGridView },
+                    set: { sessions.setGridView($0) }
+                )) {
+                    Label("Grid View", systemImage: "square.grid.2x2")
+                }
+                .toggleStyle(.button)
+                .disabled(!sessions.canGridView)
+                .help("Tile every open session into one grid to watch them at once")
+            }
+            ToolbarItem {
+                Toggle(isOn: Binding(
                     get: { armed },
                     set: { sessions.setBroadcastArmed($0) }
                 )) {
                     Label("MultiExec", systemImage: "dot.radiowaves.left.and.right")
                 }
                 .toggleStyle(.button)
-                .disabled(sessions.selectedTab == nil)
-                .help("Broadcast keystrokes to every included pane in this tab")
+                .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2)
+                .help("Broadcast keystrokes to every included pane in this tab (Grid View first to gather separate tabs)")
             }
         }
     }
