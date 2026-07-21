@@ -1,5 +1,18 @@
 import Foundation
 
+/// How Portside treats the previous session's open tabs on launch.
+enum RestoreMode: String, Codable, CaseIterable, Identifiable {
+    case off, ask, auto
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .off: return "Don't restore"
+        case .ask: return "Ask each launch"
+        case .auto: return "Restore automatically"
+        }
+    }
+}
+
 /// Terminal *behavior* (as opposed to look — see `TerminalAppearance`),
 /// persisted in the library and applied to every live terminal.
 struct TerminalSettings: Equatable {
@@ -11,6 +24,10 @@ struct TerminalSettings: Equatable {
     /// and we haven't benchmarked it enough to make it the default. Falls back to
     /// CoreGraphics automatically if Metal is unavailable (e.g. in a VM).
     var useMetalRenderer: Bool = false
+
+    /// Whether to reopen the last session's tabs on launch. Defaults to `ask`:
+    /// safe and discoverable without silently reconnecting.
+    var restoreMode: RestoreMode = .ask
 
     /// Presets offered in Settings. Bounded on purpose: SwiftTerm has no true
     /// "unlimited" mode (passing nil *disables* scrollback), and each line is a
@@ -28,7 +45,7 @@ struct TerminalSettings: Equatable {
 // scrollbackLines) keeps loading as new terminal settings are added.
 extension TerminalSettings: Codable {
     enum CodingKeys: String, CodingKey {
-        case scrollbackLines, useMetalRenderer
+        case scrollbackLines, useMetalRenderer, restoreMode
     }
 
     init(from decoder: Decoder) throws {
@@ -36,5 +53,6 @@ extension TerminalSettings: Codable {
         let defaults = TerminalSettings()
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? defaults.scrollbackLines
         useMetalRenderer = try c.decodeIfPresent(Bool.self, forKey: .useMetalRenderer) ?? defaults.useMetalRenderer
+        restoreMode = try c.decodeIfPresent(RestoreMode.self, forKey: .restoreMode) ?? defaults.restoreMode
     }
 }

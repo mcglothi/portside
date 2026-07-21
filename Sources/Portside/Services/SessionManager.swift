@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftTerm
 
@@ -467,18 +468,29 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
 final class SessionManager: ObservableObject {
     @Published var sessions: [TerminalSession] = []
-    @Published var selectedID: UUID?
+    @Published var selectedID: UUID? { didSet { notifyWorkspaceChanged() } }
     @Published var multiExecActive = false
     @Published var filesPaneVisible = false
     @Published var showQuickConnect = false
+    /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
+    /// presents a prompt while this is non-nil.
+    @Published var pendingRestore: RestorePlan?
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
     /// Fires on every host connection (all paths — single, group, MultiExec);
     /// the app wires it to the store's recent-connections history.
     var onConnect: ((SessionEntry) -> Void)?
+    /// Fires whenever the open session layout changes (open/close/select/
+    /// MultiExec membership), so the app can persist a restore snapshot. Held
+    /// off during `restore` so replay persists once, at the correct final state.
+    var onWorkspaceChange: ((WorkspaceSnapshot) -> Void)?
 
     private var keyMonitor: Any?
+    /// Suppresses workspace-change notifications while replaying a snapshot.
+    private var isRestoring = false
+    /// Per-session subscriptions to MultiExec-membership changes.
+    private var membershipObservers: [UUID: AnyCancellable] = [:]
 
     init() {
         LoggingTerminalView.installSelectionAutoScrollMonitor()
@@ -597,6 +609,74 @@ final class SessionManager: ObservableObject {
         if multiExec { multiExecActive = true }
     }
 
+    // MARK: - Workspace restore
+
+    /// The current open layout, for persistence. `multiExecActive` is
+    /// intentionally omitted — restore always relaunches disarmed.
+    var currentWorkspace: WorkspaceSnapshot {
+        let items = sessions.map { session in
+            WorkspaceSnapshot.Item(
+                kind: session.entry.map { .host($0.id) } ?? .localShell,
+                includedInMultiExec: session.includedInMultiExec
+            )
+        }
+        let selectedIndex = selectedID.flatMap { id in sessions.firstIndex { $0.id == id } }
+        return WorkspaceSnapshot(items: items, selectedIndex: selectedIndex)
+    }
+
+    /// Decides what to do with the last session's snapshot at launch: nothing
+    /// (off/empty), restore immediately (auto), or stash a plan for the UI to
+    /// confirm (ask). Call once, after appearance/logging/terminal are wired.
+    func bootstrapRestore(snapshot: WorkspaceSnapshot, mode: RestoreMode,
+                          entryForID: (UUID) -> SessionEntry?) {
+        guard mode != .off, !snapshot.isEmpty else { return }
+        let plan = snapshot.plan(entryForID: entryForID)
+        guard !plan.actions.isEmpty else { return }
+        switch mode {
+        case .auto: restore(plan)
+        case .ask: pendingRestore = plan
+        case .off: break
+        }
+    }
+
+    /// Replays a planned restore: recreates each tab (staggered so a large
+    /// workspace doesn't fire every ssh handshake at once), applies MultiExec
+    /// membership, restores the selected tab, and leaves MultiExec disarmed.
+    func restore(_ plan: RestorePlan) {
+        guard !plan.actions.isEmpty else { return }
+        isRestoring = true
+        let gap = 0.15  // seconds between spawns
+        var created: [TerminalSession?] = Array(repeating: nil, count: plan.actions.count)
+        for (i, action) in plan.actions.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * gap) { [weak self] in
+                guard let self else { return }
+                created[i] = self.perform(action)
+                if i == plan.actions.count - 1 {
+                    self.isRestoring = false
+                    let selected = plan.selectedActionIndex.flatMap { created[$0] } ?? self.sessions.first
+                    self.selectedID = selected?.id   // fires one persist at the final state
+                }
+            }
+        }
+    }
+
+    private func perform(_ action: RestoreAction) -> TerminalSession? {
+        switch action {
+        case .connect(let entry, let included):
+            connect(to: entry)
+            sessions.last?.includedInMultiExec = included
+        case .localShell(let included):
+            openLocalShell()
+            sessions.last?.includedInMultiExec = included
+        }
+        return sessions.last
+    }
+
+    private func notifyWorkspaceChanged() {
+        guard !isRestoring else { return }
+        onWorkspaceChange?(currentWorkspace)
+    }
+
     /// Re-applies the global look to every open terminal (live settings edits).
     func applyAppearance(_ appearance: TerminalAppearance) {
         self.appearance = appearance
@@ -623,9 +703,12 @@ final class SessionManager: ObservableObject {
 
     func close(_ session: TerminalSession) {
         session.shutdown()
+        membershipObservers[session.id] = nil
         sessions.removeAll { $0.id == session.id }
         if selectedID == session.id {
-            selectedID = sessions.last?.id
+            selectedID = sessions.last?.id   // didSet persists the new layout
+        } else {
+            notifyWorkspaceChanged()         // closed a non-selected tab
         }
         if sessions.isEmpty {
             multiExecActive = false
@@ -659,8 +742,13 @@ final class SessionManager: ObservableObject {
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)
         session.prefersMetal = terminalSettings.useMetalRenderer
+        // Persist the workspace when this tab's MultiExec membership is toggled
+        // (the checkbox sets the property directly on the session).
+        membershipObservers[session.id] = session.$includedInMultiExec
+            .dropFirst()
+            .sink { [weak self] _ in self?.notifyWorkspaceChanged() }
         sessions.append(session)
-        selectedID = session.id
+        selectedID = session.id   // didSet fires the open-tab persist
     }
 
     /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty.
