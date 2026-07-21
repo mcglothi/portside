@@ -158,35 +158,43 @@ struct SidebarView: View {
 
     private var hostsList: some View {
         let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
-        // Selection is managed manually (not List(selection:)): native list
-        // selection competes with the row's own click/drag handling, which made
-        // clicks on the row content unreliable. A plain List + our own highlight
-        // puts the click handler where the click actually lands.
-        return List {
-            ForEach(tree.folders) { node in
-                FolderGroupView(
-                    node: node,
-                    selection: $selection,
-                    connect: connect,
-                    openSelected: openSelected,
-                    openFolder: openFolder,
-                    edit: { editingEntry = $0 },
-                    newSubfolder: { newFolderName = ""; newFolderParent = $0 },
-                    rename: { renameFolderName = $1; renamingFolder = $0 }
-                )
+        // The hosts list is an NSOutlineView (HostOutlineView) so selection and
+        // drag are native — SwiftUI's List couldn't do range selection or
+        // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
+        return VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+                TextField("Filter hosts", text: $filter)
+                    .textFieldStyle(.plain)
+                if !filter.isEmpty {
+                    Button { filter = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            ForEach(tree.root) { entry in
-                SessionRow(entry: entry, selection: $selection,
-                           connect: connect, openSelected: openSelected,
-                           edit: { editingEntry = $0 })
-            }
-        }
-        .searchable(text: $filter, placement: .sidebar, prompt: "Filter hosts")
-        .overlay {
-            if store.entries.isEmpty {
-                ContentUnavailableView("No hosts yet",
-                    systemImage: "server.rack",
-                    description: Text("Add a session or import from ~/.ssh/config."))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+
+            Divider()
+
+            HostOutlineView(
+                tree: tree,
+                selection: $selection,
+                store: store,
+                connect: connect,
+                connectSelected: openSelected,
+                edit: { editingEntry = $0 },
+                openFolder: openFolder,
+                newSubfolder: { newFolderName = ""; newFolderParent = $0 },
+                renameFolder: { renameFolderName = $1; renamingFolder = $0 }
+            )
+            .overlay {
+                if store.entries.isEmpty {
+                    ContentUnavailableView("No hosts yet",
+                        systemImage: "server.rack",
+                        description: Text("Add a session or import from ~/.ssh/config."))
+                }
             }
         }
     }
@@ -358,133 +366,6 @@ struct SidebarView: View {
         } catch {
             importMessage = "Export failed: \(error.localizedDescription)"
         }
-    }
-}
-
-struct FolderGroupView: View {
-    @EnvironmentObject var store: SessionStore
-    let node: FolderNode
-    @Binding var selection: Set<UUID>
-    let connect: (SessionEntry) -> Void
-    let openSelected: (_ multiExec: Bool) -> Void
-    let openFolder: (_ path: String, _ multiExec: Bool) -> Void
-    let edit: (SessionEntry) -> Void
-    let newSubfolder: (String) -> Void
-    let rename: (_ path: String, _ currentName: String) -> Void
-
-    private var hostCount: Int { store.entriesInFolder(node.path).count }
-
-    var body: some View {
-        DisclosureGroup {
-            ForEach(node.subfolders) { child in
-                FolderGroupView(node: child, selection: $selection, connect: connect,
-                                openSelected: openSelected, openFolder: openFolder, edit: edit,
-                                newSubfolder: newSubfolder, rename: rename)
-            }
-            ForEach(node.entries) { entry in
-                SessionRow(entry: entry, selection: $selection, connect: connect,
-                           openSelected: openSelected, edit: edit)
-            }
-        } label: {
-            Label(node.name, systemImage: "folder")
-                .contextMenu {
-                    if hostCount > 0 {
-                        Button("Open All (\(hostCount))") { openFolder(node.path, false) }
-                        Button("Open All in MultiExec") { openFolder(node.path, true) }
-                        Divider()
-                    }
-                    Button("New Subfolder…") { newSubfolder(node.path) }
-                    Button("Rename…") { rename(node.path, node.name) }
-                    Divider()
-                    Button("Delete Folder", role: .destructive) { store.deleteFolder(node.path) }
-                }
-        }
-    }
-}
-
-struct SessionRow: View {
-    @EnvironmentObject var store: SessionStore
-    let entry: SessionEntry
-    @Binding var selection: Set<UUID>
-    let connect: (SessionEntry) -> Void
-    let openSelected: (_ multiExec: Bool) -> Void
-    let edit: (SessionEntry) -> Void
-
-    private var isSelected: Bool { selection.contains(entry.id) }
-    private var multiSelected: Bool { selection.count > 1 && isSelected }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: entry.icon)
-                .foregroundStyle(isSelected ? Color.white : Color.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(entry.name)
-                    .foregroundStyle(isSelected ? Color.white : Color.primary)
-                Text(entry.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
-            }
-            Spacer(minLength: 4)
-            if entry.isProtected {
-                Image(systemName: "lock.fill")
-                    .font(.caption2)
-                    .foregroundStyle(isSelected ? Color.white : Color.secondary)
-                    .help("Protected host")
-            }
-            TransportBadge(entry: entry)
-            EnvironmentBadge(environment: entry.environment)
-        }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
-        )
-        // Manual selection: single click selects immediately (no native List
-        // selection to compete for the click); ⌘-click extends the selection;
-        // double-click connects.
-        .onTapGesture { handleClick() }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { connect(entry) })
-        .help("Click to select (⌘-click for several), double-click to connect")
-        .contextMenu {
-            if multiSelected {
-                Button("Connect \(selection.count) Selected") { openSelected(false) }
-                Button("Connect \(selection.count) in MultiExec") { openSelected(true) }
-                Divider()
-            }
-            Button("Connect") { connect(entry) }
-            Button("Edit…") { edit(entry) }
-            Button("Duplicate") { store.duplicate(entry) }
-            if !moveTargets.isEmpty {
-                Menu("Move to") {
-                    ForEach(moveTargets, id: \.self) { target in
-                        Button(target.isEmpty ? "Top Level" : target) {
-                            store.move(entryID: entry.id, toFolder: target)
-                        }
-                    }
-                }
-            }
-            Divider()
-            Button("Delete", role: .destructive) { store.delete(entry) }
-        }
-    }
-
-    /// Plain click selects just this row; ⌘-click toggles it in the set.
-    private func handleClick() {
-        if NSEvent.modifierFlags.contains(.command) {
-            if isSelected { selection.remove(entry.id) } else { selection.insert(entry.id) }
-        } else {
-            selection = [entry.id]
-        }
-    }
-
-    /// Folders the session can move to, plus "Top Level" when it's in a folder.
-    private var moveTargets: [String] {
-        var targets = store.folders.filter { $0 != entry.folder }
-        if !entry.folder.isEmpty { targets.insert("", at: 0) }
-        return targets
     }
 }
 
