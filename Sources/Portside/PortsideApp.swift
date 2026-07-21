@@ -75,6 +75,20 @@ struct PortsideApp: App {
                     .keyboardShortcut("0", modifiers: .command)
                 Divider()
             }
+            CommandMenu("Pane") {
+                Button("Split Right") { sessions.splitActivePane(.horizontal) }
+                    .keyboardShortcut("d", modifiers: .command)
+                Button("Split Down") { sessions.splitActivePane(.vertical) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                Divider()
+                Button("Focus Next Pane") { sessions.focusAdjacentPane(next: true) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                Button("Focus Previous Pane") { sessions.focusAdjacentPane(next: false) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                Divider()
+                Button("Close Pane") { sessions.closeActivePane() }
+                    .keyboardShortcut("w", modifiers: [.command, .shift])
+            }
         }
 
         Settings {

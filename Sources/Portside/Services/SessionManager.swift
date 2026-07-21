@@ -449,6 +449,12 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.font = appearance.nsFont
     }
 
+    /// Makes this terminal the keyboard focus (used after a split or on
+    /// pane-navigation, so keystrokes land where the ring is).
+    func focus() {
+        terminalView.window?.makeFirstResponder(terminalView)
+    }
+
     // MARK: - LocalProcessTerminalViewDelegate
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
@@ -489,6 +495,7 @@ final class SessionManager: ObservableObject {
     var onWorkspaceChange: ((WorkspaceSnapshot) -> Void)?
 
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
     /// Suppresses workspace-change notifications while replaying a snapshot.
     private var isRestoring = false
     /// Per-session subscriptions to MultiExec-membership changes.
@@ -509,12 +516,34 @@ final class SessionManager: ObservableObject {
             }
             return event
         }
+        // Click-to-focus: SwiftTerm's becomeFirstResponder isn't `open`, so we
+        // detect focus by hit-testing mouse-downs to the terminal under the
+        // cursor and marking its pane active (same NSEvent-monitor pattern as
+        // the selection auto-scroll and Enter-to-close workarounds).
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, let window = event.window,
+                  let hit = window.contentView?.hitTest(event.locationInWindow),
+                  let terminal = Self.enclosingTerminalView(of: hit),
+                  let session = self.sessions.first(where: { $0.terminalView === terminal }),
+                  session.id != self.selectedTab?.activePaneID else { return event }
+            self.focusPane(session.id)
+            return event
+        }
+    }
+
+    /// Walks up from a hit-tested subview to the enclosing terminal view.
+    private static func enclosingTerminalView(of view: NSView) -> LoggingTerminalView? {
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let terminal = current as? LoggingTerminalView { return terminal }
+            candidate = current.superview
+        }
+        return nil
     }
 
     deinit {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
     }
 
     /// Flat view of every live session (all leaves across all tabs), in tab and
@@ -613,11 +642,61 @@ final class SessionManager: ObservableObject {
     }
 
     func openLocalShell() {
+        add(makeLocalShellSession())
+    }
+
+    private func makeLocalShellSession() -> TerminalSession {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let logger = LogManager.makeLogger(hostKey: "local", title: "Local Shell",
                                            subtitle: shell, settings: loggingSettings)
-        add(TerminalSession(title: "local", executable: shell, args: ["-l"],
-                            appearance: appearance, logger: logger))
+        return TerminalSession(title: "local", executable: shell, args: ["-l"],
+                               appearance: appearance, logger: logger)
+    }
+
+    // MARK: - Split panes
+
+    /// Splits the focused pane and opens a local shell in the new one.
+    /// `.horizontal` places it to the right, `.vertical` below.
+    func splitActivePane(_ orientation: PaneOrientation) {
+        guard let tab = selectedTab, let activeID = tab.activeLeaf?.id else { return }
+        let session = makeLocalShellSession()
+        prepare(session)
+        tab.root = tab.root.splitting(leafID: activeID, with: .leaf(session), orientation: orientation)
+        tab.activePaneID = session.id
+        objectWillChange.send()
+        notifyWorkspaceChanged()
+        // Focus the new pane once it's in the view hierarchy.
+        DispatchQueue.main.async { [weak session] in session?.focus() }
+    }
+
+    /// Focuses the pane holding `sessionID`, selecting its tab. Called when a
+    /// terminal gains first-responder and by pane navigation — never calls back
+    /// into the responder chain, so there's no focus loop.
+    func focusPane(_ sessionID: UUID) {
+        guard let tab = tabs.first(where: { $0.contains(sessionID) }) else { return }
+        if tab.activePaneID != sessionID {
+            objectWillChange.send()   // active leaf drives find/zoom/SFTP, read via the manager
+            tab.activePaneID = sessionID
+        }
+        if selectedTabID != tab.id { selectedTabID = tab.id }
+    }
+
+    /// Cycles focus to the next/previous pane within the active tab (⌘⌥→ / ⌘⌥←).
+    func focusAdjacentPane(next: Bool) {
+        guard let tab = selectedTab else { return }
+        let leaves = tab.leaves
+        guard leaves.count > 1,
+              let idx = leaves.firstIndex(where: { $0.id == tab.activePaneID }) else { return }
+        let newIdx = next ? (idx + 1) % leaves.count : (idx - 1 + leaves.count) % leaves.count
+        let target = leaves[newIdx]
+        focusPane(target.id)
+        target.focus()
+    }
+
+    /// Closes the focused pane (⌘⇧W); closes the tab when it's the last pane.
+    func closeActivePane() {
+        guard let session = selected else { return }
+        close(session)
     }
 
     /// Opens several hosts at once, optionally arming MultiExec so keystrokes
@@ -772,7 +851,10 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    private func add(_ session: TerminalSession) {
+    /// Wires a freshly created session into the manager: input mirroring, focus
+    /// tracking, live terminal settings, and MultiExec-membership persistence.
+    /// Call before placing the session in a tab or an existing pane tree.
+    private func prepare(_ session: TerminalSession) {
         session.terminalView.onUserInput = { [weak self, weak session] data in
             guard let self, let session else { return }
             self.mirrorUserInput(data, from: session)
@@ -784,8 +866,12 @@ final class SessionManager: ObservableObject {
         membershipObservers[session.id] = session.$includedInMultiExec
             .dropFirst()
             .sink { [weak self] _ in self?.notifyWorkspaceChanged() }
-        // Each new session opens as its own single-leaf tab (splitting comes
-        // later, and reuses close/select through the same tree).
+    }
+
+    private func add(_ session: TerminalSession) {
+        prepare(session)
+        // Each new session opens as its own single-leaf tab; splitting inserts
+        // into an existing tab's tree instead.
         let tab = Tab(session: session)
         tabs.append(tab)
         selectedTabID = tab.id   // didSet fires the open-tab persist

@@ -12,7 +12,7 @@ struct PaneTreeView: View {
 }
 
 struct PaneNodeView: View {
-    let node: PaneNode
+    let node: PaneNode<TerminalSession>
     @ObservedObject var tab: Tab
 
     var body: some View {
@@ -26,7 +26,7 @@ struct PaneNodeView: View {
     }
 
     @ViewBuilder
-    private func container(_ orientation: PaneNode.Orientation, _ children: [PaneNode]) -> some View {
+    private func container(_ orientation: PaneOrientation, _ children: [PaneNode<TerminalSession>]) -> some View {
         // AnyView at the recursion point breaks the otherwise-infinite view type.
         if orientation == .horizontal {
             HSplitView {
