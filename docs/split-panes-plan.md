@@ -4,6 +4,26 @@ The 0.9 anchor. Grounded in prior-art research (iTerm2 tmux `-CC`,
 WezTerm/Kitty/Ghostty native splits, iTerm2 broadcast-input) — see the
 "Prior art" section.
 
+## Status (branch `feature/split-panes`)
+Implemented in four steps, each verified:
+- ✅ **Step 1** — Tab/PaneNode model; rendering routed through `PaneTreeView`
+  (behavior-identical, single leaf per tab).
+- ✅ **Step 2** — splitting (⌘D / ⌘⇧D → local shell), focus ring, click-to-focus
+  (NSEvent mouse monitor), ⌘⌥←/→ navigation, ⌘⇧W close pane; `PaneNode` made
+  generic for unit-testable tree algebra.
+- ✅ **Step 3a** — MultiExec folded into the tree (per-tab `broadcastArmed`,
+  banner + per-pane include chips + macro/command bars; `connectAll(multiExec:)`
+  opens an armed grid tab). Old MultiExec grid removed.
+- ✅ **Step 3b** — session restore serializes the pane tree (back-compat with v1
+  flat snapshots; prunes deleted-host panes).
+
+Verified live via reliable menu invocation: split render + nesting, collapse on
+close, broadcast mirroring across an armed split, layout-tree restore across
+relaunch, and ⌘⌥ pane navigation. **Not yet driven by hand: click-to-focus via
+the mouse monitor** (couldn't synthesize a safe click) and *host* (ssh) splits
+reconnecting on restore. Remaining before a 0.9 cut is polish + a real-world
+shakeout, not new architecture.
+
 ## The framing that shapes everything
 "Split panes" is really two independent features that share one substrate:
 
