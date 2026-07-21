@@ -133,6 +133,9 @@ exists to fill that gap without giving up native speed and macOS polish.
   drag hosts between folders — the Hosts list is now an `NSOutlineView`.
 - ✅ Session restore — reopen the tabs you had open when you last quit
   (Settings → Terminal: off / ask / auto). MultiExec groups reopen disarmed.
+- ✅ Split panes — split any tab (⌘D / ⌘⇧D), navigate with the mouse or
+  ⌘⌥←/→, and arm a split for MultiExec to broadcast across its panes.
+  Restore reopens the whole layout.
 - Per-profile font/theme choices (appearance is global today).
 - Font ligatures and inline image protocols (Sixel / iTerm2) are current
   SwiftTerm limitations, tracked in the compatibility matrix rather than
@@ -142,7 +145,9 @@ exists to fill that gap without giving up native speed and macOS polish.
 ### Later
 
 - Touch ID gating for saved credentials (Vaultwarden references later)
-- Split panes and pinned layouts
+- Named / pinned layout presets
+- tmux control-mode (`-CC`) integration — native splits backed by a durable
+  remote tmux session
 
 ## Building
 
