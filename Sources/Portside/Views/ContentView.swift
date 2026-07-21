@@ -33,7 +33,7 @@ struct ContentView: View {
     }
 
     private var restorePrompt: String {
-        let n = sessions.pendingRestore?.actions.count ?? 0
+        let n = sessions.pendingRestore?.paneCount ?? 0
         return "Reopen \(n) session\(n == 1 ? "" : "s") from last time?"
     }
 }

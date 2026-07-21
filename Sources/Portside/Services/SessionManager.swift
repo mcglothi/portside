@@ -449,6 +449,12 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.font = appearance.nsFont
     }
 
+    /// Makes this terminal the keyboard focus (used after a split or on
+    /// pane-navigation, so keystrokes land where the ring is).
+    func focus() {
+        terminalView.window?.makeFirstResponder(terminalView)
+    }
+
     // MARK: - LocalProcessTerminalViewDelegate
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
@@ -467,9 +473,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 }
 
 final class SessionManager: ObservableObject {
-    @Published var sessions: [TerminalSession] = []
-    @Published var selectedID: UUID? { didSet { notifyWorkspaceChanged() } }
-    @Published var multiExecActive = false
+    /// Source of truth: each open tab owns a pane tree of live sessions. Today
+    /// every tab is a single leaf; splitting (0.9) grows the trees.
+    @Published var tabs: [Tab] = []
+    @Published var selectedTabID: UUID? { didSet { notifyWorkspaceChanged() } }
     @Published var filesPaneVisible = false
     @Published var showQuickConnect = false
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
@@ -487,6 +494,7 @@ final class SessionManager: ObservableObject {
     var onWorkspaceChange: ((WorkspaceSnapshot) -> Void)?
 
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
     /// Suppresses workspace-change notifications while replaying a snapshot.
     private var isRestoring = false
     /// Per-session subscriptions to MultiExec-membership changes.
@@ -497,9 +505,14 @@ final class SessionManager: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
 
-            // A terminal whose process has exited closes on Return (keyCode 36)
-            // or Enter (76), matching the "press Enter to close" affordance.
-            if event.keyCode == 36 || event.keyCode == 76,
+            // A terminal whose process has exited closes on Return (keyCode 36 /
+            // keypad Enter 76) or a second Ctrl-D — matching the "press ⏎ to
+            // close" affordance and the common muscle memory of ⌃D to log out,
+            // ⌃D again to close. A live ⌃D is left alone so it still sends EOF.
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            let isCtrlD = event.keyCode == 2 && mods == .control   // keyCode 2 == "d"
+            if isReturn || isCtrlD,
                let focused = event.window?.firstResponder as? LocalProcessTerminalView,
                let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
                 DispatchQueue.main.async { self.close(dead) }
@@ -507,40 +520,84 @@ final class SessionManager: ObservableObject {
             }
             return event
         }
-    }
-
-    deinit {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
+        // Click-to-focus: SwiftTerm's becomeFirstResponder isn't `open`, so we
+        // detect focus by hit-testing mouse-downs to the terminal under the
+        // cursor and marking its pane active (same NSEvent-monitor pattern as
+        // the selection auto-scroll and Enter-to-close workarounds).
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, let window = event.window,
+                  let hit = window.contentView?.hitTest(event.locationInWindow),
+                  let terminal = Self.enclosingTerminalView(of: hit),
+                  let session = self.sessions.first(where: { $0.terminalView === terminal }),
+                  session.id != self.selectedTab?.activePaneID else { return event }
+            self.focusPane(session.id)
+            return event
         }
     }
 
-    var selected: TerminalSession? {
-        sessions.first { $0.id == selectedID }
+    /// Walks up from a hit-tested subview to the enclosing terminal view.
+    private static func enclosingTerminalView(of view: NSView) -> LoggingTerminalView? {
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let terminal = current as? LoggingTerminalView { return terminal }
+            candidate = current.superview
+        }
+        return nil
     }
 
-    var multiExecTargets: [TerminalSession] {
-        sessions.filter { $0.includedInMultiExec && $0.isRunning }
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+    }
+
+    /// Flat view of every live session (all leaves across all tabs), in tab and
+    /// left-to-right pane order. The lifecycle/broadcast/restore machinery still
+    /// works on this set; the tree only governs layout.
+    var sessions: [TerminalSession] { tabs.flatMap(\.leaves) }
+
+    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
+
+    /// The focused terminal — the active leaf of the selected tab. Drives find,
+    /// zoom, the SFTP pane, and single-session close.
+    var selected: TerminalSession? { selectedTab?.activeLeaf }
+
+    /// Compatibility accessor: read/select the focused session by id. Setting it
+    /// focuses that leaf's pane and selects its tab.
+    var selectedID: UUID? {
+        get { selected?.id }
+        set {
+            guard let newValue, let tab = tabs.first(where: { $0.contains(newValue) }) else { return }
+            tab.activePaneID = newValue
+            if selectedTabID != tab.id { selectedTabID = tab.id } else { notifyWorkspaceChanged() }
+        }
     }
 
     func connect(to entry: SessionEntry) {
+        let session = makeSession(for: entry)
+        add(session)
+        postConnect(session, entry: entry)
+    }
+
+    /// Builds a session for an entry (transport, logging, saved-password
+    /// askpass) without placing it in a tab — so a group can be assembled into
+    /// a single split tab.
+    private func makeSession(for entry: SessionEntry) -> TerminalSession {
         let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
-        let session: TerminalSession
 
         if entry.kind == .serial {
             // Straight to the device — no child process, no ssh machinery.
-            session = TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, serial: entry.serial ?? SerialTarget(),
+                                   entry: entry, appearance: appearance, logger: logger)
         } else if entry.kind == .telnet {
-            session = TerminalSession(title: entry.name, telnet: entry.telnet ?? TelnetTarget(),
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, telnet: entry.telnet ?? TelnetTarget(),
+                                   entry: entry, appearance: appearance, logger: logger)
         } else if entry.usesLocalTransport {
             // A container/pod that runs on this Mac: a local login shell we
             // then drive into the container. The login shell (-l) gives
             // docker/kubectl/gcloud their usual PATH.
             let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            session = TerminalSession(title: entry.name, executable: shell, args: ["-l"],
-                                      entry: entry, appearance: appearance, logger: logger)
+            return TerminalSession(title: entry.name, executable: shell, args: ["-l"],
+                                   entry: entry, appearance: appearance, logger: logger)
         } else {
             // ControlMaster options so this interactive session becomes the
             // multiplexing master the SFTP pane piggybacks on. mosh (when
@@ -572,18 +629,19 @@ final class SessionManager: ObservableObject {
                 expireSecret = injected.expireSecret
                 cleanup = injected.cleanup
             }
-            session = TerminalSession(title: entry.name, executable: executable, args: args,
-                                      entry: entry, appearance: appearance,
-                                      environment: environment, expireSecret: expireSecret,
-                                      cleanup: cleanup, logger: logger)
+            return TerminalSession(title: entry.name, executable: executable, args: args,
+                                   entry: entry, appearance: appearance,
+                                   environment: environment, expireSecret: expireSecret,
+                                   cleanup: cleanup, logger: logger)
         }
-        add(session)
+    }
 
-        // Post-connect command: the container/pod exec for those kinds, or a
-        // host's run-on-connect. Fired once the shell has had a moment to come
-        // up — shells buffer stdin, so a slightly early send still runs at the
-        // first prompt; only an interactive password prompt (no saved
-        // credential) would swallow it, hence the editor's note.
+    /// Sends the post-connect command (container/pod exec, or a host's
+    /// run-on-connect) once the shell has had a moment to come up, and records
+    /// the connection. Shells buffer stdin, so a slightly early send still runs
+    /// at the first prompt; only an interactive password prompt (no saved
+    /// credential) would swallow it, hence the editor's note.
+    private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
         if let command = entry.postConnectCommand {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
                 session?.sendText(command + "\r")
@@ -593,35 +651,143 @@ final class SessionManager: ObservableObject {
     }
 
     func openLocalShell() {
+        add(makeLocalShellSession())
+    }
+
+    private func makeLocalShellSession() -> TerminalSession {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let logger = LogManager.makeLogger(hostKey: "local", title: "Local Shell",
                                            subtitle: shell, settings: loggingSettings)
-        add(TerminalSession(title: "local", executable: shell, args: ["-l"],
-                            appearance: appearance, logger: logger))
+        return TerminalSession(title: "local", executable: shell, args: ["-l"],
+                               appearance: appearance, logger: logger)
     }
 
-    /// Opens several hosts at once, optionally arming MultiExec so keystrokes
-    /// broadcast to the whole group — the "launch a group and drive them
-    /// together" workflow. Entries should already be resolved (defaults applied).
+    // MARK: - Split panes
+
+    /// Splits the focused pane and opens a local shell in the new one.
+    /// `.horizontal` places it to the right, `.vertical` below.
+    func splitActivePane(_ orientation: PaneOrientation) {
+        guard let tab = selectedTab, let activeID = tab.activeLeaf?.id else { return }
+        let session = makeLocalShellSession()
+        prepare(session)
+        tab.root = tab.root.splitting(leafID: activeID, with: .leaf(session), orientation: orientation)
+        tab.activePaneID = session.id
+        objectWillChange.send()
+        notifyWorkspaceChanged()
+        // Focus the new pane once it's in the view hierarchy.
+        DispatchQueue.main.async { [weak session] in session?.focus() }
+    }
+
+    /// Focuses the pane holding `sessionID`, selecting its tab. Called when a
+    /// terminal gains first-responder and by pane navigation — never calls back
+    /// into the responder chain, so there's no focus loop.
+    func focusPane(_ sessionID: UUID) {
+        guard let tab = tabs.first(where: { $0.contains(sessionID) }) else { return }
+        if tab.activePaneID != sessionID {
+            objectWillChange.send()   // active leaf drives find/zoom/SFTP, read via the manager
+            tab.activePaneID = sessionID
+        }
+        if selectedTabID != tab.id { selectedTabID = tab.id }
+    }
+
+    /// Cycles focus to the next/previous pane within the active tab (⌘⌥→ / ⌘⌥←).
+    func focusAdjacentPane(next: Bool) {
+        guard let tab = selectedTab else { return }
+        let leaves = tab.leaves
+        guard leaves.count > 1,
+              let idx = leaves.firstIndex(where: { $0.id == tab.activePaneID }) else { return }
+        let newIdx = next ? (idx + 1) % leaves.count : (idx - 1 + leaves.count) % leaves.count
+        let target = leaves[newIdx]
+        focusPane(target.id)
+        target.focus()
+    }
+
+    /// Closes the focused pane (⌘⇧W); closes the tab when it's the last pane.
+    func closeActivePane() {
+        guard let session = selected else { return }
+        close(session)
+    }
+
+    /// Opens several hosts at once. With `multiExec`, they open as one tab split
+    /// into a grid and armed for broadcast — the "launch a group and drive them
+    /// together" workflow; otherwise each opens as its own tab. Entries should
+    /// already be resolved (defaults applied).
     func connectAll(_ entries: [SessionEntry], multiExec: Bool) {
         guard !entries.isEmpty else { return }
-        for entry in entries { connect(to: entry) }
-        if multiExec { multiExecActive = true }
+        if multiExec {
+            openGroupTab(entries)
+        } else {
+            for entry in entries { connect(to: entry) }
+        }
+    }
+
+    /// Opens a group of hosts as a single tab, arranged in a grid and armed for
+    /// broadcast.
+    private func openGroupTab(_ entries: [SessionEntry]) {
+        let created = entries.map { makeSession(for: $0) }
+        created.forEach(prepare)
+        let tab = Tab(root: gridTree(of: created), activePaneID: created[0].id)
+        tab.broadcastArmed = true
+        tabs.append(tab)
+        selectedTabID = tab.id
+        for (session, entry) in zip(created, entries) { postConnect(session, entry: entry) }
+    }
+
+    /// Arranges sessions into a roughly-square grid: rows of columns, so many
+    /// hosts stay readable instead of one very wide row.
+    private func gridTree(of sessions: [TerminalSession]) -> PaneNode<TerminalSession> {
+        guard sessions.count > 1 else { return .leaf(sessions[0]) }
+        let cols = Int(ceil(Double(sessions.count).squareRoot()))
+        let rows = stride(from: 0, to: sessions.count, by: cols).map { start in
+            Array(sessions[start..<min(start + cols, sessions.count)])
+        }
+        let rowNodes = rows.map { row -> PaneNode<TerminalSession> in
+            row.count == 1
+                ? .leaf(row[0])
+                : .split(id: UUID(), orientation: .horizontal,
+                         children: row.map { .leaf($0) },
+                         fractions: equalFractions(row.count))
+        }
+        return rowNodes.count == 1
+            ? rowNodes[0]
+            : .split(id: UUID(), orientation: .vertical, children: rowNodes,
+                     fractions: equalFractions(rowNodes.count))
+    }
+
+    private func equalFractions(_ count: Int) -> [CGFloat] {
+        Array(repeating: 1 / CGFloat(count), count: count)
+    }
+
+    // MARK: - Broadcast (MultiExec)
+
+    /// Arms/disarms broadcast for the selected tab.
+    func setBroadcastArmed(_ armed: Bool) {
+        guard let tab = selectedTab else { return }
+        objectWillChange.send()
+        tab.broadcastArmed = armed
     }
 
     // MARK: - Workspace restore
 
-    /// The current open layout, for persistence. `multiExecActive` is
+    /// The current open layout, for persistence. Broadcast-armed state is
     /// intentionally omitted — restore always relaunches disarmed.
     var currentWorkspace: WorkspaceSnapshot {
-        let items = sessions.map { session in
-            WorkspaceSnapshot.Item(
+        let tabSnapshots = tabs.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.root)) }
+        let selectedIndex = selectedTabID.flatMap { id in tabs.firstIndex { $0.id == id } }
+        return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex)
+    }
+
+    private func snapshot(of node: PaneNode<TerminalSession>) -> WorkspaceSnapshot.PaneSnapshot {
+        switch node {
+        case .leaf(let session):
+            let leaf = WorkspaceSnapshot.Leaf(
                 kind: session.entry.map { .host($0.id) } ?? .localShell,
-                includedInMultiExec: session.includedInMultiExec
-            )
+                includedInMultiExec: session.includedInMultiExec)
+            return .leaf(leaf)
+        case .split(_, let orientation, let children, let fractions):
+            return .split(orientation: orientation, children: children.map(snapshot(of:)),
+                          fractions: fractions)
         }
-        let selectedIndex = selectedID.flatMap { id in sessions.firstIndex { $0.id == id } }
-        return WorkspaceSnapshot(items: items, selectedIndex: selectedIndex)
     }
 
     /// Decides what to do with the last session's snapshot at launch: nothing
@@ -631,7 +797,7 @@ final class SessionManager: ObservableObject {
                           entryForID: (UUID) -> SessionEntry?) {
         guard mode != .off, !snapshot.isEmpty else { return }
         let plan = snapshot.plan(entryForID: entryForID)
-        guard !plan.actions.isEmpty else { return }
+        guard !plan.tabs.isEmpty else { return }
         switch mode {
         case .auto: restore(plan)
         case .ask: pendingRestore = plan
@@ -639,37 +805,65 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    /// Replays a planned restore: recreates each tab (staggered so a large
-    /// workspace doesn't fire every ssh handshake at once), applies MultiExec
-    /// membership, restores the selected tab, and leaves MultiExec disarmed.
+    /// Replays a planned restore: rebuilds each tab's pane tree, restores the
+    /// selected tab, and leaves every tab disarmed.
     func restore(_ plan: RestorePlan) {
-        guard !plan.actions.isEmpty else { return }
+        guard !plan.tabs.isEmpty else { return }
         isRestoring = true
-        let gap = 0.15  // seconds between spawns
-        var created: [TerminalSession?] = Array(repeating: nil, count: plan.actions.count)
-        for (i, action) in plan.actions.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * gap) { [weak self] in
-                guard let self else { return }
-                created[i] = self.perform(action)
-                if i == plan.actions.count - 1 {
-                    self.isRestoring = false
-                    let selected = plan.selectedActionIndex.flatMap { created[$0] } ?? self.sessions.first
-                    self.selectedID = selected?.id   // fires one persist at the final state
+        var built: [Tab] = []
+        for tabPlan in plan.tabs {
+            guard let tab = buildTab(tabPlan) else { continue }
+            tabs.append(tab)
+            built.append(tab)
+        }
+        isRestoring = false
+        let selected = plan.selectedTabIndex.flatMap { $0 < built.count ? built[$0] : nil } ?? tabs.last
+        selectedTabID = selected?.id   // fires one persist at the final state
+    }
+
+    private func buildTab(_ tabPlan: RestorePlan.TabPlan) -> Tab? {
+        guard let root = buildNode(tabPlan.root) else { return nil }
+        return Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+    }
+
+    private func buildNode(_ plan: RestorePlan.PanePlan) -> PaneNode<TerminalSession>? {
+        switch plan {
+        case .leaf(let action):
+            return .leaf(makeRestoredSession(action))
+        case .split(let orientation, let children, let fractions):
+            var kept: [PaneNode<TerminalSession>] = []
+            var keptFractions: [CGFloat] = []
+            for (child, fraction) in zip(children, fractions) {
+                if let node = buildNode(child) {
+                    kept.append(node)
+                    keptFractions.append(fraction)
                 }
+            }
+            switch kept.count {
+            case 0: return nil
+            case 1: return kept[0]
+            default: return .split(id: UUID(), orientation: orientation, children: kept,
+                                   fractions: normalizedFractions(keptFractions))
             }
         }
     }
 
-    private func perform(_ action: RestoreAction) -> TerminalSession? {
+    /// Creates and prepares a session for a restore action, without placing it
+    /// in a tab (the tree builder assembles it).
+    private func makeRestoredSession(_ action: RestoreAction) -> TerminalSession {
         switch action {
         case .connect(let entry, let included):
-            connect(to: entry)
-            sessions.last?.includedInMultiExec = included
+            let session = makeSession(for: entry)
+            prepare(session)
+            session.includedInMultiExec = included
+            postConnect(session, entry: entry)
+            return session
         case .localShell(let included):
-            openLocalShell()
-            sessions.last?.includedInMultiExec = included
+            let session = makeLocalShellSession()
+            prepare(session)
+            session.includedInMultiExec = included
+            return session
         }
-        return sessions.last
     }
 
     private func notifyWorkspaceChanged() {
@@ -701,33 +895,54 @@ final class SessionManager: ObservableObject {
     func zoomOut() { selected?.zoom(by: -1) }
     func resetZoom() { selected?.resetZoom(appearance: appearance) }
 
+    /// Closes a single pane. Removes its leaf from the containing tab's tree,
+    /// collapsing splits; when it was the tab's last pane, the tab closes too.
     func close(_ session: TerminalSession) {
         session.shutdown()
         membershipObservers[session.id] = nil
-        sessions.removeAll { $0.id == session.id }
-        if selectedID == session.id {
-            selectedID = sessions.last?.id   // didSet persists the new layout
+        guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
+
+        if let newRoot = tab.root.removingLeaf(session.id) {
+            tab.root = newRoot
+            if tab.activePaneID == session.id {
+                tab.activePaneID = tab.leaves.first?.id ?? tab.activePaneID
+            }
+            notifyWorkspaceChanged()
         } else {
-            notifyWorkspaceChanged()         // closed a non-selected tab
-        }
-        if sessions.isEmpty {
-            multiExecActive = false
+            tabs.removeAll { $0.id == tab.id }
+            if selectedTabID == tab.id {
+                selectedTabID = tabs.last?.id   // didSet persists the new layout
+            } else {
+                notifyWorkspaceChanged()
+            }
         }
     }
 
-    /// Sends a full command line to every included session (command-bar path).
+    /// Closes every pane in a tab (the tab-bar close button).
+    func closeTab(_ tab: Tab) {
+        for session in tab.leaves { close(session) }
+    }
+
+    /// The included, running panes of a tab — the broadcast targets.
+    private func broadcastTargets(in tab: Tab) -> [TerminalSession] {
+        tab.leaves.filter { $0.includedInMultiExec && $0.isRunning }
+    }
+
+    /// Sends a full command line to the armed tab's included panes (command bar).
     func broadcast(_ command: String) {
-        guard !command.isEmpty else { return }
-        for session in multiExecTargets {
+        guard !command.isEmpty, let tab = selectedTab, tab.broadcastArmed else { return }
+        for session in broadcastTargets(in: tab) {
             session.sendText(command + "\r")
         }
     }
 
+    /// Runs a macro across the armed tab's included panes, or in the focused
+    /// pane when no tab is armed.
     func run(_ macro: Macro) {
         let payload = macro.text.replacingOccurrences(of: "\n", with: "\r")
             + (macro.sendReturn ? "\r" : "")
-        if multiExecActive {
-            for session in multiExecTargets {
+        if let tab = selectedTab, tab.broadcastArmed {
+            for session in broadcastTargets(in: tab) {
                 session.sendText(payload)
             }
         } else {
@@ -735,28 +950,40 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    private func add(_ session: TerminalSession) {
+    /// Wires a freshly created session into the manager: input mirroring, focus
+    /// tracking, live terminal settings, and MultiExec-membership persistence.
+    /// Call before placing the session in a tab or an existing pane tree.
+    private func prepare(_ session: TerminalSession) {
         session.terminalView.onUserInput = { [weak self, weak session] data in
             guard let self, let session else { return }
             self.mirrorUserInput(data, from: session)
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)
         session.prefersMetal = terminalSettings.useMetalRenderer
-        // Persist the workspace when this tab's MultiExec membership is toggled
-        // (the checkbox sets the property directly on the session).
+        // Persist the workspace when this session's MultiExec membership is
+        // toggled (the checkbox sets the property directly on the session).
         membershipObservers[session.id] = session.$includedInMultiExec
             .dropFirst()
             .sink { [weak self] _ in self?.notifyWorkspaceChanged() }
-        sessions.append(session)
-        selectedID = session.id   // didSet fires the open-tab persist
     }
 
-    /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty.
-    /// This catches paste and composed text paths that NSEvent-only mirroring
-    /// misses, while `sendMirroredInput` prevents feedback loops in peers.
+    private func add(_ session: TerminalSession) {
+        prepare(session)
+        // Each new session opens as its own single-leaf tab; splitting inserts
+        // into an existing tab's tree instead.
+        let tab = Tab(session: session)
+        tabs.append(tab)
+        selectedTabID = tab.id   // didSet fires the open-tab persist
+    }
+
+    /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty to
+    /// the other included panes of the *same* tab. Catches paste and composed
+    /// text paths that NSEvent-only mirroring misses, while `sendMirroredInput`
+    /// prevents feedback loops in peers.
     private func mirrorUserInput(_ data: ArraySlice<UInt8>, from focused: TerminalSession) {
-        guard multiExecActive, focused.includedInMultiExec else { return }
-        for peer in multiExecTargets where peer !== focused {
+        guard let tab = tabs.first(where: { $0.contains(focused.id) }),
+              tab.broadcastArmed, focused.includedInMultiExec else { return }
+        for peer in broadcastTargets(in: tab) where peer !== focused {
             peer.sendMirroredInput(data)
         }
     }

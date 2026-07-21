@@ -3,28 +3,17 @@ import SwiftUI
 struct SessionArea: View {
     @EnvironmentObject var sessions: SessionManager
 
+    private var armed: Bool { sessions.selectedTab?.broadcastArmed ?? false }
+
     var body: some View {
         Group {
             if sessions.sessions.isEmpty {
                 EmptyStateView()
-            } else if sessions.multiExecActive {
-                MultiExecView()
-            } else {
+            } else if let tab = sessions.selectedTab {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
-                    if let current = sessions.selected {
-                        HSplitView {
-                            TerminalPane(session: current)
-                                .id(current.id)
-                                .frame(minWidth: 400)
-                                .layoutPriority(1)
-                            if sessions.filesPaneVisible, let sftp = current.sftp {
-                                SFTPPaneView(model: sftp)
-                                    .frame(minWidth: 260, idealWidth: 340, maxWidth: 560)
-                            }
-                        }
-                    }
+                    TabContentView(tab: tab)
                 }
             }
         }
@@ -35,17 +24,88 @@ struct SessionArea: View {
                     Label("Files", systemImage: "folder")
                 }
                 .toggleStyle(.button)
-                .disabled(sessions.multiExecActive
-                    || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
+                .disabled(armed || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
                 .help("Show the remote file browser for this session")
             }
             ToolbarItem {
-                Toggle(isOn: $sessions.multiExecActive) {
-                    Label("MultiExec", systemImage: "square.grid.2x2")
+                Toggle(isOn: Binding(
+                    get: { armed },
+                    set: { sessions.setBroadcastArmed($0) }
+                )) {
+                    Label("MultiExec", systemImage: "dot.radiowaves.left.and.right")
                 }
                 .toggleStyle(.button)
-                .disabled(sessions.sessions.isEmpty)
-                .help("Show all sessions and broadcast keystrokes to every included one")
+                .disabled(sessions.selectedTab == nil)
+                .help("Broadcast keystrokes to every included pane in this tab")
+            }
+        }
+    }
+}
+
+/// A tab's content: the pane tree, wrapped with the broadcast banner and the
+/// macro/command bars when the tab is armed for MultiExec.
+struct TabContentView: View {
+    @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var store: SessionStore
+    @ObservedObject var tab: Tab
+    @State private var commandInput = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if tab.broadcastArmed {
+                HStack(spacing: 8) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                    Text("MultiExec is ON — keystrokes go to every included pane in this tab")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Button("Disarm") { sessions.setBroadcastArmed(false) }
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.25))
+                Divider()
+            }
+
+            HSplitView {
+                PaneTreeView(tab: tab)
+                    .frame(minWidth: 400)
+                    .layoutPriority(1)
+                if sessions.filesPaneVisible, let sftp = sessions.selected?.sftp {
+                    SFTPPaneView(model: sftp)
+                        .frame(minWidth: 260, idealWidth: 340, maxWidth: 560)
+                }
+            }
+
+            if tab.broadcastArmed {
+                Divider()
+                if !store.macros.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Text("Macros:").font(.caption).foregroundStyle(.secondary)
+                            ForEach(store.macros) { macro in
+                                Button(macro.name) { sessions.run(macro) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .help(macro.text)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                    }
+                    .background(.bar)
+                    Divider()
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right").foregroundStyle(.orange)
+                    TextField("Run a command in all included panes…", text: $commandInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(.body, design: .monospaced))
+                        .onSubmit {
+                            sessions.broadcast(commandInput)
+                            commandInput = ""
+                        }
+                }
+                .padding(10)
+                .background(.bar)
             }
         }
     }
@@ -69,7 +129,7 @@ struct TerminalPane: View {
                     HStack(spacing: 10) {
                         Image(systemName: "power")
                             .foregroundStyle(.secondary)
-                        Text("Session ended — press ⏎ or click to close")
+                        Text("Session ended — press ⏎ or ⌃D to close")
                             .font(.callout)
                         Button("Close") { sessions.close(session) }
                             .keyboardShortcut(.defaultAction)
@@ -142,155 +202,21 @@ struct FindBar: View {
     }
 }
 
-struct MultiExecView: View {
-    @EnvironmentObject var sessions: SessionManager
-    @EnvironmentObject var store: SessionStore
-    @State private var commandInput = ""
-
-    private let columns = [GridItem(.adaptive(minimum: 420), spacing: 8)]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                Text("MultiExec is ON — keystrokes typed in any included terminal go to all of them")
-                    .fontWeight(.semibold)
-                Spacer()
-                Button("Exit MultiExec") { sessions.multiExecActive = false }
-            }
-            .padding(8)
-            .background(Color.orange.opacity(0.25))
-
-            Divider()
-
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(sessions.sessions) { session in
-                        MultiExecTile(session: session)
-                    }
-                }
-                .padding(8)
-            }
-
-            Divider()
-
-            if !store.macros.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        Text("Macros:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ForEach(store.macros) { macro in
-                            Button(macro.name) { sessions.run(macro) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .help(macro.text)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                }
-                .background(.bar)
-                Divider()
-            }
-
-            HStack(spacing: 8) {
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.orange)
-                TextField("Run a command in all included sessions…", text: $commandInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(.body, design: .monospaced))
-                    .onSubmit {
-                        sessions.broadcast(commandInput)
-                        commandInput = ""
-                    }
-            }
-            .padding(10)
-            .background(.bar)
-        }
-    }
-}
-
-struct MultiExecTile: View {
-    @ObservedObject var session: TerminalSession
-    @State private var confirmingInclude = false
-
-    /// Protected hosts require explicit confirmation before joining the broadcast.
-    private var includeBinding: Binding<Bool> {
-        Binding(
-            get: { session.includedInMultiExec },
-            set: { newValue in
-                if newValue, session.isProtected {
-                    confirmingInclude = true
-                } else {
-                    session.includedInMultiExec = newValue
-                }
-            }
-        )
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Toggle(isOn: includeBinding) {
-                    Text(session.title)
-                        .lineLimit(1)
-                        .fontWeight(.medium)
-                }
-                .toggleStyle(.checkbox)
-                .help("Include this terminal in MultiExec broadcast")
-                if session.isProtected {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Protected host")
-                }
-                EnvironmentBadge(environment: session.environment)
-                Spacer()
-                Circle()
-                    .fill(session.isRunning ? Color.green : Color.secondary)
-                    .frame(width: 7, height: 7)
-            }
-            .padding(6)
-            .background(session.includedInMultiExec ? Color.orange.opacity(0.15) : Color.clear)
-
-            TerminalHostingView(session: session, autoFocus: false)
-                .id(session.id)
-        }
-        .confirmationDialog(
-            "\"\(session.title)\" is a protected host. Include it in the MultiExec broadcast?",
-            isPresented: $confirmingInclude
-        ) {
-            Button("Include Protected Host", role: .destructive) {
-                session.includedInMultiExec = true
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .frame(height: 320)
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(
-                    session.includedInMultiExec ? Color.orange.opacity(0.8) : Color.secondary.opacity(0.3),
-                    lineWidth: session.includedInMultiExec ? 2 : 1
-                )
-        )
-        .opacity(session.includedInMultiExec ? 1 : 0.55)
-    }
-}
-
 struct TabBar: View {
     @EnvironmentObject var sessions: SessionManager
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(sessions.sessions) { session in
-                    TabChip(
-                        session: session,
-                        isSelected: session.id == sessions.selectedID,
-                        onSelect: { sessions.selectedID = session.id },
-                        onClose: { sessions.close(session) }
-                    )
+                ForEach(sessions.tabs) { tab in
+                    if let leaf = tab.activeLeaf {
+                        TabChip(
+                            session: leaf,
+                            isSelected: tab.id == sessions.selectedTabID,
+                            onSelect: { sessions.selectedTabID = tab.id },
+                            onClose: { sessions.closeTab(tab) }
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 8)
