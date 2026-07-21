@@ -467,8 +467,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 }
 
 final class SessionManager: ObservableObject {
-    @Published var sessions: [TerminalSession] = []
-    @Published var selectedID: UUID? { didSet { notifyWorkspaceChanged() } }
+    /// Source of truth: each open tab owns a pane tree of live sessions. Today
+    /// every tab is a single leaf; splitting (0.9) grows the trees.
+    @Published var tabs: [Tab] = []
+    @Published var selectedTabID: UUID? { didSet { notifyWorkspaceChanged() } }
     @Published var multiExecActive = false
     @Published var filesPaneVisible = false
     @Published var showQuickConnect = false
@@ -515,8 +517,26 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    var selected: TerminalSession? {
-        sessions.first { $0.id == selectedID }
+    /// Flat view of every live session (all leaves across all tabs), in tab and
+    /// left-to-right pane order. The lifecycle/broadcast/restore machinery still
+    /// works on this set; the tree only governs layout.
+    var sessions: [TerminalSession] { tabs.flatMap(\.leaves) }
+
+    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
+
+    /// The focused terminal — the active leaf of the selected tab. Drives find,
+    /// zoom, the SFTP pane, and single-session close.
+    var selected: TerminalSession? { selectedTab?.activeLeaf }
+
+    /// Compatibility accessor: read/select the focused session by id. Setting it
+    /// focuses that leaf's pane and selects its tab.
+    var selectedID: UUID? {
+        get { selected?.id }
+        set {
+            guard let newValue, let tab = tabs.first(where: { $0.contains(newValue) }) else { return }
+            tab.activePaneID = newValue
+            if selectedTabID != tab.id { selectedTabID = tab.id } else { notifyWorkspaceChanged() }
+        }
     }
 
     var multiExecTargets: [TerminalSession] {
@@ -701,18 +721,35 @@ final class SessionManager: ObservableObject {
     func zoomOut() { selected?.zoom(by: -1) }
     func resetZoom() { selected?.resetZoom(appearance: appearance) }
 
+    /// Closes a single pane. Removes its leaf from the containing tab's tree,
+    /// collapsing splits; when it was the tab's last pane, the tab closes too.
     func close(_ session: TerminalSession) {
         session.shutdown()
         membershipObservers[session.id] = nil
-        sessions.removeAll { $0.id == session.id }
-        if selectedID == session.id {
-            selectedID = sessions.last?.id   // didSet persists the new layout
+        guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
+
+        if let newRoot = tab.root.removingLeaf(session.id) {
+            tab.root = newRoot
+            if tab.activePaneID == session.id {
+                tab.activePaneID = tab.leaves.first?.id ?? tab.activePaneID
+            }
+            notifyWorkspaceChanged()
         } else {
-            notifyWorkspaceChanged()         // closed a non-selected tab
+            tabs.removeAll { $0.id == tab.id }
+            if selectedTabID == tab.id {
+                selectedTabID = tabs.last?.id   // didSet persists the new layout
+            } else {
+                notifyWorkspaceChanged()
+            }
         }
         if sessions.isEmpty {
             multiExecActive = false
         }
+    }
+
+    /// Closes every pane in a tab (the tab-bar close button).
+    func closeTab(_ tab: Tab) {
+        for session in tab.leaves { close(session) }
     }
 
     /// Sends a full command line to every included session (command-bar path).
@@ -742,13 +779,16 @@ final class SessionManager: ObservableObject {
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)
         session.prefersMetal = terminalSettings.useMetalRenderer
-        // Persist the workspace when this tab's MultiExec membership is toggled
-        // (the checkbox sets the property directly on the session).
+        // Persist the workspace when this session's MultiExec membership is
+        // toggled (the checkbox sets the property directly on the session).
         membershipObservers[session.id] = session.$includedInMultiExec
             .dropFirst()
             .sink { [weak self] _ in self?.notifyWorkspaceChanged() }
-        sessions.append(session)
-        selectedID = session.id   // didSet fires the open-tab persist
+        // Each new session opens as its own single-leaf tab (splitting comes
+        // later, and reuses close/select through the same tree).
+        let tab = Tab(session: session)
+        tabs.append(tab)
+        selectedTabID = tab.id   // didSet fires the open-tab persist
     }
 
     /// Mirrors the exact bytes SwiftTerm is about to write to the focused pty.

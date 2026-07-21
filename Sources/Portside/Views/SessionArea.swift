@@ -13,13 +13,12 @@ struct SessionArea: View {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
-                    if let current = sessions.selected {
+                    if let tab = sessions.selectedTab {
                         HSplitView {
-                            TerminalPane(session: current)
-                                .id(current.id)
+                            PaneTreeView(tab: tab)
                                 .frame(minWidth: 400)
                                 .layoutPriority(1)
-                            if sessions.filesPaneVisible, let sftp = current.sftp {
+                            if sessions.filesPaneVisible, let sftp = sessions.selected?.sftp {
                                 SFTPPaneView(model: sftp)
                                     .frame(minWidth: 260, idealWidth: 340, maxWidth: 560)
                             }
@@ -284,13 +283,15 @@ struct TabBar: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(sessions.sessions) { session in
-                    TabChip(
-                        session: session,
-                        isSelected: session.id == sessions.selectedID,
-                        onSelect: { sessions.selectedID = session.id },
-                        onClose: { sessions.close(session) }
-                    )
+                ForEach(sessions.tabs) { tab in
+                    if let leaf = tab.activeLeaf {
+                        TabChip(
+                            session: leaf,
+                            isSelected: tab.id == sessions.selectedTabID,
+                            onSelect: { sessions.selectedTabID = tab.id },
+                            onClose: { sessions.closeTab(tab) }
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 8)
