@@ -764,17 +764,25 @@ final class SessionManager: ObservableObject {
 
     // MARK: - Workspace restore
 
-    /// The current open layout, for persistence. `multiExecActive` is
+    /// The current open layout, for persistence. Broadcast-armed state is
     /// intentionally omitted — restore always relaunches disarmed.
     var currentWorkspace: WorkspaceSnapshot {
-        let items = sessions.map { session in
-            WorkspaceSnapshot.Item(
+        let tabSnapshots = tabs.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.root)) }
+        let selectedIndex = selectedTabID.flatMap { id in tabs.firstIndex { $0.id == id } }
+        return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex)
+    }
+
+    private func snapshot(of node: PaneNode<TerminalSession>) -> WorkspaceSnapshot.PaneSnapshot {
+        switch node {
+        case .leaf(let session):
+            let leaf = WorkspaceSnapshot.Leaf(
                 kind: session.entry.map { .host($0.id) } ?? .localShell,
-                includedInMultiExec: session.includedInMultiExec
-            )
+                includedInMultiExec: session.includedInMultiExec)
+            return .leaf(leaf)
+        case .split(_, let orientation, let children, let fractions):
+            return .split(orientation: orientation, children: children.map(snapshot(of:)),
+                          fractions: fractions)
         }
-        let selectedIndex = selectedID.flatMap { id in sessions.firstIndex { $0.id == id } }
-        return WorkspaceSnapshot(items: items, selectedIndex: selectedIndex)
     }
 
     /// Decides what to do with the last session's snapshot at launch: nothing
@@ -784,7 +792,7 @@ final class SessionManager: ObservableObject {
                           entryForID: (UUID) -> SessionEntry?) {
         guard mode != .off, !snapshot.isEmpty else { return }
         let plan = snapshot.plan(entryForID: entryForID)
-        guard !plan.actions.isEmpty else { return }
+        guard !plan.tabs.isEmpty else { return }
         switch mode {
         case .auto: restore(plan)
         case .ask: pendingRestore = plan
@@ -792,37 +800,65 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    /// Replays a planned restore: recreates each tab (staggered so a large
-    /// workspace doesn't fire every ssh handshake at once), applies MultiExec
-    /// membership, restores the selected tab, and leaves MultiExec disarmed.
+    /// Replays a planned restore: rebuilds each tab's pane tree, restores the
+    /// selected tab, and leaves every tab disarmed.
     func restore(_ plan: RestorePlan) {
-        guard !plan.actions.isEmpty else { return }
+        guard !plan.tabs.isEmpty else { return }
         isRestoring = true
-        let gap = 0.15  // seconds between spawns
-        var created: [TerminalSession?] = Array(repeating: nil, count: plan.actions.count)
-        for (i, action) in plan.actions.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * gap) { [weak self] in
-                guard let self else { return }
-                created[i] = self.perform(action)
-                if i == plan.actions.count - 1 {
-                    self.isRestoring = false
-                    let selected = plan.selectedActionIndex.flatMap { created[$0] } ?? self.sessions.first
-                    self.selectedID = selected?.id   // fires one persist at the final state
+        var built: [Tab] = []
+        for tabPlan in plan.tabs {
+            guard let tab = buildTab(tabPlan) else { continue }
+            tabs.append(tab)
+            built.append(tab)
+        }
+        isRestoring = false
+        let selected = plan.selectedTabIndex.flatMap { $0 < built.count ? built[$0] : nil } ?? tabs.last
+        selectedTabID = selected?.id   // fires one persist at the final state
+    }
+
+    private func buildTab(_ tabPlan: RestorePlan.TabPlan) -> Tab? {
+        guard let root = buildNode(tabPlan.root) else { return nil }
+        return Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+    }
+
+    private func buildNode(_ plan: RestorePlan.PanePlan) -> PaneNode<TerminalSession>? {
+        switch plan {
+        case .leaf(let action):
+            return .leaf(makeRestoredSession(action))
+        case .split(let orientation, let children, let fractions):
+            var kept: [PaneNode<TerminalSession>] = []
+            var keptFractions: [CGFloat] = []
+            for (child, fraction) in zip(children, fractions) {
+                if let node = buildNode(child) {
+                    kept.append(node)
+                    keptFractions.append(fraction)
                 }
+            }
+            switch kept.count {
+            case 0: return nil
+            case 1: return kept[0]
+            default: return .split(id: UUID(), orientation: orientation, children: kept,
+                                   fractions: normalizedFractions(keptFractions))
             }
         }
     }
 
-    private func perform(_ action: RestoreAction) -> TerminalSession? {
+    /// Creates and prepares a session for a restore action, without placing it
+    /// in a tab (the tree builder assembles it).
+    private func makeRestoredSession(_ action: RestoreAction) -> TerminalSession {
         switch action {
         case .connect(let entry, let included):
-            connect(to: entry)
-            sessions.last?.includedInMultiExec = included
+            let session = makeSession(for: entry)
+            prepare(session)
+            session.includedInMultiExec = included
+            postConnect(session, entry: entry)
+            return session
         case .localShell(let included):
-            openLocalShell()
-            sessions.last?.includedInMultiExec = included
+            let session = makeLocalShellSession()
+            prepare(session)
+            session.includedInMultiExec = included
+            return session
         }
-        return sessions.last
     }
 
     private func notifyWorkspaceChanged() {

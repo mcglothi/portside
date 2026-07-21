@@ -106,11 +106,11 @@ final class PaneNodeTests: XCTestCase {
     // MARK: - normalized
 
     func testNormalizedSumsToOne() {
-        XCTAssertEqual(Node.normalized([1, 1, 2]).reduce(0, +), 1.0, accuracy: 0.0001)
+        XCTAssertEqual(normalizedFractions([1, 1, 2]).reduce(0, +), 1.0, accuracy: 0.0001)
     }
 
     func testNormalizedZeroTotalFallsBackToEqual() {
-        let result = Node.normalized([0, 0])
+        let result = normalizedFractions([0, 0])
         XCTAssertEqual(result, [0.5, 0.5])
     }
 }

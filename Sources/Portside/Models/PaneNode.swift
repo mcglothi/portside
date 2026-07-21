@@ -1,7 +1,16 @@
 import CoreGraphics
 import Foundation
 
-enum PaneOrientation { case horizontal, vertical }
+enum PaneOrientation: String, Codable { case horizontal, vertical }
+
+/// Renormalizes split fractions to sum to 1 (after a child is added or removed).
+func normalizedFractions(_ fractions: [CGFloat]) -> [CGFloat] {
+    let total = fractions.reduce(0, +)
+    guard total > 0 else {
+        return Array(repeating: 1 / CGFloat(fractions.count), count: fractions.count)
+    }
+    return fractions.map { $0 / total }
+}
 
 /// A tab's terminal layout: a tree whose leaves are live sessions and whose
 /// interior nodes are horizontal/vertical splits. Generic over the leaf type so
@@ -65,18 +74,9 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
             default:
                 return .split(id: id, orientation: orientation,
                               children: newChildren,
-                              fractions: PaneNode.normalized(newFractions))
+                              fractions: normalizedFractions(newFractions))
             }
         }
-    }
-
-    /// Renormalizes split fractions to sum to 1 after a child is removed.
-    static func normalized(_ fractions: [CGFloat]) -> [CGFloat] {
-        let total = fractions.reduce(0, +)
-        guard total > 0 else {
-            return Array(repeating: 1 / CGFloat(fractions.count), count: fractions.count)
-        }
-        return fractions.map { $0 / total }
     }
 }
 
