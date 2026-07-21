@@ -37,10 +37,22 @@ final class SessionStore: ObservableObject {
     var allThemes: [TerminalTheme] { TerminalTheme.builtIns + customThemes }
 
     private let fileURL: URL
+    /// When true, first-launch seeding reads ~/.ssh/config. Tests pass a temp
+    /// file and disable seeding so they start from an empty, isolated library.
+    private let seedsFromSSHConfig: Bool
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         fileURL = appSupport.appendingPathComponent("Portside/portside.json")
+        seedsFromSSHConfig = true
+        load()
+    }
+
+    /// Test seam: an isolated library backed by `fileURL`, never touching the
+    /// user's real library or ~/.ssh/config.
+    init(fileURL: URL, seedsFromSSHConfig: Bool = false) {
+        self.fileURL = fileURL
+        self.seedsFromSSHConfig = seedsFromSSHConfig
         load()
     }
 
@@ -63,6 +75,14 @@ final class SessionStore: ObservableObject {
 
     func delete(_ entry: SessionEntry) {
         entries.removeAll { $0.id == entry.id }
+        save()
+    }
+
+    /// Deletes every entry whose id is in `ids`, saving once. No-op (and no
+    /// save) when nothing matches, so a stray empty selection can't churn disk.
+    func delete(ids: Set<UUID>) {
+        guard entries.contains(where: { ids.contains($0.id) }) else { return }
+        entries.removeAll { ids.contains($0.id) }
         save()
     }
 
@@ -211,6 +231,17 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// Moves every entry in `ids` into `folder` ("" = top level), saving once.
+    /// Skips entries already there; saves only if at least one actually moved.
+    func move(entryIDs ids: Set<UUID>, toFolder folder: String) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) && entries[i].folder != folder {
+            entries[i].folder = folder
+            changed = true
+        }
+        if changed { save() }
+    }
+
     func createFolder(_ path: String) {
         let clean = normalize(path)
         guard !clean.isEmpty, !explicitFolders.contains(clean) else { return }
@@ -350,7 +381,7 @@ final class SessionStore: ObservableObject {
             defaults = doc.defaults ?? ConnectionDefaults()
             logging = doc.logging ?? LoggingSettings()
             terminal = doc.terminal ?? TerminalSettings()
-        } else {
+        } else if seedsFromSSHConfig {
             entries = SSHConfigImporter.importEntries()
             save()
         }
