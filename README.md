@@ -129,15 +129,18 @@ exists to fill that gap without giving up native speed and macOS polish.
 - ✅ Tested terminal-compatibility matrix — see
   [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for observed support across
   color, Unicode, mouse, links, and image protocols (with the known gaps).
-- Add the highest-value terminal comforts: per-profile font/theme choices and
-  shell integration or prompt markers.
+- ✅ Native sidebar multi-selection (shift-click ranges, ⌘-click, keyboard) and
+  drag hosts between folders — the Hosts list is now an `NSOutlineView`.
+- ✅ Session restore — reopen the tabs you had open when you last quit
+  (Settings → Terminal: off / ask / auto). MultiExec groups reopen disarmed.
+- Per-profile font/theme choices (appearance is global today).
 - Font ligatures and inline image protocols (Sixel / iTerm2) are current
   SwiftTerm limitations, tracked in the compatibility matrix rather than
-  promised here.
+  promised here. Shell integration / prompt markers (OSC 133) is likewise
+  blocked upstream — SwiftTerm implements only OSC 8 hyperlinks.
 
 ### Later
 
-- Session restore / pinned workspaces
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Split panes and pinned layouts
 
