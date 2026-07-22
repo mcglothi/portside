@@ -13,6 +13,10 @@ struct TerminalAppearance: Equatable {
     var backgroundHex: String
     var cursorHex: String
     var ansiHex: [String]   // exactly 16 hex values, ANSI order
+    /// UI accent for the MultiExec "armed" banner, chips, and pane borders. Not
+    /// part of a color scheme — a standalone preference that survives theme
+    /// changes. Defaults to system orange.
+    var alertHex: String = "#FF9500"
 
     static let `default` = TerminalTheme.systemDefault.appearance()
 
@@ -25,6 +29,7 @@ struct TerminalAppearance: Equatable {
     var foreground: NSColor { HexColor.nsColor(foregroundHex) }
     var background: NSColor { HexColor.nsColor(backgroundHex) }
     var cursor: NSColor { HexColor.nsColor(cursorHex) }
+    var alert: NSColor { HexColor.nsColor(alertHex) }
 
     /// The current colors as a theme, e.g. for previews.
     var asTheme: TerminalTheme {
@@ -49,7 +54,7 @@ struct TerminalAppearance: Equatable {
 extension TerminalAppearance: Codable {
     enum CodingKeys: String, CodingKey {
         case fontName, fontSize, themeName, paletteName
-        case foregroundHex, backgroundHex, cursorHex, ansiHex
+        case foregroundHex, backgroundHex, cursorHex, ansiHex, alertHex
     }
 
     init(from decoder: Decoder) throws {
@@ -67,6 +72,7 @@ extension TerminalAppearance: Codable {
         let decodedAnsi = try c.decodeIfPresent([String].self, forKey: .ansiHex)
         ansiHex = (decodedAnsi?.count == 16 ? decodedAnsi : nil)
             ?? (TerminalTheme.builtIns.first { $0.name == resolvedName }?.ansi ?? fallback.ansi)
+        alertHex = try c.decodeIfPresent(String.self, forKey: .alertHex) ?? "#FF9500"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -78,6 +84,7 @@ extension TerminalAppearance: Codable {
         try c.encode(backgroundHex, forKey: .backgroundHex)
         try c.encode(cursorHex, forKey: .cursorHex)
         try c.encode(ansiHex, forKey: .ansiHex)
+        try c.encode(alertHex, forKey: .alertHex)
     }
 }
 

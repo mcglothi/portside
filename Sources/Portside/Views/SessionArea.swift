@@ -61,6 +61,8 @@ struct TabContentView: View {
     @ObservedObject var tab: Tab
     @State private var commandInput = ""
 
+    private var alert: Color { Color(nsColor: store.appearance.alert) }
+
     var body: some View {
         VStack(spacing: 0) {
             if tab.broadcastArmed {
@@ -72,7 +74,7 @@ struct TabContentView: View {
                     Button("Disarm") { sessions.setBroadcastArmed(false) }
                 }
                 .padding(8)
-                .background(Color.orange.opacity(0.25))
+                .background(alert.opacity(0.25))
                 Divider()
             }
 
@@ -106,7 +108,7 @@ struct TabContentView: View {
                     Divider()
                 }
                 HStack(spacing: 8) {
-                    Image(systemName: "chevron.right").foregroundStyle(.orange)
+                    Image(systemName: "chevron.right").foregroundStyle(alert)
                     TextField("Run a command in all included panes…", text: $commandInput)
                         .textFieldStyle(.plain)
                         .font(.system(.body, design: .monospaced))

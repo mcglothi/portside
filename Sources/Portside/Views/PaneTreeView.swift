@@ -52,6 +52,7 @@ struct PaneNodeView: View {
 /// MultiExec — a per-pane include toggle, protected-host guard, and the
 /// included/excluded styling that used to live on the MultiExec grid tiles.
 struct PaneLeafView: View {
+    @EnvironmentObject var store: SessionStore
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
     @State private var confirmingInclude = false
@@ -59,6 +60,7 @@ struct PaneLeafView: View {
     private var armed: Bool { tab.broadcastArmed }
     private var included: Bool { session.includedInMultiExec }
     private var isActive: Bool { tab.leaves.count > 1 && session.id == tab.activePaneID }
+    private var alert: Color { Color(nsColor: store.appearance.alert) }
 
     var body: some View {
         TerminalPane(session: session)
@@ -85,18 +87,18 @@ struct PaneLeafView: View {
             }
     }
 
-    /// Accent ring on the active pane; otherwise an orange ring on an included
-    /// pane while armed. Nil (no ring) for a lone or excluded pane.
+    /// Accent ring on the active pane; otherwise the alert-colored ring on an
+    /// included pane while armed. Nil (no ring) for a lone or excluded pane.
     private var ringColor: Color? {
         if isActive { return .accentColor }
-        if armed && included { return .orange.opacity(0.8) }
+        if armed && included { return alert.opacity(0.8) }
         return nil
     }
 
     private var includeChip: some View {
         HStack(spacing: 4) {
             Image(systemName: included ? "checkmark.square.fill" : "square")
-                .foregroundStyle(included ? Color.orange : .secondary)
+                .foregroundStyle(included ? alert : .secondary)
             if session.isProtected {
                 Image(systemName: "lock.fill").foregroundStyle(.secondary)
             }

@@ -80,6 +80,7 @@ struct AppearanceSettingsView: View {
                 ColorPicker("Text", selection: colorBinding(\.foregroundHex), supportsOpacity: false)
                 ColorPicker("Background", selection: colorBinding(\.backgroundHex), supportsOpacity: false)
                 ColorPicker("Cursor", selection: colorBinding(\.cursorHex), supportsOpacity: false)
+                ColorPicker("Alert Color", selection: colorBinding(\.alertHex), supportsOpacity: false)
                 HStack {
                     Button("Browse Gallery…") { showingGallery = true }
                     Button("Import Theme…") { showingThemeImporter = true }
