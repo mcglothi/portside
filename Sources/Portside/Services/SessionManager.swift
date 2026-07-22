@@ -767,6 +767,25 @@ final class SessionManager: ObservableObject {
         tab.broadcastArmed = armed
     }
 
+    // MARK: - Tab navigation
+
+    /// Selects the next tab, wrapping around (⌘⇧]).
+    func selectNextTab() { cycleTab(by: 1) }
+
+    /// Selects the previous tab, wrapping around (⌘⇧[).
+    func selectPreviousTab() { cycleTab(by: -1) }
+
+    private func cycleTab(by delta: Int) {
+        guard tabs.count > 1, let idx = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return }
+        selectedTabID = tabs[(idx + delta + tabs.count) % tabs.count].id
+    }
+
+    /// Selects the tab at a 0-based index (⌘1–⌘9); no-op if out of range.
+    func selectTab(at index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        selectedTabID = tabs[index].id
+    }
+
     // MARK: - Grid view
 
     /// The tab, if any, that Grid View consolidated all tabs into.

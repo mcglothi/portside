@@ -89,6 +89,19 @@ struct PortsideApp: App {
                 Button("Close Pane") { sessions.closeActivePane() }
                     .keyboardShortcut("w", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .windowArrangement) {
+                Divider()
+                Button("Show Next Tab") { sessions.selectNextTab() }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Show Previous Tab") { sessions.selectPreviousTab() }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Menu("Go to Tab") {
+                    ForEach(1...9, id: \.self) { n in
+                        Button("Tab \(n)") { sessions.selectTab(at: n - 1) }
+                            .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
+                    }
+                }
+            }
         }
 
         Settings {
