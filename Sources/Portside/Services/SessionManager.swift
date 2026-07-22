@@ -8,6 +8,8 @@ import SwiftTerm
 final class LoggingTerminalView: LocalProcessTerminalView {
     var logger: SessionLogger?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+    /// Fires when output arrives, so a background tab can flag new activity.
+    var onOutput: (() -> Void)?
     /// When set, input bytes go here instead of the child pty. Sits below the
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
@@ -15,6 +17,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         logger?.append(slice)
+        onOutput?()
         super.dataReceived(slice: slice)
     }
 
@@ -165,6 +168,8 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @Published var title: String
     @Published var isRunning = true
     @Published var includedInMultiExec: Bool
+    /// New output arrived while this session's tab wasn't the visible one.
+    @Published var hasActivity = false
     // Per-terminal find bar (⌘F); drives SwiftTerm's scrollback search.
     @Published var findVisible = false
     @Published var findTerm = ""
@@ -476,7 +481,9 @@ final class SessionManager: ObservableObject {
     /// Source of truth: each open tab owns a pane tree of live sessions. Today
     /// every tab is a single leaf; splitting (0.9) grows the trees.
     @Published var tabs: [Tab] = []
-    @Published var selectedTabID: UUID? { didSet { notifyWorkspaceChanged() } }
+    @Published var selectedTabID: UUID? {
+        didSet { clearActivityForSelectedTab(); notifyWorkspaceChanged() }
+    }
     @Published var filesPaneVisible = false
     @Published var showQuickConnect = false
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
@@ -708,6 +715,33 @@ final class SessionManager: ObservableObject {
         close(session)
     }
 
+    /// Maximizes the active pane to fill its tab, or restores the split (⌘⇧↵).
+    /// A single-pane tab has nothing to zoom.
+    func toggleZoom() {
+        guard let tab = selectedTab else { return }
+        objectWillChange.send()
+        if tab.zoomedPaneID != nil {
+            tab.zoomedPaneID = nil
+        } else if tab.leaves.count > 1 {
+            tab.zoomedPaneID = tab.activePaneID
+        }
+    }
+
+    /// Relaunches a session that has exited, in the same pane — reconnecting a
+    /// dropped host or reopening a local shell without disturbing the layout.
+    func reconnect(_ session: TerminalSession) {
+        guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
+        let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
+        prepare(replacement)
+        replacement.includedInMultiExec = session.includedInMultiExec
+        membershipObservers[session.id] = nil
+        tab.root = tab.root.replacingLeaf(session.id, with: replacement)
+        if tab.activePaneID == session.id { tab.activePaneID = replacement.id }
+        if tab.zoomedPaneID == session.id { tab.zoomedPaneID = replacement.id }
+        if let entry = session.entry { postConnect(replacement, entry: entry) }
+        DispatchQueue.main.async { [weak replacement] in replacement?.focus() }
+    }
+
     /// Opens several hosts at once. With `multiExec`, they open as one tab split
     /// into a grid and armed for broadcast — the "launch a group and drive them
     /// together" workflow; otherwise each opens as its own tab. Entries should
@@ -765,6 +799,25 @@ final class SessionManager: ObservableObject {
         guard let tab = selectedTab else { return }
         objectWillChange.send()
         tab.broadcastArmed = armed
+    }
+
+    // MARK: - Tab navigation
+
+    /// Selects the next tab, wrapping around (⌘⇧]).
+    func selectNextTab() { cycleTab(by: 1) }
+
+    /// Selects the previous tab, wrapping around (⌘⇧[).
+    func selectPreviousTab() { cycleTab(by: -1) }
+
+    private func cycleTab(by delta: Int) {
+        guard tabs.count > 1, let idx = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return }
+        selectedTabID = tabs[(idx + delta + tabs.count) % tabs.count].id
+    }
+
+    /// Selects the tab at a 0-based index (⌘1–⌘9); no-op if out of range.
+    func selectTab(at index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        selectedTabID = tabs[index].id
     }
 
     // MARK: - Grid view
@@ -909,6 +962,25 @@ final class SessionManager: ObservableObject {
         onWorkspaceChange?(currentWorkspace)
     }
 
+    /// Flags a background tab's session as having new output (drives the tab
+    /// activity dot). Ignored for the visible tab and once already flagged.
+    private func markActivity(for session: TerminalSession) {
+        guard !session.hasActivity,
+              let tab = tabs.first(where: { $0.contains(session.id) }),
+              tab.id != selectedTabID else { return }
+        DispatchQueue.main.async {
+            session.hasActivity = true
+            self.objectWillChange.send()   // refresh the tab bar's dots
+        }
+    }
+
+    /// Clears the activity flag on the newly-visible tab's sessions.
+    private func clearActivityForSelectedTab() {
+        for session in selectedTab?.leaves ?? [] where session.hasActivity {
+            session.hasActivity = false
+        }
+    }
+
     /// Re-applies the global look to every open terminal (live settings edits).
     func applyAppearance(_ appearance: TerminalAppearance) {
         self.appearance = appearance
@@ -940,6 +1012,7 @@ final class SessionManager: ObservableObject {
         membershipObservers[session.id] = nil
         guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
 
+        if tab.zoomedPaneID == session.id { tab.zoomedPaneID = nil }
         if let newRoot = tab.root.removingLeaf(session.id) {
             tab.root = newRoot
             if tab.activePaneID == session.id {
@@ -956,9 +1029,23 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    /// Closes every pane in a tab (the tab-bar close button).
+    /// Closes every pane in a tab (the tab-bar close button / menu).
     func closeTab(_ tab: Tab) {
         for session in tab.leaves { close(session) }
+    }
+
+    /// Closes every tab except the given one (tab menu ▸ Close Others).
+    func closeOtherTabs(_ keep: Tab) {
+        for tab in tabs where tab.id != keep.id {
+            for session in tab.leaves { close(session) }
+        }
+    }
+
+    /// Sets or clears a tab's custom name (tab menu ▸ Rename).
+    func renameTab(_ tab: Tab, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        objectWillChange.send()
+        tab.customTitle = trimmed.isEmpty ? nil : trimmed
     }
 
     /// The included, running panes of a tab — the broadcast targets.
@@ -995,6 +1082,10 @@ final class SessionManager: ObservableObject {
         session.terminalView.onUserInput = { [weak self, weak session] data in
             guard let self, let session else { return }
             self.mirrorUserInput(data, from: session)
+        }
+        session.terminalView.onOutput = { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.markActivity(for: session)
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)
         session.prefersMetal = terminalSettings.useMetalRenderer

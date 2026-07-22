@@ -80,6 +80,8 @@ struct PortsideApp: App {
                     .keyboardShortcut("d", modifiers: .command)
                 Button("Split Down") { sessions.splitActivePane(.vertical) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Zoom Pane") { sessions.toggleZoom() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()
                 Button("Focus Next Pane") { sessions.focusAdjacentPane(next: true) }
                     .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
@@ -88,6 +90,19 @@ struct PortsideApp: App {
                 Divider()
                 Button("Close Pane") { sessions.closeActivePane() }
                     .keyboardShortcut("w", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .windowArrangement) {
+                Divider()
+                Button("Show Next Tab") { sessions.selectNextTab() }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Show Previous Tab") { sessions.selectPreviousTab() }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Menu("Go to Tab") {
+                    ForEach(1...9, id: \.self) { n in
+                        Button("Tab \(n)") { sessions.selectTab(at: n - 1) }
+                            .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
+                    }
+                }
             }
         }
 
