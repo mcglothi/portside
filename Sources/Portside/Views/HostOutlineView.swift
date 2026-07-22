@@ -14,6 +14,10 @@ struct HostOutlineView: NSViewRepresentable {
     let tree: (root: [SessionEntry], folders: [FolderNode])
     @Binding var selection: Set<UUID>
     let store: SessionStore
+    /// True while a host filter is active — every folder in the (already
+    /// narrowed) tree expands automatically so matches aren't hidden behind a
+    /// manual disclosure triangle.
+    var searching: Bool = false
 
     // SwiftUI-state-driven actions the coordinator can't do on its own.
     let connect: (SessionEntry) -> Void
@@ -89,6 +93,9 @@ struct HostOutlineView: NSViewRepresentable {
         private var lastSignature = ""
         /// Guards selection write-back while we apply selection programmatically.
         private var applyingSelection = false
+        /// Guards `expandedPaths` while a search-driven full-expand runs, so
+        /// clearing the search doesn't leave every folder permanently expanded.
+        private var isAutoExpanding = false
 
         init(_ parent: HostOutlineView) {
             self.parent = parent
@@ -101,7 +108,7 @@ struct HostOutlineView: NSViewRepresentable {
             roots = tree.folders.map(SidebarNode.folder) + tree.root.map(SidebarNode.entry)
             lastSignature = Self.signature(of: tree)
             outline?.reloadData()
-            restoreExpansion()
+            expandAfterReload()
         }
 
         /// Reload only when the tree actually changed; always reconcile selection.
@@ -113,9 +120,22 @@ struct HostOutlineView: NSViewRepresentable {
                 lastSignature = signature
                 outline?.reloadData()
                 expandedPaths = previouslyExpanded
-                restoreExpansion()
+                expandAfterReload()
             }
             applySelection(selection)
+        }
+
+        /// While searching, everything in the (already narrowed) tree expands
+        /// automatically; otherwise restore the user's own expand/collapse state.
+        private func expandAfterReload() {
+            guard let outline else { return }
+            if parent.searching {
+                isAutoExpanding = true
+                outline.expandItem(nil, expandChildren: true)
+                isAutoExpanding = false
+            } else {
+                restoreExpansion()
+            }
         }
 
         private func restoreExpansion() {
@@ -222,12 +242,14 @@ struct HostOutlineView: NSViewRepresentable {
         }
 
         func outlineViewItemDidExpand(_ notification: Notification) {
+            guard !isAutoExpanding else { return }
             if let node = notification.userInfo?["NSObject"] as? SidebarNode, let path = node.folderPath {
                 expandedPaths.insert(path)
             }
         }
 
         func outlineViewItemDidCollapse(_ notification: Notification) {
+            guard !isAutoExpanding else { return }
             if let node = notification.userInfo?["NSObject"] as? SidebarNode, let path = node.folderPath {
                 expandedPaths.remove(path)
             }
@@ -372,6 +394,9 @@ struct HostOutlineView: NSViewRepresentable {
                 })
                 menu.addItem(.separator())
                 addMoveMenu(menu, forSelection: selected, currentFolder: nil)
+                menu.addItem(ClosureMenuItem(title: "Save Password in Keychain for \(selected.count) Selected") {
+                    store.setSavePassword(true, ids: selected)
+                })
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
                     if self.confirmDelete(count: selected.count) { store.delete(ids: selected) }

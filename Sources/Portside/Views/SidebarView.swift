@@ -182,6 +182,7 @@ struct SidebarView: View {
                 tree: tree,
                 selection: $selection,
                 store: store,
+                searching: !filter.isEmpty,
                 connect: connect,
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
@@ -242,7 +243,11 @@ struct SidebarView: View {
             Menu {
                 switch section {
                 case .hosts:
-                    Button("New Session…") { editingEntry = SessionEntry(name: "") }
+                    Button("New Session…") {
+                        var entry = SessionEntry(name: "")
+                        entry.savePassword = store.defaults.defaultSavePassword ?? false
+                        editingEntry = entry
+                    }
                     Button("New Folder…") { newFolderName = ""; newFolderParent = "" }
                     Divider()
                     Button("Import…") { showingImporter = true }

@@ -341,6 +341,11 @@ extension SessionEntry: Codable {
 struct ConnectionDefaults: Codable, Equatable {
     var user: String?
     var identityFile: String?
+    /// Whether a freshly created session starts with "Save password in
+    /// Keychain" already checked. There's no secret to default in (unlike
+    /// `user`/`identityFile`, this can't be applied retroactively at connect
+    /// time) — it only seeds the toggle when a new session is created.
+    var defaultSavePassword: Bool?
 }
 
 /// One entry in the "jump back in" history: which host, connected when.

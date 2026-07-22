@@ -19,8 +19,8 @@ struct PaneTreeView: View {
                         .padding(6)
                         .help("This pane is maximized — ⌘⇧↵ to restore the split")
                 }
-        } else {
-            PaneNodeView(node: tab.root, tab: tab)
+        } else if let root = tab.root {
+            PaneNodeView(node: root, tab: tab)
         }
     }
 }

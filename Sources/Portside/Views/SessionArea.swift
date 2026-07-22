@@ -13,7 +13,11 @@ struct SessionArea: View {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
-                    TabContentView(tab: tab)
+                    if tab.isStartPage {
+                        EmptyStateView(replacingTab: tab)
+                    } else {
+                        TabContentView(tab: tab)
+                    }
                 }
             }
         }
@@ -233,11 +237,12 @@ struct TabBar: View {
                         onSelect: { sessions.selectedTabID = tab.id },
                         onClose: { sessions.closeTab(tab) },
                         onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
+                        onDuplicate: { sessions.duplicateTab(tab) },
                         onCloseOthers: { sessions.closeOtherTabs(tab) }
                     )
                 }
                 Button {
-                    sessions.openLocalShell()
+                    sessions.openStartTab()
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 11, weight: .medium))
@@ -246,7 +251,7 @@ struct TabBar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("New local shell (⌘T)")
+                .help("New tab")
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -274,9 +279,10 @@ struct TabChip: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onRename: () -> Void
+    let onDuplicate: () -> Void
     let onCloseOthers: () -> Void
 
-    private var title: String { tab.customTitle ?? tab.activeLeaf?.title ?? "shell" }
+    private var title: String { tab.customTitle ?? tab.activeLeaf?.title ?? (tab.isStartPage ? "New Tab" : "shell") }
     private var running: Bool { tab.activeLeaf?.isRunning ?? false }
     private var hasActivity: Bool { !isSelected && tab.leaves.contains { $0.hasActivity } }
 
@@ -312,6 +318,8 @@ struct TabChip: View {
         .onTapGesture(perform: onSelect)
         .contextMenu {
             Button("Rename…", action: onRename)
+            Button("Duplicate Tab", action: onDuplicate)
+                .disabled(tab.isStartPage)
             Button("Close", action: onClose)
             Button("Close Others", action: onCloseOthers)
                 .disabled(tab.leaves.isEmpty)
@@ -319,12 +327,52 @@ struct TabChip: View {
     }
 }
 
+/// The "welcome aboard" screen: shown full-window when no tab is open at all,
+/// and reused as a start-page tab's content (`replacingTab` set) when opened
+/// from the tab bar's + button — picking a host or a local shell there morphs
+/// that same tab in place instead of leaving it behind.
 struct EmptyStateView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
+    var replacingTab: Tab?
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     private var recents: [(entry: SessionEntry, date: Date)] {
         store.recentEntries(limit: 8)
+    }
+
+    /// Fuzzy matches while searching, reusing QuickConnectView's ranking
+    /// rather than a second scoring implementation.
+    private var searchResults: [SessionEntry] {
+        guard !query.isEmpty else { return [] }
+        var scored: [(entry: SessionEntry, score: Int)] = []
+        for entry in store.entries {
+            if let score = QuickConnectView.rank(entry, query: query) {
+                scored.append((entry, score))
+            }
+        }
+        scored.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.entry.name.localizedCaseInsensitiveCompare(rhs.entry.name) == .orderedAscending
+        }
+        return scored.map(\.entry)
+    }
+
+    private func connect(_ entry: SessionEntry) {
+        if let replacingTab {
+            sessions.connect(to: store.resolved(entry), replacing: replacingTab)
+        } else {
+            sessions.connect(to: store.resolved(entry))
+        }
+    }
+
+    private func openLocalShell() {
+        if let replacingTab {
+            sessions.openLocalShell(replacing: replacingTab)
+        } else {
+            sessions.openLocalShell()
+        }
     }
 
     var body: some View {
@@ -334,11 +382,45 @@ struct EmptyStateView: View {
                 .foregroundStyle(.tertiary)
             Text("Welcome aboard")
                 .font(.title2.weight(.semibold))
-            Text("Pick a host from the sidebar, or open a local shell.")
+            Text("Search for a host, pick one from the sidebar, or open a local shell.")
                 .foregroundStyle(.secondary)
-            Button("New Local Shell") { sessions.openLocalShell() }
 
-            if !recents.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search hosts…", text: $query)
+                    .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                    .onSubmit { if let first = searchResults.first { connect(first) } }
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            .frame(maxWidth: 400)
+
+            Button("New Local Shell", action: openLocalShell)
+
+            if !query.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    if searchResults.isEmpty {
+                        Text("No matches for “\(query)”")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 10)
+                    } else {
+                        ForEach(searchResults.prefix(8)) { entry in
+                            RecentConnectionRow(entry: entry) { connect(entry) }
+                        }
+                    }
+                }
+                .frame(maxWidth: 400)
+                .padding(.top, 24)
+            } else if !recents.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Jump back in")
                         .font(.caption.weight(.semibold))
@@ -347,7 +429,7 @@ struct EmptyStateView: View {
                         .padding(.leading, 10)
                     ForEach(recents, id: \.entry.id) { recent in
                         RecentConnectionRow(entry: recent.entry, date: recent.date) {
-                            sessions.connect(to: store.resolved(recent.entry))
+                            connect(recent.entry)
                         }
                     }
                 }
@@ -359,10 +441,11 @@ struct EmptyStateView: View {
     }
 }
 
-/// One recent host on the welcome screen; click reconnects.
+/// One host row on the welcome screen — a recent connection (with a relative
+/// date) or a search match (no date).
 struct RecentConnectionRow: View {
     let entry: SessionEntry
-    let date: Date
+    var date: Date?
     let connect: () -> Void
     @State private var hovering = false
 
@@ -379,10 +462,12 @@ struct RecentConnectionRow: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 EnvironmentBadge(environment: entry.environment)
-                Text(date, format: .relative(presentation: .named))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(minWidth: 70, alignment: .trailing)
+                if let date {
+                    Text(date, format: .relative(presentation: .named))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(minWidth: 70, alignment: .trailing)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

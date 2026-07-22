@@ -17,6 +17,8 @@ struct TerminalAppearance: Equatable {
     /// part of a color scheme — a standalone preference that survives theme
     /// changes. Defaults to system orange.
     var alertHex: String = "#FF9500"
+    var cursorShape: CursorShape = .block
+    var cursorBlinks: Bool = true
 
     static let `default` = TerminalTheme.systemDefault.appearance()
 
@@ -30,6 +32,18 @@ struct TerminalAppearance: Equatable {
     var background: NSColor { HexColor.nsColor(backgroundHex) }
     var cursor: NSColor { HexColor.nsColor(cursorHex) }
     var alert: NSColor { HexColor.nsColor(alertHex) }
+
+    /// The cursor shape/blink pair as SwiftTerm's combined style enum.
+    var swiftTermCursorStyle: SwiftTerm.CursorStyle {
+        switch (cursorShape, cursorBlinks) {
+        case (.block, true): return .blinkBlock
+        case (.block, false): return .steadyBlock
+        case (.underline, true): return .blinkUnderline
+        case (.underline, false): return .steadyUnderline
+        case (.bar, true): return .blinkBar
+        case (.bar, false): return .steadyBar
+        }
+    }
 
     /// The current colors as a theme, e.g. for previews.
     var asTheme: TerminalTheme {
@@ -55,6 +69,7 @@ extension TerminalAppearance: Codable {
     enum CodingKeys: String, CodingKey {
         case fontName, fontSize, themeName, paletteName
         case foregroundHex, backgroundHex, cursorHex, ansiHex, alertHex
+        case cursorShape, cursorBlinks
     }
 
     init(from decoder: Decoder) throws {
@@ -73,6 +88,8 @@ extension TerminalAppearance: Codable {
         ansiHex = (decodedAnsi?.count == 16 ? decodedAnsi : nil)
             ?? (TerminalTheme.builtIns.first { $0.name == resolvedName }?.ansi ?? fallback.ansi)
         alertHex = try c.decodeIfPresent(String.self, forKey: .alertHex) ?? "#FF9500"
+        cursorShape = try c.decodeIfPresent(CursorShape.self, forKey: .cursorShape) ?? .block
+        cursorBlinks = try c.decodeIfPresent(Bool.self, forKey: .cursorBlinks) ?? true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -85,6 +102,22 @@ extension TerminalAppearance: Codable {
         try c.encode(cursorHex, forKey: .cursorHex)
         try c.encode(ansiHex, forKey: .ansiHex)
         try c.encode(alertHex, forKey: .alertHex)
+        try c.encode(cursorShape, forKey: .cursorShape)
+        try c.encode(cursorBlinks, forKey: .cursorBlinks)
+    }
+}
+
+/// Cursor caret shape, independent of blink — combined into SwiftTerm's
+/// `CursorStyle` via `TerminalAppearance.swiftTermCursorStyle`.
+enum CursorShape: String, Codable, CaseIterable, Identifiable {
+    case block, underline, bar
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .block: return "Block"
+        case .underline: return "Underline"
+        case .bar: return "Bar"
+        }
     }
 }
 

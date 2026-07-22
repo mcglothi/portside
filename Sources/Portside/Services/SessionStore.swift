@@ -90,6 +90,21 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// Bulk-flips "Save password in Keychain" for every entry whose id is in
+    /// `ids` — for imported libraries where most hosts should have it on but
+    /// weren't created through the editor's per-host toggle. Only sets the
+    /// flag; it doesn't (can't) invent an actual password for the Keychain —
+    /// each host still needs its password entered once in the editor.
+    func setSavePassword(_ on: Bool, ids: Set<UUID>) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) && entries[i].savePassword != on {
+            entries[i].savePassword = on
+            changed = true
+        }
+        guard changed else { return }
+        save()
+    }
+
     /// Clones a session (fresh id, " copy" suffix) right after the original.
     /// The saved password isn't copied — it's keyed by id and stays with the
     /// original; the clone can set its own.

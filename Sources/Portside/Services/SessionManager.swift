@@ -85,17 +85,34 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     // vertical bounds, a timer scrolls the viewport and re-delivers the last
     // drag event (mouseDragged is callable) so the selection extends to the
     // newly revealed rows.
+    //
+    // `event.window?.firstResponder` stays the terminal even while the user
+    // drags the window by its titlebar (first responder doesn't change just
+    // because the next click lands on window chrome), so a titlebar drag was
+    // being treated as a runaway selection: the window moving out from under
+    // a roughly-fixed cursor makes `locationInWindow` swing far outside the
+    // view, which started the auto-scroll timer (scrolling to the top) and
+    // re-fed the drag into `mouseDragged` (a phantom selection highlight) —
+    // reported as the terminal "fighting" scroll while moving the window.
+    // Gating on a mouseDown that actually landed inside the view's own bounds
+    // limits this to genuine in-terminal selection drags.
 
     private var selectionAutoScroll: Timer?
     private var lastDragEvent: NSEvent?
+    private var isSelectionDrag = false
 
     private static let selectionAutoScrollMonitor: Void = {
-        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { event in
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
             guard let view = event.window?.firstResponder as? LoggingTerminalView else { return event }
-            if event.type == .leftMouseUp {
+            switch event.type {
+            case .leftMouseDown:
+                view.isSelectionDrag = view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+            case .leftMouseUp:
+                view.isSelectionDrag = false
                 view.stopSelectionAutoScroll()
                 view.lastDragEvent = nil
-            } else {
+            default:
+                guard view.isSelectionDrag else { break }
                 view.lastDragEvent = event
                 view.updateSelectionAutoScroll(for: event)
             }
@@ -136,6 +153,29 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     private func stopSelectionAutoScroll() {
         selectionAutoScroll?.invalidate()
         selectionAutoScroll = nil
+    }
+
+    // MARK: Right-click Copy/Paste
+
+    /// SwiftTerm implements the standard `copy(_:)`/`paste(_:)` responder
+    /// actions (the same code ⌘C/⌘V already dispatch to) but never sets a
+    /// context menu, so right-click does nothing today. Building a fresh menu
+    /// per click keeps "Copy"'s enabled state honest as the selection changes.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let copyItem = ClosureMenuItem(title: "Copy") { [weak self] in
+            guard let self else { return }
+            self.copy(self)
+        }
+        copyItem.isEnabled = selectionActive
+        menu.addItem(copyItem)
+        let pasteItem = ClosureMenuItem(title: "Paste") { [weak self] in
+            guard let self else { return }
+            self.paste(self)
+        }
+        pasteItem.isEnabled = NSPasteboard.general.string(forType: .string) != nil
+        menu.addItem(pasteItem)
+        return menu
     }
 
     private func selectionAutoScrollTick() {
@@ -411,6 +451,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         terminalView.nativeForegroundColor = appearance.foreground
         terminalView.nativeBackgroundColor = appearance.background
         terminalView.caretColor = appearance.cursor
+        terminalView.getTerminal().setCursorStyle(appearance.swiftTermCursorStyle)
     }
 
     /// Sets this terminal's scrollback (history) depth. The view is built with
@@ -585,6 +626,15 @@ final class SessionManager: ObservableObject {
         postConnect(session, entry: entry)
     }
 
+    /// Connects a host into an existing (start-page) tab instead of opening a
+    /// new one — used by the welcome screen's search so picking a host morphs
+    /// that tab in place rather than leaving a blank tab behind.
+    func connect(to entry: SessionEntry, replacing tab: Tab) {
+        let session = makeSession(for: entry)
+        activate(session, in: tab)
+        postConnect(session, entry: entry)
+    }
+
     /// Builds a session for an entry (transport, logging, saved-password
     /// askpass) without placing it in a tab — so a group can be assembled into
     /// a single split tab.
@@ -661,6 +711,27 @@ final class SessionManager: ObservableObject {
         add(makeLocalShellSession())
     }
 
+    /// Opens a local shell into an existing (start-page) tab instead of
+    /// opening a new one — the welcome screen's "New Local Shell" button.
+    func openLocalShell(replacing tab: Tab) {
+        activate(makeLocalShellSession(), in: tab)
+    }
+
+    /// Opens a blank "welcome aboard" tab (the tab bar's + button).
+    func openStartTab() {
+        let tab = Tab.startPage()
+        tabs.append(tab)
+        selectedTabID = tab.id
+    }
+
+    /// Wires up and installs `session` as the sole content of a start-page tab.
+    private func activate(_ session: TerminalSession, in tab: Tab) {
+        prepare(session)
+        tab.root = .leaf(session)
+        tab.activePaneID = session.id
+        if selectedTabID != tab.id { selectedTabID = tab.id } else { notifyWorkspaceChanged() }
+    }
+
     private func makeLocalShellSession() -> TerminalSession {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let logger = LogManager.makeLogger(hostKey: "local", title: "Local Shell",
@@ -674,10 +745,10 @@ final class SessionManager: ObservableObject {
     /// Splits the focused pane and opens a local shell in the new one.
     /// `.horizontal` places it to the right, `.vertical` below.
     func splitActivePane(_ orientation: PaneOrientation) {
-        guard let tab = selectedTab, let activeID = tab.activeLeaf?.id else { return }
+        guard let tab = selectedTab, let root = tab.root, let activeID = tab.activeLeaf?.id else { return }
         let session = makeLocalShellSession()
         prepare(session)
-        tab.root = tab.root.splitting(leafID: activeID, with: .leaf(session), orientation: orientation)
+        tab.root = root.splitting(leafID: activeID, with: .leaf(session), orientation: orientation)
         tab.activePaneID = session.id
         objectWillChange.send()
         notifyWorkspaceChanged()
@@ -730,12 +801,12 @@ final class SessionManager: ObservableObject {
     /// Relaunches a session that has exited, in the same pane — reconnecting a
     /// dropped host or reopening a local shell without disturbing the layout.
     func reconnect(_ session: TerminalSession) {
-        guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
+        guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)
         replacement.includedInMultiExec = session.includedInMultiExec
         membershipObservers[session.id] = nil
-        tab.root = tab.root.replacingLeaf(session.id, with: replacement)
+        tab.root = root.replacingLeaf(session.id, with: replacement)
         if tab.activePaneID == session.id { tab.activePaneID = replacement.id }
         if tab.zoomedPaneID == session.id { tab.zoomedPaneID = replacement.id }
         if let entry = session.entry { postConnect(replacement, entry: entry) }
@@ -854,17 +925,20 @@ final class SessionManager: ObservableObject {
             let restored = grid.leaves.map { Tab(session: $0) }
             tabs.replaceSubrange(index...index, with: restored)
             gridViewTabID = nil
-            selectedTabID = restored.first { $0.contains(previouslyActive) }?.id ?? restored.first?.id
+            selectedTabID = restored.first { previouslyActive.map($0.contains) ?? false }?.id ?? restored.first?.id
         }
     }
 
     // MARK: - Workspace restore
 
     /// The current open layout, for persistence. Broadcast-armed state is
-    /// intentionally omitted — restore always relaunches disarmed.
+    /// intentionally omitted — restore always relaunches disarmed. Start-page
+    /// tabs are transient and never persisted, so relaunching never restores a
+    /// pile of blank tabs.
     var currentWorkspace: WorkspaceSnapshot {
-        let tabSnapshots = tabs.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.root)) }
-        let selectedIndex = selectedTabID.flatMap { id in tabs.firstIndex { $0.id == id } }
+        let persistable = tabs.compactMap { tab in tab.root.map { (tab, $0) } }
+        let tabSnapshots = persistable.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1)) }
+        let selectedIndex = persistable.firstIndex { $0.0.id == selectedTabID }
         return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex)
     }
 
@@ -1010,10 +1084,10 @@ final class SessionManager: ObservableObject {
     func close(_ session: TerminalSession) {
         session.shutdown()
         membershipObservers[session.id] = nil
-        guard let tab = tabs.first(where: { $0.contains(session.id) }) else { return }
+        guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
 
         if tab.zoomedPaneID == session.id { tab.zoomedPaneID = nil }
-        if let newRoot = tab.root.removingLeaf(session.id) {
+        if let newRoot = root.removingLeaf(session.id) {
             tab.root = newRoot
             if tab.activePaneID == session.id {
                 tab.activePaneID = tab.leaves.first?.id ?? tab.activePaneID
@@ -1029,15 +1103,21 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    /// Closes every pane in a tab (the tab-bar close button / menu).
+    /// Closes every pane in a tab (the tab-bar close button / menu). A
+    /// start-page tab has no panes for the loop to close, so drop it directly.
     func closeTab(_ tab: Tab) {
+        if tab.isStartPage {
+            tabs.removeAll { $0.id == tab.id }
+            if selectedTabID == tab.id { selectedTabID = tabs.last?.id }
+            return
+        }
         for session in tab.leaves { close(session) }
     }
 
     /// Closes every tab except the given one (tab menu ▸ Close Others).
     func closeOtherTabs(_ keep: Tab) {
         for tab in tabs where tab.id != keep.id {
-            for session in tab.leaves { close(session) }
+            closeTab(tab)
         }
     }
 
@@ -1046,6 +1126,32 @@ final class SessionManager: ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         objectWillChange.send()
         tab.customTitle = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Reopens a tab's layout (same hosts/local shells, same split structure)
+    /// as a new tab with fresh sessions (tab menu ▸ Duplicate Tab). Reuses the
+    /// restore machinery: describe the live tab as a `RestorePlan`, then build
+    /// it exactly like a workspace restore would.
+    func duplicateTab(_ tab: Tab) {
+        guard let root = tab.root, let plan = planNode(for: root),
+              let newTab = buildTab(RestorePlan.TabPlan(root: plan)) else { return }
+        newTab.broadcastArmed = tab.broadcastArmed
+        tabs.append(newTab)
+        selectedTabID = newTab.id
+    }
+
+    private func planNode(for node: PaneNode<TerminalSession>) -> RestorePlan.PanePlan? {
+        switch node {
+        case .leaf(let session):
+            let action: RestoreAction = session.entry.map {
+                .connect($0, includedInMultiExec: session.includedInMultiExec)
+            } ?? .localShell(includedInMultiExec: session.includedInMultiExec)
+            return .leaf(action)
+        case .split(_, let orientation, let children, let fractions):
+            let kids = children.compactMap { planNode(for: $0) }
+            guard kids.count == children.count else { return nil }
+            return .split(orientation: orientation, children: kids, fractions: fractions)
+        }
     }
 
     /// The included, running panes of a tab — the broadcast targets.

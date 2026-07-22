@@ -19,6 +19,13 @@ struct ConnectionSettingsView: View {
         )
     }
 
+    private var defaultSavePasswordBinding: Binding<Bool> {
+        Binding(
+            get: { store.defaults.defaultSavePassword ?? false },
+            set: { var d = store.defaults; d.defaultSavePassword = $0; store.updateDefaults(d) }
+        )
+    }
+
     private func browseForKey() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -42,9 +49,10 @@ struct ConnectionSettingsView: View {
                               prompt: Text("optional — e.g. ~/.ssh/id_ed25519"))
                     Button("Browse…") { browseForKey() }
                 }
+                Toggle("Save new session passwords in Keychain by default", isOn: defaultSavePasswordBinding)
             }
             Section {
-                Text("These apply only when a session doesn't set its own user or key. Passwords are stored per session in the macOS Keychain and never here.")
+                Text("User/key apply only when a session doesn't set its own. The password toggle only pre-checks \"Save password\" for newly created sessions — passwords themselves are always stored per session in the macOS Keychain, never here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

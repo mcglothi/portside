@@ -95,10 +95,14 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
 
 /// One tab: a pane tree plus which leaf is focused. `broadcastArmed` is the
 /// per-tab MultiExec state (used once MultiExec folds into the tree).
+///
+/// `root`/`activePaneID` are optional so a tab can exist with no session yet
+/// (the start-page tab opened by the tab bar's + button) — every other tab
+/// kind always has both set together. See `isStartPage`.
 final class Tab: Identifiable, ObservableObject {
     let id = UUID()
-    @Published var root: PaneNode<TerminalSession>
-    @Published var activePaneID: UUID
+    @Published var root: PaneNode<TerminalSession>?
+    @Published var activePaneID: UUID?
     @Published var broadcastArmed = false
     /// When set, this tab shows only the named pane full-size (zoom/maximize),
     /// hiding the rest of the split until toggled off.
@@ -116,7 +120,19 @@ final class Tab: Identifiable, ObservableObject {
         self.activePaneID = activePaneID
     }
 
-    var leaves: [TerminalSession] { root.leaves }
+    /// A blank "welcome aboard" tab with no live session — the tab bar's +
+    /// button opens one of these instead of a local shell; selecting a host or
+    /// starting a local shell from it morphs this same tab in place.
+    private init() {
+        root = nil
+        activePaneID = nil
+    }
+
+    static func startPage() -> Tab { Tab() }
+
+    var isStartPage: Bool { root == nil }
+
+    var leaves: [TerminalSession] { root?.leaves ?? [] }
 
     /// The focused leaf, falling back to the first if the active id is stale.
     var activeLeaf: TerminalSession? {

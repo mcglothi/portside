@@ -35,6 +35,20 @@ struct AppearanceSettingsView: View {
         )
     }
 
+    private var cursorShapeBinding: Binding<CursorShape> {
+        Binding(
+            get: { store.appearance.cursorShape },
+            set: { var updated = store.appearance; updated.cursorShape = $0; store.updateAppearance(updated) }
+        )
+    }
+
+    private var cursorBlinksBinding: Binding<Bool> {
+        Binding(
+            get: { store.appearance.cursorBlinks },
+            set: { var updated = store.appearance; updated.cursorBlinks = $0; store.updateAppearance(updated) }
+        )
+    }
+
     var body: some View {
         Form {
             Section("Font") {
@@ -80,6 +94,19 @@ struct AppearanceSettingsView: View {
                 ColorPicker("Text", selection: colorBinding(\.foregroundHex), supportsOpacity: false)
                 ColorPicker("Background", selection: colorBinding(\.backgroundHex), supportsOpacity: false)
                 ColorPicker("Cursor", selection: colorBinding(\.cursorHex), supportsOpacity: false)
+                Picker("Cursor Shape", selection: cursorShapeBinding) {
+                    ForEach(CursorShape.allCases) { shape in
+                        Text(shape.label).tag(shape)
+                    }
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Toggle("Blinking Cursor", isOn: cursorBlinksBinding)
+                    Spacer()
+                    CursorShapeSwatch(shape: store.appearance.cursorShape,
+                                      blinks: store.appearance.cursorBlinks,
+                                      color: store.appearance.cursor)
+                }
                 ColorPicker("Alert Color", selection: colorBinding(\.alertHex), supportsOpacity: false)
                 HStack {
                     Button("Browse Gallery…") { showingGallery = true }
@@ -140,6 +167,61 @@ struct AppearanceSettingsView: View {
             store.updateAppearance(store.appearance.applying(stored))
         } catch {
             importError = error.localizedDescription
+        }
+    }
+}
+
+/// Small live sample of the chosen cursor shape/blink so the picker's effect
+/// is visible without a real terminal — mirrors the actual caret geometry
+/// (full cell width for block/underline, a thin edge for bar). Driven by a
+/// `TimelineView` rather than a `withAnimation`-toggled `@State` flag: the
+/// latter runs its own independent repeating animation on the swatch's
+/// identity, so a shape change made mid-blink got silently absorbed into
+/// that animation instead of showing immediately. Recomputing from the
+/// current time on every tick means there's no stale state to get stuck on.
+private struct CursorShapeSwatch: View {
+    let shape: CursorShape
+    let blinks: Bool
+    let color: NSColor
+
+    private static let cellSize = CGSize(width: 14, height: 18)
+    private static let blinkInterval: TimeInterval = 0.6
+
+    var body: some View {
+        Group {
+            if blinks {
+                TimelineView(.periodic(from: .now, by: Self.blinkInterval)) { context in
+                    let tick = Int(context.date.timeIntervalSinceReferenceDate / Self.blinkInterval)
+                    frame(visible: tick.isMultiple(of: 2))
+                }
+            } else {
+                frame(visible: true)
+            }
+        }
+    }
+
+    private func frame(visible: Bool) -> some View {
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(.tertiary, lineWidth: 1)
+            glyph
+                .opacity(visible ? 1 : 0)
+        }
+        .frame(width: Self.cellSize.width, height: Self.cellSize.height)
+        .animation(.easeInOut(duration: 0.3), value: visible)
+    }
+
+    @ViewBuilder private var glyph: some View {
+        let fill = Color(nsColor: color)
+        switch shape {
+        case .block:
+            Rectangle().fill(fill)
+        case .underline:
+            Rectangle().fill(fill).frame(height: 2)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        case .bar:
+            Rectangle().fill(fill).frame(width: 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
