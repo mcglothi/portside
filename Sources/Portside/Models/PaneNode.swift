@@ -52,6 +52,19 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         }
     }
 
+    /// This subtree with `leafID` swapped for `newLeaf` in place (same position
+    /// and split geometry). Used to reconnect a dropped session's pane.
+    func replacingLeaf(_ leafID: UUID, with newLeaf: Leaf) -> PaneNode<Leaf> {
+        switch self {
+        case .leaf(let leaf):
+            return leaf.id == leafID ? .leaf(newLeaf) : self
+        case .split(let id, let orientation, let children, let fractions):
+            return .split(id: id, orientation: orientation,
+                          children: children.map { $0.replacingLeaf(leafID, with: newLeaf) },
+                          fractions: fractions)
+        }
+    }
+
     /// This subtree with the given leaf removed, collapsing any split that ends
     /// up with a single child. Returns nil when removing the leaf empties the
     /// subtree entirely (so the caller can drop the whole tab).
@@ -87,6 +100,11 @@ final class Tab: Identifiable, ObservableObject {
     @Published var root: PaneNode<TerminalSession>
     @Published var activePaneID: UUID
     @Published var broadcastArmed = false
+    /// When set, this tab shows only the named pane full-size (zoom/maximize),
+    /// hiding the rest of the split until toggled off.
+    @Published var zoomedPaneID: UUID?
+    /// User-set tab name; falls back to the active leaf's title when nil.
+    @Published var customTitle: String?
 
     init(session: TerminalSession) {
         root = .leaf(session)

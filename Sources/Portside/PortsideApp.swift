@@ -80,6 +80,8 @@ struct PortsideApp: App {
                     .keyboardShortcut("d", modifiers: .command)
                 Button("Split Down") { sessions.splitActivePane(.vertical) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Zoom Pane") { sessions.toggleZoom() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
                 Divider()
                 Button("Focus Next Pane") { sessions.focusAdjacentPane(next: true) }
                     .keyboardShortcut(.rightArrow, modifiers: [.command, .option])

@@ -7,7 +7,21 @@ struct PaneTreeView: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
-        PaneNodeView(node: tab.root, tab: tab)
+        if let zoomed = tab.zoomedPaneID, let session = tab.leaves.first(where: { $0.id == zoomed }) {
+            PaneLeafView(session: session, tab: tab)
+                .id(session.id)
+                .overlay(alignment: .topTrailing) {
+                    Label("Zoomed", systemImage: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(.quaternary))
+                        .padding(6)
+                        .help("This pane is maximized — ⌘⇧↵ to restore the split")
+                }
+        } else {
+            PaneNodeView(node: tab.root, tab: tab)
+        }
     }
 }
 

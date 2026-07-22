@@ -50,6 +50,30 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertEqual(result.leaves.first?.id, aID)
     }
 
+    // MARK: - replacingLeaf
+
+    func testReplacingLeafSwapsInPlace() {
+        let (a, aID) = leaf(), (b, bID) = leaf()
+        let replacement = StubLeaf()
+        let tree = Node.split(id: UUID(), orientation: .horizontal,
+                              children: [a, b], fractions: [0.3, 0.7])
+        let result = tree.replacingLeaf(aID, with: replacement)
+
+        // Same geometry, a swapped for the replacement, b untouched.
+        guard case .split(_, _, let children, let fractions) = result else {
+            return XCTFail("expected the split shape to be preserved")
+        }
+        XCTAssertEqual(fractions, [0.3, 0.7])
+        XCTAssertEqual(result.leaves.map(\.id), [replacement.id, bID])
+        XCTAssertNotEqual(replacement.id, aID)
+    }
+
+    func testReplacingUnknownLeafIsNoOp() {
+        let (a, aID) = leaf()
+        let result = a.replacingLeaf(UUID(), with: StubLeaf())
+        XCTAssertEqual(result.leaves.map(\.id), [aID])
+    }
+
     // MARK: - removingLeaf + collapse
 
     func testRemovingSoleLeafReturnsNil() {

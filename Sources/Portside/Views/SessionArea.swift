@@ -142,10 +142,12 @@ struct TerminalPane: View {
                     HStack(spacing: 10) {
                         Image(systemName: "power")
                             .foregroundStyle(.secondary)
-                        Text("Session ended — press ⏎ or ⌃D to close")
+                        Text("Session ended")
                             .font(.callout)
+                        Button("Reconnect") { sessions.reconnect(session) }
                         Button("Close") { sessions.close(session) }
                             .keyboardShortcut(.defaultAction)
+                            .help("Press ⏎ or ⌃D to close")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -217,45 +219,81 @@ struct FindBar: View {
 
 struct TabBar: View {
     @EnvironmentObject var sessions: SessionManager
+    /// The tab being renamed (drives the rename alert), plus its draft name.
+    @State private var renamingTab: Tab?
+    @State private var renameText = ""
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(sessions.tabs) { tab in
-                    if let leaf = tab.activeLeaf {
-                        TabChip(
-                            session: leaf,
-                            isSelected: tab.id == sessions.selectedTabID,
-                            onSelect: { sessions.selectedTabID = tab.id },
-                            onClose: { sessions.closeTab(tab) }
-                        )
-                    }
+                    TabChip(
+                        tab: tab,
+                        isSelected: tab.id == sessions.selectedTabID,
+                        onSelect: { sessions.selectedTabID = tab.id },
+                        onClose: { sessions.closeTab(tab) },
+                        onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
+                        onCloseOthers: { sessions.closeOtherTabs(tab) }
+                    )
                 }
+                Button {
+                    sessions.openLocalShell()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 5)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("New local shell (⌘T)")
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
         .background(.bar)
+        .alert("Rename Tab", isPresented: Binding(
+            get: { renamingTab != nil },
+            set: { if !$0 { renamingTab = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let tab = renamingTab { sessions.renameTab(tab, to: renameText) }
+                renamingTab = nil
+            }
+            Button("Cancel", role: .cancel) { renamingTab = nil }
+        } message: {
+            Text("Leave blank to restore the automatic name.")
+        }
     }
 }
 
 struct TabChip: View {
-    @ObservedObject var session: TerminalSession
+    @ObservedObject var tab: Tab
     let isSelected: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onRename: () -> Void
+    let onCloseOthers: () -> Void
+
+    private var title: String { tab.customTitle ?? tab.activeLeaf?.title ?? "shell" }
+    private var running: Bool { tab.activeLeaf?.isRunning ?? false }
+    private var hasActivity: Bool { !isSelected && tab.leaves.contains { $0.hasActivity } }
 
     var body: some View {
         HStack(spacing: 6) {
-            if let envColor = session.environment.color {
+            if let envColor = tab.activeLeaf?.environment.color {
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(envColor)
                     .frame(width: 3, height: 14)
             }
+            // Blue "new activity" is kept distinct from the green running / gray
+            // stopped states (and from a green system accent).
             Circle()
-                .fill(session.isRunning ? Color.green : Color.secondary)
+                .fill(hasActivity ? Color.blue : (running ? Color.green : Color.secondary))
                 .frame(width: 6, height: 6)
-            Text(session.title)
+                .help(hasActivity ? "New activity" : (running ? "Running" : "Ended"))
+            Text(title)
                 .lineLimit(1)
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -272,6 +310,12 @@ struct TabChip: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onTapGesture(perform: onSelect)
+        .contextMenu {
+            Button("Rename…", action: onRename)
+            Button("Close", action: onClose)
+            Button("Close Others", action: onCloseOthers)
+                .disabled(tab.leaves.isEmpty)
+        }
     }
 }
 
