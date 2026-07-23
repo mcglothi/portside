@@ -187,6 +187,13 @@ struct SessionEntry: Identifiable, Hashable {
     var serial: SerialTarget?        // set when kind == .serial
     var telnet: TelnetTarget?        // set when kind == .telnet
     var preferMosh = false           // connect with mosh instead of ssh (hosts only)
+    /// A shared identity this host defers to (username/key/password) — see
+    /// `CredentialProfile`. When set, the profile's fields win over this
+    /// entry's own `user`/`identityFile` and Keychain password, so rotating
+    /// the profile updates every host using it without editing each one.
+    var credentialProfileID: UUID?
+    /// Pinned to the "Favorites" section of the welcome/start page.
+    var isFavorite = false
 
     var icon: String { kind.icon }
 
@@ -310,7 +317,8 @@ extension SessionEntry: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
-        case kind, container, kubernetes, serial, telnet, preferMosh
+        case kind, container, kubernetes, serial, telnet, preferMosh, credentialProfileID
+        case isFavorite
     }
 
     init(from decoder: Decoder) throws {
@@ -334,6 +342,8 @@ extension SessionEntry: Codable {
         serial = try c.decodeIfPresent(SerialTarget.self, forKey: .serial)
         telnet = try c.decodeIfPresent(TelnetTarget.self, forKey: .telnet)
         preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
+        credentialProfileID = try c.decodeIfPresent(UUID.self, forKey: .credentialProfileID)
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
     }
 }
 
@@ -352,6 +362,17 @@ struct ConnectionDefaults: Codable, Equatable {
     /// changes — the actual MITM protection stays intact. Applies to plain
     /// SSH connections only (not mosh's bootstrap ssh).
     var autoAcceptNewHostKeys: Bool?
+}
+
+/// A reusable identity (username + SSH key and/or password) a host can defer
+/// to instead of holding its own credentials — see `SessionEntry.
+/// credentialProfileID`. The password itself lives in the Keychain, keyed by
+/// `id` (`CredentialStore.profilePassword`), never in the JSON library.
+struct CredentialProfile: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var user: String?
+    var identityFile: String?
 }
 
 /// One entry in the "jump back in" history: which host, connected when.

@@ -199,7 +199,7 @@ struct HostOutlineView: NSViewRepresentable {
         private static func signature(of tree: (root: [SessionEntry], folders: [FolderNode])) -> String {
             var parts: [String] = []
             func line(_ entry: SessionEntry) {
-                parts.append("e:\(entry.id):\(entry.name):\(entry.subtitle):\(entry.environment.rawValue):\(entry.isProtected)")
+                parts.append("e:\(entry.id):\(entry.name):\(entry.subtitle):\(entry.environment.rawValue):\(entry.isProtected):\(entry.isFavorite)")
             }
             func walk(_ folders: [FolderNode]) {
                 for folder in folders {
@@ -239,7 +239,11 @@ struct HostOutlineView: NSViewRepresentable {
             let id = NSUserInterfaceItemIdentifier("row")
             let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? HostRowCell) ?? HostRowCell()
             cell.identifier = id
-            cell.configure(node: node, hostCount: node.isFolder ? parent.store.entriesInFolder(node.folderPath ?? "").count : 0)
+            let toggleFavorite: (() -> Void)? = node.entryID.map { entryID in
+                { [weak self] in self?.parent.store.toggleFavorite(entryID) }
+            }
+            cell.configure(node: node, hostCount: node.isFolder ? parent.store.entriesInFolder(node.folderPath ?? "").count : 0,
+                           toggleFavorite: toggleFavorite)
             return cell
         }
 
@@ -416,6 +420,13 @@ struct HostOutlineView: NSViewRepresentable {
                 menu.addItem(ClosureMenuItem(title: "Save Password in Keychain for \(selected.count) Selected") {
                     store.setSavePassword(true, ids: selected)
                 })
+                addCredentialProfileMenu(menu, forSelection: selected)
+                menu.addItem(ClosureMenuItem(title: "Add \(selected.count) Selected to Favorites") {
+                    store.setFavorite(true, ids: selected)
+                })
+                menu.addItem(ClosureMenuItem(title: "Remove \(selected.count) Selected from Favorites") {
+                    store.setFavorite(false, ids: selected)
+                })
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
                     if self.confirmDelete(count: selected.count) { store.delete(ids: selected) }
@@ -426,6 +437,9 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(title: "Connect") { self.parent.connect(entry) })
             menu.addItem(ClosureMenuItem(title: "Edit…") { self.parent.edit(entry) })
             menu.addItem(ClosureMenuItem(title: "Duplicate") { store.duplicate(entry) })
+            menu.addItem(ClosureMenuItem(title: entry.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                store.toggleFavorite(entry.id)
+            })
             addMoveMenu(menu, forSelection: [entry.id], currentFolder: entry.folder)
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
@@ -453,12 +467,36 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(item)
         }
 
+        /// "Apply Credential Profile ▸" submenu (plus "None" to clear) for a
+        /// selection or a whole folder. No-ops (adds nothing) when there are
+        /// no profiles yet — nothing useful to offer.
+        private func addCredentialProfileMenu(_ menu: NSMenu, forSelection ids: Set<UUID>) {
+            let store = parent.store
+            guard !store.credentialProfiles.isEmpty else { return }
+            let submenu = NSMenu()
+            for profile in store.credentialProfiles {
+                submenu.addItem(ClosureMenuItem(title: profile.name) {
+                    store.applyCredentialProfile(profile.id, to: ids)
+                })
+            }
+            submenu.addItem(.separator())
+            submenu.addItem(ClosureMenuItem(title: "None") {
+                store.applyCredentialProfile(nil, to: ids)
+            })
+            let item = NSMenuItem(title: "Apply Credential Profile", action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+
         private func buildFolderMenu(_ menu: NSMenu, folder: FolderNode) {
             let store = parent.store
-            let count = store.entriesInFolder(folder.path).count
+            let inFolder = store.entriesInFolder(folder.path)
+            let count = inFolder.count
             if count > 0 {
                 menu.addItem(ClosureMenuItem(title: "Open All (\(count))") { self.parent.openFolder(folder.path, false) })
                 menu.addItem(ClosureMenuItem(title: "Open All in MultiExec") { self.parent.openFolder(folder.path, true) })
+                menu.addItem(.separator())
+                addCredentialProfileMenu(menu, forSelection: Set(inFolder.map(\.id)))
                 menu.addItem(.separator())
             }
             menu.addItem(ClosureMenuItem(title: "New Subfolder…") { self.parent.newSubfolder(folder.path) })
@@ -511,6 +549,7 @@ private final class RowModel: ObservableObject {
     @Published var node: SidebarNode?
     @Published var hostCount = 0
     @Published var emphasized = false
+    @Published var toggleFavorite: (() -> Void)?
 }
 
 private final class HostRowCell: NSTableCellView {
@@ -535,9 +574,10 @@ private final class HostRowCell: NSTableCellView {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(node: SidebarNode, hostCount: Int) {
+    func configure(node: SidebarNode, hostCount: Int, toggleFavorite: (() -> Void)? = nil) {
         model.node = node
         model.hostCount = hostCount
+        model.toggleFavorite = toggleFavorite
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -547,6 +587,7 @@ private final class HostRowCell: NSTableCellView {
 
 private struct SidebarRowLabel: View {
     @ObservedObject var model: RowModel
+    @State private var hoveringEntry = false
 
     var body: some View {
         Group {
@@ -572,6 +613,15 @@ private struct SidebarRowLabel: View {
                 Text(entry.subtitle).font(.caption).foregroundStyle(secondary)
             }
             Spacer(minLength: 4)
+            if entry.isFavorite || hoveringEntry {
+                Button { model.toggleFavorite?() } label: {
+                    Image(systemName: entry.isFavorite ? "star.fill" : "star")
+                }
+                .buttonStyle(.plain)
+                .font(.caption2)
+                .foregroundStyle(entry.isFavorite ? .yellow : (model.emphasized ? .white.opacity(0.7) : .secondary))
+                .help(entry.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+            }
             if entry.isProtected {
                 Image(systemName: "lock.fill").font(.caption2)
                     .foregroundStyle(model.emphasized ? .white : .secondary).help("Protected host")
@@ -579,6 +629,7 @@ private struct SidebarRowLabel: View {
             TransportBadge(entry: entry)
             EnvironmentBadge(environment: entry.environment)
         }
+        .onHover { hoveringEntry = $0 }
     }
 
     private func folderRow(_ folder: FolderNode) -> some View {

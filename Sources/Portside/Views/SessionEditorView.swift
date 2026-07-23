@@ -7,6 +7,7 @@ enum EditorResult<T> {
 
 struct SessionEditorView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: SessionStore
     @State private var draft: SessionEntry
     @State private var portText: String
     @State private var password = ""
@@ -77,6 +78,27 @@ struct SessionEditorView: View {
         )
     }
 
+    private var assignedProfile: CredentialProfile? {
+        store.credentialProfile(id: draft.credentialProfileID)
+    }
+
+    /// Assigning a profile also flips `savePassword` on, mirroring
+    /// `SessionStore.applyCredentialProfile` — otherwise the profile's
+    /// password would silently never get used (see `SessionManager.
+    /// makeSession`, which gates all password lookup behind `savePassword`).
+    /// Clearing back to "None" leaves `savePassword` as the user set it.
+    private var credentialProfileBinding: Binding<UUID?> {
+        Binding(
+            get: { draft.credentialProfileID },
+            set: { newValue in
+                draft.credentialProfileID = newValue
+                if newValue != nil {
+                    draft.savePassword = true
+                }
+            }
+        )
+    }
+
     private var runOnConnectBinding: Binding<String> {
         Binding(
             get: { draft.runOnConnect ?? "" },
@@ -137,24 +159,49 @@ struct SessionEditorView: View {
     @ViewBuilder private var sshFields: some View {
         TextField(draft.kind == .host ? "Host" : "Host (via)", text: $draft.hostname,
                   prompt: Text(draft.kind == .host ? "hostname or IP" : "blank = this Mac"))
-        TextField("User", text: userBinding, prompt: Text("optional"))
+        TextField("User", text: userBinding, prompt: Text(assignedProfile != nil ? "set by profile" : "optional"))
+            .disabled(assignedProfile != nil)
         TextField("Port", text: $portText, prompt: Text("22"))
         TextField("~/.ssh/config alias", text: aliasBinding, prompt: Text("optional — connects via ssh <alias>"))
         HStack {
             TextField("Identity file (key)", text: identityBinding,
-                      prompt: Text("optional — e.g. ~/.ssh/id_ed25519"))
+                      prompt: Text(assignedProfile != nil ? "set by profile" : "optional — e.g. ~/.ssh/id_ed25519"))
+                .disabled(assignedProfile != nil)
             Button("Browse…") { browseForKey() }
+                .disabled(assignedProfile != nil)
+        }
+        if let assignedProfile {
+            Text("User and identity file are set by the “\(assignedProfile.name)” credential profile.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var credentialProfilePicker: some View {
+        if !store.credentialProfiles.isEmpty {
+            Picker("Credential Profile", selection: credentialProfileBinding) {
+                Text("None").tag(UUID?.none)
+                ForEach(store.credentialProfiles) { profile in
+                    Text(profile.name).tag(UUID?.some(profile.id))
+                }
+            }
         }
     }
 
     @ViewBuilder private var passwordFields: some View {
-        Toggle("Save password in Keychain", isOn: $draft.savePassword)
-        if draft.savePassword {
-            SecureField("Password", text: $password,
-                        prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
-            Text("Stored in the macOS Keychain and supplied to ssh automatically.")
+        if let assignedProfile {
+            Text("Password is set by the “\(assignedProfile.name)” credential profile — edit it in Settings ▸ Profiles.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } else {
+            Toggle("Save password in Keychain", isOn: $draft.savePassword)
+            if draft.savePassword {
+                SecureField("Password", text: $password,
+                            prompt: Text(hasSavedPassword ? "•••••••• (saved — leave blank to keep)" : "required"))
+                Text("Stored in the macOS Keychain and supplied to ssh automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -316,16 +363,19 @@ struct SessionEditorView: View {
                 case .host:
                     sshFields
                     moshToggle
+                    credentialProfilePicker
                     passwordFields
                     runOnConnectField
                 case .container:
                     transportHeader
                     sshFields
+                    credentialProfilePicker
                     passwordFields
                     containerFields
                 case .kubernetes:
                     transportHeader
                     sshFields
+                    credentialProfilePicker
                     passwordFields
                     kubernetesFields
                 case .serial:
@@ -340,6 +390,7 @@ struct SessionEditorView: View {
                     }
                 }
                 Toggle("Protected host — excluded from MultiExec unless confirmed", isOn: $draft.isProtected)
+                Toggle("Favorite — shown on the welcome/start page", isOn: $draft.isFavorite)
             }
             HStack {
                 if !isNew {

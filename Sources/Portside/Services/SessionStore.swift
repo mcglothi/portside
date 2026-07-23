@@ -17,6 +17,13 @@ final class SessionStore: ObservableObject {
     @Published private(set) var customThemes: [TerminalTheme] = []
     /// Fallback user/key applied to sessions that don't specify their own.
     @Published var defaults = ConnectionDefaults()
+    /// Shared identities hosts can defer to — see `CredentialProfile`.
+    @Published private(set) var credentialProfiles: [CredentialProfile] = []
+    /// The profile applied when a host has `savePassword` on but no explicit
+    /// `credentialProfileID` and no password of its own — the implicit
+    /// fallback that preserves pre-profiles behavior for hosts that never
+    /// opt into a *named* profile. Seeded once by `migrateLegacyDefault()`.
+    @Published var defaultProfileID: UUID?
     @Published var logging = LoggingSettings()
     @Published var terminal = TerminalSettings()
     @Published var keyBindings = KeyBindings()
@@ -37,6 +44,8 @@ final class SessionStore: ObservableObject {
         var terminal: TerminalSettings?
         var workspace: WorkspaceSnapshot?
         var keyBindings: KeyBindings?
+        var credentialProfiles: [CredentialProfile]?
+        var defaultProfileID: UUID?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -104,6 +113,104 @@ final class SessionStore: ObservableObject {
             changed = true
         }
         guard changed else { return }
+        save()
+    }
+
+    /// Favorited hosts, alphabetical — feeds the welcome screen's Favorites
+    /// section.
+    var favoriteEntries: [SessionEntry] {
+        entries.filter(\.isFavorite)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func toggleFavorite(_ id: UUID) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[i].isFavorite.toggle()
+        save()
+    }
+
+    /// Bulk-sets favorite status across a multi-selection, mirroring
+    /// `setSavePassword(_:ids:)`.
+    func setFavorite(_ on: Bool, ids: Set<UUID>) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) && entries[i].isFavorite != on {
+            entries[i].isFavorite = on
+            changed = true
+        }
+        guard changed else { return }
+        save()
+    }
+
+    // MARK: - Credential profiles
+
+    func upsert(_ profile: CredentialProfile) {
+        if let i = credentialProfiles.firstIndex(where: { $0.id == profile.id }) {
+            credentialProfiles[i] = profile
+        } else {
+            credentialProfiles.append(profile)
+        }
+        save()
+    }
+
+    /// Removes the profile and its Keychain password. Hosts still pointing at
+    /// it (`credentialProfileID`) are left alone rather than mutated here —
+    /// resolution treats an unknown profile id as "no profile assigned," and
+    /// the editor/sidebar show it as unassigned once the id no longer matches
+    /// anything in `credentialProfiles`.
+    func delete(_ profile: CredentialProfile) {
+        credentialProfiles.removeAll { $0.id == profile.id }
+        if defaultProfileID == profile.id { defaultProfileID = nil }
+        CredentialStore.deleteProfilePassword(for: profile.id)
+        save()
+    }
+
+    func credentialProfile(id: UUID?) -> CredentialProfile? {
+        guard let id else { return nil }
+        return credentialProfiles.first { $0.id == id }
+    }
+
+    /// Bulk-assigns (or clears, with `id: nil`) a credential profile across a
+    /// multi-selection or a whole folder — mirrors `setSavePassword(_:ids:)`.
+    /// Assigning also flips `savePassword` on (assigning a profile is an
+    /// explicit "yes, use a saved credential here"); clearing leaves
+    /// `savePassword` as-is, since a host might still want its own
+    /// individually-saved password.
+    func applyCredentialProfile(_ id: UUID?, to ids: Set<UUID>) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) {
+            if entries[i].credentialProfileID != id {
+                entries[i].credentialProfileID = id
+                changed = true
+            }
+            if id != nil, !entries[i].savePassword {
+                entries[i].savePassword = true
+                changed = true
+            }
+        }
+        guard changed else { return }
+        save()
+    }
+
+    /// Migrates the old single "default password" (Settings ▸ Connection)
+    /// into a profile named "Default", set as the implicit fallback — runs
+    /// once, only when there's something to migrate and no profiles exist
+    /// yet. Preserves existing behavior for hosts relying on the old
+    /// fallback without touching their own data.
+    private func migrateLegacyDefault() {
+        guard credentialProfiles.isEmpty else { return }
+        let legacyPassword = CredentialStore.defaultPassword()
+        let hasLegacyDefault = (defaults.user?.isEmpty == false)
+            || (defaults.identityFile?.isEmpty == false)
+            || (defaults.defaultSavePassword ?? false)
+            || legacyPassword != nil
+        guard hasLegacyDefault else { return }
+        let profile = CredentialProfile(name: "Default", user: defaults.user, identityFile: defaults.identityFile)
+        credentialProfiles = [profile]
+        defaultProfileID = profile.id
+        if let legacyPassword {
+            CredentialStore.setProfilePassword(legacyPassword, for: profile.id)
+            CredentialStore.deleteDefaultPassword()
+        }
         save()
     }
 
@@ -241,10 +348,18 @@ final class SessionStore: ObservableObject {
             .map(resolved)
     }
 
-    /// Fills in user/identity from the connection defaults when a session
-    /// leaves them blank, so a default user/key applies without editing each host.
+    /// Applies an assigned credential profile's user/identity (if any) —
+    /// *overriding* the entry's own values, since the point of a profile is
+    /// that rotating it actually changes what a host uses, even if the host
+    /// has stale values of its own from before being assigned — then falls
+    /// back to the connection defaults for whatever's still blank, so a
+    /// global default user/key applies without editing each host.
     func resolved(_ entry: SessionEntry) -> SessionEntry {
         var e = entry
+        if let profile = credentialProfile(id: e.credentialProfileID) {
+            if let u = profile.user, !u.isEmpty, e.sshAlias?.isEmpty ?? true { e.user = u }
+            if let key = profile.identityFile, !key.isEmpty { e.identityFile = key }
+        }
         if (e.user?.isEmpty ?? true), e.sshAlias?.isEmpty ?? true,
            let u = defaults.user, !u.isEmpty {
             e.user = u
@@ -417,9 +532,19 @@ final class SessionStore: ObservableObject {
             terminal = doc.terminal ?? TerminalSettings()
             workspace = doc.workspace ?? WorkspaceSnapshot()
             keyBindings = doc.keyBindings ?? KeyBindings()
+            credentialProfiles = doc.credentialProfiles ?? []
+            defaultProfileID = doc.defaultProfileID
         } else if seedsFromSSHConfig {
             entries = SSHConfigImporter.importEntries()
             save()
+        }
+        // Only the real app instance (never a test's isolated fileURL init,
+        // which always passes seedsFromSSHConfig: false) may touch the actual
+        // system Keychain here — CredentialStore isn't test-isolated itself,
+        // so without this guard a test run reads/mutates the real default
+        // password out from under the user.
+        if seedsFromSSHConfig {
+            migrateLegacyDefault()
         }
     }
 
@@ -435,7 +560,8 @@ final class SessionStore: ObservableObject {
                                         recents: recents,
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging,
-                                        terminal: terminal, workspace: workspace, keyBindings: keyBindings))
+                                        terminal: terminal, workspace: workspace, keyBindings: keyBindings,
+                                        credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID))
                 .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")

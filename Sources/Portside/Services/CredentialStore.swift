@@ -37,6 +37,23 @@ enum CredentialStore {
         delete(account: defaultAccount)
     }
 
+    /// Prefixed distinctly from per-host UUIDs and `defaultAccount` so there's
+    /// no possibility of collision.
+    private static func profileAccount(_ id: UUID) -> String { "profile-\(id.uuidString)" }
+
+    @discardableResult
+    static func setProfilePassword(_ password: String, for id: UUID) -> Bool {
+        set(password, account: profileAccount(id))
+    }
+
+    static func profilePassword(for id: UUID) -> String? {
+        get(account: profileAccount(id))
+    }
+
+    static func deleteProfilePassword(for id: UUID) {
+        delete(account: profileAccount(id))
+    }
+
     /// Adds or updates the item for `account`. Tries an add first (the
     /// common case) and falls back to an update on a duplicate — more
     /// reliable than a preceding blind delete-then-add, which silently loses

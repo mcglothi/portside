@@ -145,4 +145,218 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(tree.folders.map(\.path), ["empty"])
         XCTAssertTrue(tree.folders.first?.entries.isEmpty ?? false)
     }
+
+    // MARK: - Credential profiles
+    //
+    // These deliberately never touch a profile's Keychain password
+    // (CredentialStore.setProfilePassword/profilePassword/deleteProfilePassword)
+    // — CredentialStore isn't test-isolated and hits the real system Keychain,
+    // which bit us once already (see SessionStore.migrateLegacyDefault, only
+    // ever invoked when seedsFromSSHConfig is true, which the test seam here
+    // always passes as false). `delete(_ profile:)` below does call
+    // CredentialStore.deleteProfilePassword, but on a throwaway UUID that
+    // never had anything stored, so it's a harmless no-op.
+
+    func testUpsertProfileAddsThenUpdatesInPlace() {
+        let store = makeStore([])
+        var profile = CredentialProfile(name: "Ops", user: "opsuser")
+        store.upsert(profile)
+        XCTAssertEqual(store.credentialProfiles.map(\.name), ["Ops"])
+
+        profile.name = "Ops Renamed"
+        store.upsert(profile)
+        XCTAssertEqual(store.credentialProfiles.count, 1)
+        XCTAssertEqual(store.credentialProfiles.first?.name, "Ops Renamed")
+    }
+
+    func testDeleteProfileClearsDefaultProfileIDWhenItWasTheDefault() {
+        let store = makeStore([])
+        let profile = CredentialProfile(name: "Ops")
+        store.upsert(profile)
+        store.defaultProfileID = profile.id
+
+        store.delete(profile)
+
+        XCTAssertTrue(store.credentialProfiles.isEmpty)
+        XCTAssertNil(store.defaultProfileID)
+    }
+
+    func testDeletingProfileLeavesAssignedHostsPointingAtUnknownID() {
+        // Resolution treats an unknown id as "no profile assigned" rather
+        // than mutating every host that pointed at the deleted profile.
+        var entry = host("a")
+        let profile = CredentialProfile(name: "Ops", user: "opsuser")
+        entry.credentialProfileID = profile.id
+        let store = makeStore([entry])
+        store.upsert(profile)
+
+        store.delete(profile)
+
+        XCTAssertEqual(store.entries.first?.credentialProfileID, profile.id)
+        XCTAssertNil(store.credentialProfile(id: store.entries.first?.credentialProfileID))
+    }
+
+    func testApplyCredentialProfileAssignsAndFlipsSavePasswordOn() {
+        let a = host("a"), b = host("b")
+        let store = makeStore([a, b])
+        let profile = CredentialProfile(name: "Ops")
+        store.upsert(profile)
+
+        store.applyCredentialProfile(profile.id, to: [a.id, b.id])
+
+        for entry in store.entries {
+            XCTAssertEqual(entry.credentialProfileID, profile.id)
+            XCTAssertTrue(entry.savePassword)
+        }
+    }
+
+    func testApplyCredentialProfileNilClearsAssignmentButLeavesSavePasswordAlone() {
+        var a = host("a")
+        a.savePassword = true
+        let store = makeStore([a])
+        let profile = CredentialProfile(name: "Ops")
+        store.upsert(profile)
+        store.applyCredentialProfile(profile.id, to: [a.id])
+
+        store.applyCredentialProfile(nil, to: [a.id])
+
+        let updated = store.entries.first { $0.id == a.id }
+        XCTAssertNil(updated?.credentialProfileID)
+        XCTAssertTrue(updated?.savePassword ?? false)
+    }
+
+    func testApplyCredentialProfileIgnoresIDsNotInSelection() {
+        let a = host("a"), b = host("b")
+        let store = makeStore([a, b])
+        let profile = CredentialProfile(name: "Ops")
+        store.upsert(profile)
+
+        store.applyCredentialProfile(profile.id, to: [a.id])
+
+        XCTAssertEqual(store.entries.first { $0.id == a.id }?.credentialProfileID, profile.id)
+        XCTAssertNil(store.entries.first { $0.id == b.id }?.credentialProfileID)
+    }
+
+    // MARK: - Credential resolution precedence
+
+    func testResolvedPrefersAssignedProfileOverHostsOwnStaleFields() {
+        var entry = host("a")
+        entry.user = "stale-user"
+        entry.identityFile = "/old/key"
+        let store = makeStore([entry])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser", identityFile: "/new/key")
+        store.upsert(profile)
+        store.applyCredentialProfile(profile.id, to: [entry.id])
+
+        let resolved = store.resolved(store.entries.first { $0.id == entry.id }!)
+
+        XCTAssertEqual(resolved.user, "opsuser")
+        XCTAssertEqual(resolved.identityFile, "/new/key")
+    }
+
+    func testResolvedFallsBackToGlobalDefaultsWhenNoProfileAssigned() {
+        let entry = host("a")
+        let store = makeStore([entry])
+        var defaults = store.defaults
+        defaults.user = "default-user"
+        store.updateDefaults(defaults)
+
+        let resolved = store.resolved(store.entries.first!)
+
+        XCTAssertEqual(resolved.user, "default-user")
+    }
+
+    func testResolvedTreatsUnknownProfileIDAsUnassigned() {
+        var entry = host("a")
+        entry.credentialProfileID = UUID()
+        let store = makeStore([entry])
+
+        let resolved = store.resolved(store.entries.first!)
+
+        XCTAssertNil(resolved.user)
+    }
+
+    // MARK: - Codable round-trip / tolerant decode
+
+    func testCredentialProfileRoundTrips() throws {
+        let profile = CredentialProfile(name: "Ops", user: "opsuser", identityFile: "/key")
+        let data = try JSONEncoder().encode(profile)
+        let decoded = try JSONDecoder().decode(CredentialProfile.self, from: data)
+        XCTAssertEqual(decoded, profile)
+    }
+
+    func testSessionEntryDecodesWithoutCredentialProfileIDField() throws {
+        // A pre-profiles library entry — the key is simply absent.
+        let json = """
+        {"id":"\(UUID().uuidString)","name":"legacy","folder":"","hostname":"legacy.example.com"}
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(SessionEntry.self, from: json)
+
+        XCTAssertNil(decoded.credentialProfileID)
+    }
+
+    // MARK: - Favorites
+
+    func testToggleFavoriteFlipsAndPersists() {
+        let a = host("a")
+        let store = makeStore([a])
+
+        store.toggleFavorite(a.id)
+        XCTAssertTrue(store.entries.first?.isFavorite ?? false)
+
+        store.toggleFavorite(a.id)
+        XCTAssertFalse(store.entries.first?.isFavorite ?? true)
+    }
+
+    func testToggleFavoriteIgnoresUnknownID() {
+        let store = makeStore([host("a")])
+        store.toggleFavorite(UUID())
+        XCTAssertEqual(store.entries.count, 1)
+        XCTAssertFalse(store.entries.first?.isFavorite ?? true)
+    }
+
+    func testSetFavoriteBulkAppliesOnlyToSelection() {
+        let a = host("a"), b = host("b")
+        let store = makeStore([a, b])
+
+        store.setFavorite(true, ids: [a.id])
+
+        XCTAssertTrue(store.entries.first { $0.id == a.id }?.isFavorite ?? false)
+        XCTAssertFalse(store.entries.first { $0.id == b.id }?.isFavorite ?? true)
+    }
+
+    func testFavoriteEntriesReturnsOnlyFavoritesSortedAlphabetically() {
+        let z = host("zeta"), a = host("alpha"), m = host("mid")
+        let store = makeStore([z, a, m])
+
+        store.setFavorite(true, ids: [z.id, a.id])
+
+        XCTAssertEqual(store.favoriteEntries.map(\.name), ["alpha", "zeta"])
+    }
+
+    func testSessionEntryDecodesWithoutIsFavoriteFieldDefaultingFalse() throws {
+        let json = """
+        {"id":"\(UUID().uuidString)","name":"legacy","folder":"","hostname":"legacy.example.com"}
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(SessionEntry.self, from: json)
+
+        XCTAssertFalse(decoded.isFavorite)
+    }
+
+    func testStoreLoadsLegacyDocumentMissingCredentialProfileFields() throws {
+        // A whole pre-profiles library file with no credentialProfiles/
+        // defaultProfileID keys at all.
+        let entryData = try JSONEncoder().encode(host("a"))
+        let entryJSON = String(data: entryData, encoding: .utf8)!
+        let json = "{\"entries\":[\(entryJSON)],\"macros\":[]}".data(using: .utf8)!
+        try json.write(to: tempURL)
+
+        let store = SessionStore(fileURL: tempURL)
+
+        XCTAssertTrue(store.credentialProfiles.isEmpty)
+        XCTAssertNil(store.defaultProfileID)
+        XCTAssertEqual(store.entries.count, 1)
+    }
 }

@@ -530,6 +530,10 @@ struct EmptyStateView: View {
         store.recentEntries(limit: 8)
     }
 
+    private var favorites: [SessionEntry] {
+        store.favoriteEntries
+    }
+
     /// Fuzzy matches while searching, reusing QuickConnectView's ranking
     /// rather than a second scoring implementation.
     private var searchResults: [SessionEntry] {
@@ -622,16 +626,34 @@ struct EmptyStateView: View {
                 }
                 .frame(maxWidth: 400)
                 .padding(.top, 24)
-            } else if !recents.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Jump back in")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .padding(.leading, 10)
-                    ForEach(recents, id: \.entry.id) { recent in
-                        RecentConnectionRow(entry: recent.entry, date: recent.date) {
-                            connect(recent.entry)
+            } else if !favorites.isEmpty || !recents.isEmpty {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !favorites.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Favorites")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .textCase(.uppercase)
+                                .padding(.leading, 10)
+                            ForEach(favorites, id: \.id) { entry in
+                                RecentConnectionRow(entry: entry) {
+                                    connect(entry)
+                                }
+                            }
+                        }
+                    }
+                    if !recents.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Jump back in")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .textCase(.uppercase)
+                                .padding(.leading, 10)
+                            ForEach(recents, id: \.entry.id) { recent in
+                                RecentConnectionRow(entry: recent.entry, date: recent.date) {
+                                    connect(recent.entry)
+                                }
+                            }
                         }
                     }
                 }

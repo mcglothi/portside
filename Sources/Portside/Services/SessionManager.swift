@@ -565,6 +565,9 @@ final class SessionManager: ObservableObject {
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
     var connectionDefaults = ConnectionDefaults()
+    /// The implicit-fallback credential profile (Settings ▸ Profiles) — see
+    /// `makeSession`'s password precedence.
+    var defaultProfileID: UUID?
     /// Fires on every host connection (all paths — single, group, MultiExec);
     /// the app wires it to the store's recent-connections history.
     var onConnect: ((SessionEntry) -> Void)?
@@ -737,15 +740,23 @@ final class SessionManager: ObservableObject {
             // If the host has a saved password, set up the askpass helper so ssh
             // auto-authenticates; otherwise it just prompts in the terminal.
             // (mosh's bootstrap ssh inherits the same environment, so saved
-            // passwords work there too.) Falling back to the app-wide default
-            // password (Settings ▸ Connection) when this host opted in to
-            // saving a password but doesn't have its own — the common case
-            // for a batch of imported hosts that all share one login.
+            // passwords work there too.) Precedence: an explicitly assigned
+            // credential profile's password wins (that's the point — rotating
+            // a profile should override whatever a host had before), then the
+            // host's own saved password, then the implicit default profile
+            // (Settings ▸ Profiles) for hosts that opted into saving a
+            // password but never assigned or set one of their own — the
+            // common case for a batch of imported hosts sharing one login.
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
             var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
+            let profilePassword = entry.credentialProfileID.flatMap(CredentialStore.profilePassword)
+            let defaultProfilePassword = defaultProfileID.flatMap(CredentialStore.profilePassword)
             if entry.savePassword,
-               let password = CredentialStore.password(for: entry.id) ?? CredentialStore.defaultPassword(),
+               let password = profilePassword
+                   ?? CredentialStore.password(for: entry.id)
+                   ?? defaultProfilePassword
+                   ?? CredentialStore.defaultPassword(),
                let injected = AskpassInjector.environment(for: password) {
                 environment += injected.env
                 expireSecret = injected.expireSecret

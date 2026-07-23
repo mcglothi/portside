@@ -175,33 +175,32 @@ exists to fill that gap without giving up native speed and macOS polish.
   an optional auto-accept-new-host-keys toggle, arrow-key navigation in both
   the welcome-screen search and the sidebar filter, and single-keystroke
   session reconnect.
+- ✅ **Named credential profiles** — multiple reusable identities (username +
+  SSH key and/or password), managed in Settings ▸ Profiles and applied in
+  bulk to a multi-selection or a folder, so a fleet split across a handful
+  of shared accounts (AD, Ansible/Nutanix service accounts, IPMI/vendor
+  consoles, etc.) doesn't need per-host credential entry. A host holds a
+  *live* reference to its assigned profile rather than a one-time copy, so
+  rotating a profile's password or key updates every host using it
+  immediately. The old single default password folds into this as the
+  first profile ("Default").
+- ✅ **Pinned favorites** on the welcome/start page, shown alongside "Jump
+  back in" — hidden while actively searching, same as recents. Pin from a
+  sidebar right-click (single host or a multi-selection), a hover star icon
+  on each sidebar row, or a Favorite toggle in the session editor.
+- ✅ **Changelog on update** — the Sparkle update prompt now shows a
+  cumulative changelog covering everything since whatever version you're
+  updating from, not just the latest release's own notes, since releases
+  ship fast enough that auto-updaters often jump several versions at once.
 
 ### Next up
 
-- Pinned favorites on the welcome/start page, shown alongside "Jump back
-  in" — hidden while actively searching, same as recents are today. Pinning
-  itself: a sidebar right-click ("Add/Remove Favorites," single host or a
-  multi-selection at once — mirrors the existing bulk "Save Password in
-  Keychain" action), a hover star icon directly on each sidebar row and
-  search result for a one-click toggle, and a Favorite toggle in the
-  session editor next to Environment/Protected host.
 - Sidebar: an Expand All / Collapse All action for folders.
 - App UI appearance (light / dark / follow system) — distinct from the
   terminal's own color theme, which stays per-appearance-profile as today.
 - Bulk-tag environment (prod/staging/dev/personal) across a multi-selection
   or a whole folder, alongside the existing bulk "Save Password in Keychain"
   action — aimed at managing a large (500+) imported host inventory.
-- **Named credential profiles** — multiple reusable identities (username +
-  SSH key and/or password), managed in Settings and applied in bulk to a
-  multi-selection or a folder, so a fleet split across a handful of shared
-  accounts (AD, Ansible/Nutanix service accounts, IPMI/vendor consoles,
-  etc.) doesn't need per-host credential entry. A host holds a *live*
-  reference to its assigned profile rather than a one-time copy, so
-  rotating a profile's password or key updates every host using it
-  immediately — the actual point, for forced rotations across a fleet. The
-  existing single default password (Settings ▸ Connection) folds into this
-  as the first profile ("Default") rather than staying a second, parallel
-  mechanism.
 - **Connection history** — grow today's capped 20-entry recents list into a
   real, searchable, browsable history (its own view, separate from Quick
   Connect), with a "clear history" action and a way to exclude protected

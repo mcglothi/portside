@@ -56,6 +56,20 @@ if [ -n "$NOTARY_PROFILE" ]; then
     xcrun stapler staple "$DMG"
 fi
 
+echo "==> Writing changelog for Sparkle update UI"
+# generate_appcast embeds Portside-$VERSION.md as this release's appcast
+# description (matched by basename against the .zip above). Since users often
+# auto-update across several skipped versions, the description is the last
+# CHANGELOG_LIMIT entries of CHANGELOG.md (newest first), not just this
+# version's own notes — so scrolling down covers everything they missed.
+CHANGELOG_LIMIT=15
+awk -v limit="$CHANGELOG_LIMIT" '
+    /^## / { n++ }
+    n == 0 { next }
+    n > limit { exit }
+    { print }
+' CHANGELOG.md > "build/updates/Portside-$VERSION.md"
+
 echo "==> Signing + generating appcast"
 "$SPARKLE_BIN/generate_appcast" \
     --download-url-prefix "https://github.com/$REPO/releases/download/v$VERSION/" \
@@ -69,6 +83,7 @@ gh release create "v$VERSION" \
     "build/updates/Portside-$VERSION.zip" \
     "build/updates/Portside-$VERSION.dmg" \
     "build/updates/appcast.xml" \
+    "build/updates/Portside-$VERSION.md" \
     --repo "$REPO" \
     --title "Portside $VERSION" \
     --notes "$NOTES"

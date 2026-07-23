@@ -30,6 +30,7 @@ struct PortsideApp: App {
                     sessions.loggingSettings = store.logging
                     sessions.terminalSettings = store.terminal
                     sessions.connectionDefaults = store.defaults
+                    sessions.defaultProfileID = store.defaultProfileID
                     sessions.onConnect = { [weak store] entry in
                         store?.recordConnection(entry)
                     }
@@ -51,6 +52,7 @@ struct PortsideApp: App {
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
                 .onChange(of: store.terminal) { _, new in sessions.applyTerminalSettings(new) }
                 .onChange(of: store.defaults) { _, new in sessions.connectionDefaults = new }
+                .onChange(of: store.defaultProfileID) { _, new in sessions.defaultProfileID = new }
         }
         .commands {
             CommandGroup(after: .appInfo) {
@@ -131,6 +133,9 @@ struct PortsideApp: App {
                 ConnectionSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Connection", systemImage: "network") }
+                CredentialProfilesView()
+                    .environmentObject(store)
+                    .tabItem { Label("Profiles", systemImage: "person.badge.key") }
                 LoggingSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Logging", systemImage: "doc.text.magnifyingglass") }
