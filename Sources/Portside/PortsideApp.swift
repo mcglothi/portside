@@ -57,46 +57,58 @@ struct PortsideApp: App {
             }
             CommandGroup(after: .newItem) {
                 Button("New Local Shell") { sessions.openLocalShell() }
-                    .keyboardShortcut("t", modifiers: [.command])
+                    .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
-                    .keyboardShortcut("k", modifiers: [.command])
+                    .keyboardShortcut(shortcut(.quickConnect))
+                Button("Reopen Closed Tab") { sessions.reopenLastClosedTab() }
+                    .keyboardShortcut(shortcut(.reopenClosedTab))
             }
             CommandGroup(after: .textEditing) {
                 Button("Find…") { sessions.selected?.toggleFind() }
-                    .keyboardShortcut("f", modifiers: [.command])
+                    .keyboardShortcut(shortcut(.find))
                     .disabled(sessions.selected == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }
-                    .keyboardShortcut("+", modifiers: .command)
+                    .keyboardShortcut(shortcut(.zoomIn))
                 Button("Zoom Out") { sessions.zoomOut() }
-                    .keyboardShortcut("-", modifiers: .command)
+                    .keyboardShortcut(shortcut(.zoomOut))
                 Button("Actual Size") { sessions.resetZoom() }
-                    .keyboardShortcut("0", modifiers: .command)
+                    .keyboardShortcut(shortcut(.actualSize))
+                Divider()
+                Button("Clear Buffer") { sessions.selected?.clearBuffer() }
+                    .keyboardShortcut(shortcut(.clearBuffer))
+                    .disabled(sessions.selected == nil)
+                Button("Toggle MultiExec") { sessions.toggleMultiExec() }
+                    .keyboardShortcut(shortcut(.toggleMultiExec))
+                    .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2)
+                Button("Toggle Grid View") { sessions.toggleGridView() }
+                    .keyboardShortcut(shortcut(.toggleGridView))
+                    .disabled(!sessions.canGridView)
                 Divider()
             }
             CommandMenu("Pane") {
                 Button("Split Right") { sessions.splitActivePane(.horizontal) }
-                    .keyboardShortcut("d", modifiers: .command)
+                    .keyboardShortcut(shortcut(.splitRight))
                 Button("Split Down") { sessions.splitActivePane(.vertical) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcut(.splitDown))
                 Button("Zoom Pane") { sessions.toggleZoom() }
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcut(.zoomPane))
                 Divider()
                 Button("Focus Next Pane") { sessions.focusAdjacentPane(next: true) }
-                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                    .keyboardShortcut(shortcut(.focusNextPane))
                 Button("Focus Previous Pane") { sessions.focusAdjacentPane(next: false) }
-                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    .keyboardShortcut(shortcut(.focusPreviousPane))
                 Divider()
                 Button("Close Pane") { sessions.closeActivePane() }
-                    .keyboardShortcut("w", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcut(.closePane))
             }
             CommandGroup(after: .windowArrangement) {
                 Divider()
                 Button("Show Next Tab") { sessions.selectNextTab() }
-                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcut(.nextTab))
                 Button("Show Previous Tab") { sessions.selectPreviousTab() }
-                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcut(.previousTab))
                 Menu("Go to Tab") {
                     ForEach(1...9, id: \.self) { n in
                         Button("Tab \(n)") { sessions.selectTab(at: n - 1) }
@@ -120,7 +132,18 @@ struct PortsideApp: App {
                 LoggingSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Logging", systemImage: "doc.text.magnifyingglass") }
+                ShortcutsSettingsView()
+                    .environmentObject(store)
+                    .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+                UpdateSettingsView()
+                    .environmentObject(updater)
+                    .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
             }
         }
+    }
+
+    private func shortcut(_ action: ShortcutAction) -> KeyboardShortcut {
+        let binding = store.keyBindings.binding(for: action)
+        return KeyboardShortcut(binding.key.keyEquivalent, modifiers: binding.modifiers.eventModifiers)
     }
 }

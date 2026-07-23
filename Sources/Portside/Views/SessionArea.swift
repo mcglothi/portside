@@ -226,35 +226,67 @@ struct TabBar: View {
     /// The tab being renamed (drives the rename alert), plus its draft name.
     @State private var renamingTab: Tab?
     @State private var renameText = ""
+    @State private var canScrollLeft = false
+    @State private var canScrollRight = false
+    /// Bumped to request a scroll; `TabStripScrollView` reads `scrollDirection`
+    /// when it changes. A plain SwiftUI `ScrollViewReader`/`GeometryReader`
+    /// approach to overflow detection turned out unreliable — a bare
+    /// `ScrollView` doesn't claim its parent's remaining space by default,
+    /// so measuring "content width vs. viewport width" kept collapsing to
+    /// the same number. AppKit's `NSScrollView` has unambiguous geometry
+    /// (`documentView.frame` vs. `contentView.bounds`), so the tab strip is
+    /// hosted in one via `TabStripScrollView` instead.
+    @State private var scrollToken = 0
+    @State private var scrollDirection = 0
+
+    private var overflowing: Bool { canScrollLeft || canScrollRight }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(sessions.tabs) { tab in
-                    TabChip(
-                        tab: tab,
-                        isSelected: tab.id == sessions.selectedTabID,
-                        onSelect: { sessions.selectedTabID = tab.id },
-                        onClose: { sessions.closeTab(tab) },
-                        onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
-                        onDuplicate: { sessions.duplicateTab(tab) },
-                        onCloseOthers: { sessions.closeOtherTabs(tab) }
-                    )
-                }
-                Button {
-                    sessions.openStartTab()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 5)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("New tab")
+        HStack(spacing: 0) {
+            if overflowing {
+                chevron("chevron.left") { requestScroll(-1) }
+                    .disabled(!canScrollLeft)
+                    .padding(.leading, 4)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            TabStripScrollView(
+                canScrollLeft: $canScrollLeft,
+                canScrollRight: $canScrollRight,
+                scrollToken: scrollToken,
+                scrollDirection: scrollDirection
+            ) {
+                HStack(spacing: 4) {
+                    ForEach(sessions.tabs) { tab in
+                        TabChip(
+                            tab: tab,
+                            isSelected: tab.id == sessions.selectedTabID,
+                            onSelect: { sessions.selectedTabID = tab.id },
+                            onClose: { sessions.closeTab(tab) },
+                            onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
+                            onDuplicate: { sessions.duplicateTab(tab) },
+                            onCloseOthers: { sessions.closeOtherTabs(tab) }
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            if overflowing {
+                chevron("chevron.right") { requestScroll(1) }
+                    .disabled(!canScrollRight)
+            }
+            Button {
+                sessions.openStartTab()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New tab")
+            .padding(.trailing, 6)
         }
         .background(.bar)
         .alert("Rename Tab", isPresented: Binding(
@@ -269,6 +301,134 @@ struct TabBar: View {
             Button("Cancel", role: .cancel) { renamingTab = nil }
         } message: {
             Text("Leave blank to restore the automatic name.")
+        }
+    }
+
+    private func chevron(_ systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .padding(4)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+
+    private func requestScroll(_ direction: Int) {
+        scrollDirection = direction
+        scrollToken += 1
+    }
+}
+
+/// Hosts arbitrary SwiftUI content in a real `NSScrollView` so overflow
+/// (can-scroll-left/right) is exact — see the comment on `TabBar.scrollToken`.
+/// `scrollToken`/`scrollDirection` are a one-shot command channel: bumping
+/// `scrollToken` asks the coordinator to page by `scrollDirection` on the
+/// next `updateNSView`.
+private struct TabStripScrollView<Content: View>: NSViewRepresentable {
+    @Binding var canScrollLeft: Bool
+    @Binding var canScrollRight: Bool
+    var scrollToken: Int
+    var scrollDirection: Int
+    @ViewBuilder let content: Content
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.postsFrameChangedNotifications = true
+
+        let hosting = NSHostingView(rootView: content)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = hosting
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            hosting.heightAnchor.constraint(equalTo: scrollView.contentView.heightAnchor),
+        ])
+
+        context.coordinator.scrollView = scrollView
+        context.coordinator.hosting = hosting
+        context.coordinator.observe()
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.hosting?.rootView = content
+        context.coordinator.performRequestedScrollIfNeeded()
+        // Let AppKit finish laying out the (possibly just-changed) content
+        // before reading its frame.
+        DispatchQueue.main.async { context.coordinator.updateScrollState() }
+    }
+
+    /// Reports the true available width to SwiftUI's layout (so the HStack
+    /// gives this view exactly the remaining space, not its content's ideal
+    /// size) while height comes from the hosted content's own fitting size.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        let height = context.coordinator.hosting?.fittingSize.height ?? 0
+        return CGSize(width: proposal.width ?? 0, height: height)
+    }
+
+    final class Coordinator {
+        var parent: TabStripScrollView
+        weak var scrollView: NSScrollView?
+        weak var hosting: NSHostingView<Content>?
+        private var lastScrollToken: Int
+        private var tokens: [NSObjectProtocol] = []
+
+        init(_ parent: TabStripScrollView) {
+            self.parent = parent
+            self.lastScrollToken = parent.scrollToken
+        }
+
+        func observe() {
+            guard let scrollView, let hosting else { return }
+            let center = NotificationCenter.default
+            tokens = [
+                center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView,
+                                   queue: .main) { [weak self] _ in self?.updateScrollState() },
+                center.addObserver(forName: NSView.frameDidChangeNotification, object: scrollView,
+                                   queue: .main) { [weak self] _ in self?.updateScrollState() },
+                center.addObserver(forName: NSView.frameDidChangeNotification, object: hosting,
+                                   queue: .main) { [weak self] _ in self?.updateScrollState() },
+            ]
+            scrollView.contentView.postsBoundsChangedNotifications = true
+        }
+
+        func performRequestedScrollIfNeeded() {
+            guard lastScrollToken != parent.scrollToken else { return }
+            lastScrollToken = parent.scrollToken
+            scroll(by: parent.scrollDirection)
+        }
+
+        private func scroll(by direction: Int) {
+            guard let scrollView else { return }
+            let clip = scrollView.contentView
+            let page = max(60, clip.bounds.width * 0.8)
+            let maxX = max(0, (scrollView.documentView?.frame.width ?? 0) - clip.bounds.width)
+            let newX = min(max(0, clip.bounds.origin.x + CGFloat(direction) * page), maxX)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.15
+                clip.animator().setBoundsOrigin(NSPoint(x: newX, y: clip.bounds.origin.y))
+            }
+        }
+
+        func updateScrollState() {
+            guard let scrollView, let hosting else { return }
+            let contentWidth = hosting.frame.width
+            let viewport = scrollView.contentView.bounds
+            let left = viewport.origin.x > 0.5
+            let right = viewport.origin.x + viewport.width < contentWidth - 0.5
+            if parent.canScrollLeft != left { parent.canScrollLeft = left }
+            if parent.canScrollRight != right { parent.canScrollRight = right }
+        }
+
+        deinit {
+            let center = NotificationCenter.default
+            tokens.forEach { center.removeObserver($0) }
         }
     }
 }

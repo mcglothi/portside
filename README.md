@@ -110,32 +110,51 @@ exists to fill that gap without giving up native speed and macOS polish.
   connection (no re-auth), with drag/drop upload and drag-out download.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
-- **Recent connections** — the welcome screen keeps a "jump back in" list of
-  the hosts you last connected to, one click to reconnect.
+- **A welcome screen that searches** — the tab bar's + button opens a
+  "welcome aboard" tab with a live host search bar (picking a host or
+  starting a local shell takes over that same tab); the whole-window empty
+  state and the "jump back in" recent-connections list work the same way.
+- **Tabs, tuned for a lot of them** — right-click a tab to duplicate it (same
+  host(s)/split layout, fresh sessions) or reopen the last one you closed
+  (⇧⌘T); an overflowing tab strip grows </> chevrons to page through it
+  instead of requiring you to know a keyboard shortcut.
+- **Every shortcut remappable** — Settings → Shortcuts lists every keyboard
+  shortcut with a click-to-record rebind, conflict detection, and per-row or
+  one-click reset to defaults. New default shortcuts: Reopen Closed Tab,
+  Toggle MultiExec, Toggle Grid View, and Clear Buffer.
+- **Cursor styling** — block, underline, or bar, with independent blink,
+  in Settings → Appearance with a live preview.
+- **Copy/paste from a right-click** — a context menu in every terminal,
+  alongside the existing ⌘C/⌘V.
 - **Session logging** — per-host log folders with compression and search.
 - **Keychain passwords** — per-host saved passwords supplied to ssh
-  automatically; nothing ever lands in the JSON library.
-- **Auto-updates** — Sparkle-powered in-app updates from GitHub Releases.
+  automatically; nothing ever lands in the JSON library. An app-wide default
+  password (Settings → Connection) covers hosts that opt in to saving a
+  password but don't have one of their own yet — pairs with the sidebar's
+  bulk "Save Password in Keychain" action for a multi-selection of hosts, so
+  a big batch of imported hosts sharing one login doesn't need per-host
+  passwords typed in one at a time.
+- **Auto-updates** — Sparkle-powered in-app updates from GitHub Releases,
+  with the check frequency and on/off switch configurable in
+  Settings → Updates.
 
 ## Roadmap
 
-### Next release — terminal foundation
+### Shipped recently
 
-- ✅ Configurable scrollback — retention is now adjustable (Settings → Terminal),
-  defaulting to 10,000 lines.
-- ✅ GPU (Metal) rendering behind a safe, off-by-default preference, with
-  automatic fallback to CoreGraphics. Formal benchmarking still to come before
-  any performance claims.
-- ✅ Tested terminal-compatibility matrix — see
-  [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for observed support across
-  color, Unicode, mouse, links, and image protocols (with the known gaps).
-- ✅ Native sidebar multi-selection (shift-click ranges, ⌘-click, keyboard) and
-  drag hosts between folders — the Hosts list is now an `NSOutlineView`.
-- ✅ Session restore — reopen the tabs you had open when you last quit
-  (Settings → Terminal: off / ask / auto). MultiExec groups reopen disarmed.
-- ✅ Split panes — split any tab (⌘D / ⌘⇧D), navigate with the mouse or
-  ⌘⌥←/→, and arm a split for MultiExec to broadcast across its panes.
-  Restore reopens the whole layout.
+- ✅ Configurable scrollback, GPU (Metal) rendering, a tested
+  [terminal-compatibility matrix](docs/COMPATIBILITY.md), native sidebar
+  multi-selection with drag-to-folder, session restore, and split panes.
+- ✅ Tab bar polish — keyboard tab switching (⌘⇧[/], ⌘1–9, and a ⌘←/⌘→
+  alias), pane zoom (⌘⇧↵), reconnect-in-place from the "session ended" bar,
+  a tab context menu (rename / duplicate / close / close others), overflow
+  chevrons, and a configurable MultiExec alert color.
+- ✅ Fully remappable keyboard shortcuts, cursor shape/blink, right-click
+  terminal copy/paste, the searchable welcome/start-page tab, app-wide and
+  bulk password handling, and configurable auto-update checking.
+
+### Next up
+
 - Per-profile font/theme choices (appearance is global today).
 - Font ligatures and inline image protocols (Sixel / iTerm2) are current
   SwiftTerm limitations, tracked in the compatibility matrix rather than

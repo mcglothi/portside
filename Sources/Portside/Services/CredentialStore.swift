@@ -3,28 +3,76 @@ import Security
 import Darwin
 
 /// Per-session passwords, stored in the macOS login Keychain keyed by the
-/// session's UUID. Passwords never touch the JSON library.
+/// session's UUID (plus one fixed key for the app-wide default password —
+/// see `defaultAccount`). Passwords never touch the JSON library.
 enum CredentialStore {
     private static let service = "net.timmcg.portside.ssh"
+    /// Keychain "account" for the single app-wide default password, alongside
+    /// the per-host entries (which use the host's UUID string as account).
+    private static let defaultAccount = "net.timmcg.portside.default-password"
 
-    static func setPassword(_ password: String, for id: UUID) {
-        deletePassword(for: id)
-        guard !password.isEmpty, let data = password.data(using: .utf8) else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
-        ]
-        SecItemAdd(query as CFDictionary, nil)
+    @discardableResult
+    static func setPassword(_ password: String, for id: UUID) -> Bool {
+        set(password, account: id.uuidString)
     }
 
     static func password(for id: UUID) -> String? {
+        get(account: id.uuidString)
+    }
+
+    static func deletePassword(for id: UUID) {
+        delete(account: id.uuidString)
+    }
+
+    @discardableResult
+    static func setDefaultPassword(_ password: String) -> Bool {
+        set(password, account: defaultAccount)
+    }
+
+    static func defaultPassword() -> String? {
+        get(account: defaultAccount)
+    }
+
+    static func deleteDefaultPassword() {
+        delete(account: defaultAccount)
+    }
+
+    /// Adds or updates the item for `account`. Tries an add first (the
+    /// common case) and falls back to an update on a duplicate — more
+    /// reliable than a preceding blind delete-then-add, which silently loses
+    /// the new value if the delete fails (e.g. an item left behind under a
+    /// stale ACL from a previous code signature) and the add then also fails
+    /// as a duplicate. Returns whether the value actually ended up saved, so
+    /// callers can surface a failure instead of assuming success.
+    private static func set(_ password: String, account: String) -> Bool {
+        guard !password.isEmpty, let data = password.data(using: .utf8) else {
+            delete(account: account)
+            return true
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString,
+            kSecAttrAccount as String: account,
+        ]
+        let addQuery = query.merging([
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+        ]) { _, new in new }
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        if status != errSecSuccess {
+            NSLog("Portside: Keychain save failed for account \(account): OSStatus \(status)")
+        }
+        return status == errSecSuccess
+    }
+
+    private static func get(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -34,11 +82,11 @@ enum CredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func deletePassword(for id: UUID) {
+    private static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString,
+            kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
     }

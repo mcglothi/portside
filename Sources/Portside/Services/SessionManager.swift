@@ -444,6 +444,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         SearchOptions(caseSensitive: findCaseSensitive)
     }
 
+    /// Wipes the terminal's buffer/scrollback (⌘⌫). SwiftTerm's only public
+    /// reset primitive is a full VT reset rather than a surgical scrollback
+    /// trim, so this also resets modes/colors set by escape sequences — the
+    /// same tradeoff a shell's own `reset` command makes.
+    func clearBuffer() {
+        terminalView.getTerminal().resetToInitialState()
+    }
+
     /// Applies the global look to this terminal's view.
     func apply(appearance: TerminalAppearance) {
         terminalView.font = appearance.nsFont
@@ -566,6 +574,18 @@ final class SessionManager: ObservableObject {
                 DispatchQueue.main.async { self.close(dead) }
                 return nil
             }
+
+            // ⌘←/⌘→ also cycles tabs, alongside the (remappable) ⇧⌘[/⇧⌘] in the
+            // menu — a fixed convenience alias, like iTerm2 offers both forms.
+            // Not a readline/shell binding, so there's nothing to steal focus
+            // from at a live prompt. Handled here rather than as a second
+            // `.keyboardShortcut` so it doesn't need its own settings row.
+            if mods == .command, event.keyCode == 123 || event.keyCode == 124 {
+                DispatchQueue.main.async {
+                    event.keyCode == 123 ? self.selectPreviousTab() : self.selectNextTab()
+                }
+                return nil
+            }
             return event
         }
         // Click-to-focus: SwiftTerm's becomeFirstResponder isn't `open`, so we
@@ -676,11 +696,15 @@ final class SessionManager: ObservableObject {
             // If the host has a saved password, set up the askpass helper so ssh
             // auto-authenticates; otherwise it just prompts in the terminal.
             // (mosh's bootstrap ssh inherits the same environment, so saved
-            // passwords work there too.)
+            // passwords work there too.) Falling back to the app-wide default
+            // password (Settings ▸ Connection) when this host opted in to
+            // saving a password but doesn't have its own — the common case
+            // for a batch of imported hosts that all share one login.
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
             var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
-            if entry.savePassword, let password = CredentialStore.password(for: entry.id),
+            if entry.savePassword,
+               let password = CredentialStore.password(for: entry.id) ?? CredentialStore.defaultPassword(),
                let injected = AskpassInjector.environment(for: password) {
                 environment += injected.env
                 expireSecret = injected.expireSecret
@@ -870,6 +894,16 @@ final class SessionManager: ObservableObject {
         guard let tab = selectedTab else { return }
         objectWillChange.send()
         tab.broadcastArmed = armed
+    }
+
+    /// Keyboard equivalent of the MultiExec toolbar toggle (⇧⌘M).
+    func toggleMultiExec() {
+        setBroadcastArmed(!(selectedTab?.broadcastArmed ?? false))
+    }
+
+    /// Keyboard equivalent of the Grid View toolbar toggle (⇧⌘G).
+    func toggleGridView() {
+        setGridView(!isGridView)
     }
 
     // MARK: - Tab navigation
@@ -1111,7 +1145,33 @@ final class SessionManager: ObservableObject {
             if selectedTabID == tab.id { selectedTabID = tabs.last?.id }
             return
         }
+        rememberForReopen(tab)
         for session in tab.leaves { close(session) }
+    }
+
+    /// Recently-closed tabs (most recent last), so ⇧⌘T can bring one back
+    /// with its same host(s)/split layout. Snapshotting only here (once, up
+    /// front) — not inside `close(_:)`'s per-leaf teardown — avoids recording
+    /// a degenerate single-pane remnant when a multi-pane tab's leaves close
+    /// one at a time as part of closing the whole tab.
+    private var closedTabHistory: [RestorePlan.TabPlan] = []
+    private static let closedTabHistoryLimit = 10
+
+    private func rememberForReopen(_ tab: Tab) {
+        guard let root = tab.root, let plan = planNode(for: root) else { return }
+        closedTabHistory.append(RestorePlan.TabPlan(root: plan))
+        if closedTabHistory.count > Self.closedTabHistoryLimit {
+            closedTabHistory.removeFirst()
+        }
+    }
+
+    /// Reopens the most recently closed tab (⇧⌘T), same as a browser's
+    /// "reopen closed tab" — reuses the same restore-plan builder as launch
+    /// restore and Duplicate Tab.
+    func reopenLastClosedTab() {
+        guard let plan = closedTabHistory.popLast(), let tab = buildTab(plan) else { return }
+        tabs.append(tab)
+        selectedTabID = tab.id
     }
 
     /// Closes every tab except the given one (tab menu ▸ Close Others).

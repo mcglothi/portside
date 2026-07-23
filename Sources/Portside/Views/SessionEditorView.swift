@@ -11,6 +11,7 @@ struct SessionEditorView: View {
     @State private var portText: String
     @State private var password = ""
     @State private var hasSavedPassword: Bool
+    @State private var credentialError: String?
     // Working copies so the editor can bind to fields even when the draft's
     // optional target is nil; only the active kind's copy is saved back.
     @State private var container: ContainerTarget
@@ -55,11 +56,17 @@ struct SessionEditorView: View {
         }
     }
 
-    private func persistCredentials() {
+    /// Returns whether the password ended up actually persisted (or there was
+    /// nothing to persist) — surfaced to the user rather than assumed, since
+    /// a Keychain write can fail silently (locked keychain, a stale ACL from
+    /// an earlier code signature, etc.).
+    private func persistCredentials() -> Bool {
         if draft.savePassword {
-            if !password.isEmpty { CredentialStore.setPassword(password, for: draft.id) }
+            guard !password.isEmpty else { return true }   // unchanged — keeping the existing saved password
+            return CredentialStore.setPassword(password, for: draft.id)
         } else {
             CredentialStore.deletePassword(for: draft.id)
+            return true
         }
     }
 
@@ -353,9 +360,13 @@ struct SessionEditorView: View {
                     draft.kubernetes = draft.kind == .kubernetes ? kubernetes : nil
                     draft.serial = draft.kind == .serial ? serial : nil
                     draft.telnet = draft.kind == .telnet ? telnet : nil
-                    persistCredentials()
+                    let credentialsSaved = persistCredentials()
                     onComplete(.save(draft))
-                    dismiss()
+                    if credentialsSaved {
+                        dismiss()
+                    } else {
+                        credentialError = "The host was saved, but its password couldn't be written to the Keychain. Try Edit… again to retry."
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSave)
@@ -371,6 +382,13 @@ struct SessionEditorView: View {
                     container.name = picked
                 }
             }
+        }
+        .alert("Password Not Saved", isPresented: Binding(
+            get: { credentialError != nil }, set: { if !$0 { credentialError = nil } }
+        )) {
+            Button("OK") { dismiss() }
+        } message: {
+            Text(credentialError ?? "")
         }
     }
 }

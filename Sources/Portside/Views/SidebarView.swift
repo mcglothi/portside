@@ -421,10 +421,6 @@ struct ToolsList: View {
                 }
                 .buttonStyle(.plain)
             }
-            Section("Coming soon") {
-                Label("Split Layouts", systemImage: "rectangle.split.2x1")
-                    .foregroundStyle(.tertiary)
-            }
         }
     }
 }

@@ -19,6 +19,7 @@ final class SessionStore: ObservableObject {
     @Published var defaults = ConnectionDefaults()
     @Published var logging = LoggingSettings()
     @Published var terminal = TerminalSettings()
+    @Published var keyBindings = KeyBindings()
     /// The last-persisted open session layout, replayed on launch when
     /// `terminal.restoreMode` allows. Written continuously as tabs change.
     @Published private(set) var workspace = WorkspaceSnapshot()
@@ -35,6 +36,7 @@ final class SessionStore: ObservableObject {
         var logging: LoggingSettings?
         var terminal: TerminalSettings?
         var workspace: WorkspaceSnapshot?
+        var keyBindings: KeyBindings?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -214,6 +216,11 @@ final class SessionStore: ObservableObject {
 
     func updateTerminal(_ terminal: TerminalSettings) {
         self.terminal = terminal
+        save()
+    }
+
+    func updateKeyBindings(_ keyBindings: KeyBindings) {
+        self.keyBindings = keyBindings
         save()
     }
 
@@ -409,6 +416,7 @@ final class SessionStore: ObservableObject {
             logging = doc.logging ?? LoggingSettings()
             terminal = doc.terminal ?? TerminalSettings()
             workspace = doc.workspace ?? WorkspaceSnapshot()
+            keyBindings = doc.keyBindings ?? KeyBindings()
         } else if seedsFromSSHConfig {
             entries = SSHConfigImporter.importEntries()
             save()
@@ -427,7 +435,7 @@ final class SessionStore: ObservableObject {
                                         recents: recents,
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging,
-                                        terminal: terminal, workspace: workspace))
+                                        terminal: terminal, workspace: workspace, keyBindings: keyBindings))
                 .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")
