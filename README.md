@@ -97,9 +97,10 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Quick Connect (⌘K)** — a fuzzy-search command palette over the whole
   library; empty query lists recent hosts so it doubles as fast reconnect.
 - **MultiExec** — tile every session in a grid and type into all of them at
-  once. Per-terminal include toggles, a broadcast command bar for deliberate
-  one-shot commands, and a loud orange banner so you always know when you're
-  armed.
+  once. Arming it is one step: with several separate tabs open it gathers
+  them into Grid View automatically instead of requiring that first. Per-
+  terminal include toggles, a broadcast command bar for deliberate one-shot
+  commands, and a loud orange banner so you always know when you're armed.
 - **Environment badges & protected hosts** — tag sessions prod / staging /
   dev / personal for color-coded badges in the sidebar and tabs. Protected
   hosts stay **out of MultiExec by default** and require explicit
@@ -107,17 +108,28 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Macros** — named command sequences, run in the active terminal or across
   the whole MultiExec grid. Per-host **run-on-connect** commands too.
 - **SFTP browser** — per-session remote file pane riding the same SSH
-  connection (no re-auth), with drag/drop upload and drag-out download.
+  connection (no re-auth), with drag/drop upload and drag-out download (a
+  persistent hint keeps that discoverable), automatic refresh when you
+  switch hosts, and a confirmation before deleting anything. It follows
+  `cd` in the live shell for bash/zsh (via the OSC 7 "current directory"
+  escape sequence) — one-click "Install Shell Integration" appends the
+  needed one-liner to the host's `.bashrc`/`.zshrc` over ssh (idempotent,
+  with an option to `source` it into the session immediately), and
+  auto-detects which shell you're running so you don't have to know.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
 - **A welcome screen that searches** — the tab bar's + button opens a
-  "welcome aboard" tab with a live host search bar (picking a host or
-  starting a local shell takes over that same tab); the whole-window empty
-  state and the "jump back in" recent-connections list work the same way.
+  "welcome aboard" tab with a live host search bar, arrow-key navigation and
+  Enter to launch, focused automatically so you can type right away (picking
+  a host or starting a local shell takes over that same tab); the
+  whole-window empty state and the "jump back in" recent-connections list
+  work the same way. The sidebar's own host filter supports the same
+  arrow-key navigation into its results.
 - **Tabs, tuned for a lot of them** — right-click a tab to duplicate it (same
   host(s)/split layout, fresh sessions) or reopen the last one you closed
   (⇧⌘T); an overflowing tab strip grows </> chevrons to page through it
-  instead of requiring you to know a keyboard shortcut.
+  instead of requiring you to know a keyboard shortcut. A dropped session
+  reconnects with a single keystroke (`R`) from its "session ended" bar.
 - **Every shortcut remappable** — Settings → Shortcuts lists every keyboard
   shortcut with a click-to-record rebind, conflict detection, and per-row or
   one-click reset to defaults. New default shortcuts: Reopen Closed Tab,
@@ -137,6 +149,10 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Auto-updates** — Sparkle-powered in-app updates from GitHub Releases,
   with the check frequency and on/off switch configurable in
   Settings → Updates.
+- **Host key handling** — an optional "automatically accept new host keys"
+  toggle (Settings → Connection) skips the first-connection prompt without
+  weakening protection against a *known* host's key changing later, which
+  still hard-fails exactly as ssh normally does.
 
 ## Roadmap
 
@@ -152,16 +168,77 @@ exists to fill that gap without giving up native speed and macOS polish.
 - ✅ Fully remappable keyboard shortcuts, cursor shape/blink, right-click
   terminal copy/paste, the searchable welcome/start-page tab, app-wide and
   bulk password handling, and configurable auto-update checking.
+- ✅ SFTP browser polish — auto-refresh on host switch, delete confirmation,
+  a persistent drag/drop hint, and `cd`-following with one-click shell
+  integration install + shell auto-detection (bash/zsh). Plus MultiExec
+  arming in one step, a Grid View restore bugfix, working toolbar tooltips,
+  an optional auto-accept-new-host-keys toggle, arrow-key navigation in both
+  the welcome-screen search and the sidebar filter, and single-keystroke
+  session reconnect.
 
 ### Next up
+
+- Pinned favorites on the welcome/start page, shown alongside "Jump back
+  in" — hidden while actively searching, same as recents are today. Pinning
+  itself: a sidebar right-click ("Add/Remove Favorites," single host or a
+  multi-selection at once — mirrors the existing bulk "Save Password in
+  Keychain" action), a hover star icon directly on each sidebar row and
+  search result for a one-click toggle, and a Favorite toggle in the
+  session editor next to Environment/Protected host.
+- Sidebar: an Expand All / Collapse All action for folders.
+- App UI appearance (light / dark / follow system) — distinct from the
+  terminal's own color theme, which stays per-appearance-profile as today.
+- Bulk-tag environment (prod/staging/dev/personal) across a multi-selection
+  or a whole folder, alongside the existing bulk "Save Password in Keychain"
+  action — aimed at managing a large (500+) imported host inventory.
+- **Named credential profiles** — multiple reusable identities (username +
+  SSH key and/or password), managed in Settings and applied in bulk to a
+  multi-selection or a folder, so a fleet split across a handful of shared
+  accounts (AD, Ansible/Nutanix service accounts, IPMI/vendor consoles,
+  etc.) doesn't need per-host credential entry. A host holds a *live*
+  reference to its assigned profile rather than a one-time copy, so
+  rotating a profile's password or key updates every host using it
+  immediately — the actual point, for forced rotations across a fleet. The
+  existing single default password (Settings ▸ Connection) folds into this
+  as the first profile ("Default") rather than staying a second, parallel
+  mechanism.
+- **Connection history** — grow today's capped 20-entry recents list into a
+  real, searchable, browsable history (its own view, separate from Quick
+  Connect), with a "clear history" action and a way to exclude protected
+  hosts from being logged at all. Rolls in:
+  - Browsable "recently closed tabs" — reopen any of the last N closed
+    tabs/layouts, not just the single most recent one (⇧⌘T today).
+  - Frecency-ranked Quick Connect — blend frequency and recency instead of
+    pure recency, so a host you hit constantly outranks one touched once
+    yesterday.
+  - Stale-host detection — surface hosts not connected to in 90+ days,
+    pairing with the coverage-view idea below.
+- **Inventory coverage view** — a quick way to see which hosts still have no
+  environment tag, no credential profile, or no saved password, so a big
+  bulk pass across a large library can be verified rather than guessed at.
+- **SFTP: open with default app + auto-reupload** — double-clicking a remote
+  file downloads it to a temp location and opens it in its default app
+  (there's no live mount); saving in that app watches the temp file (FSEvents)
+  and silently re-uploads it back to the host, so it feels like editing the
+  remote file directly rather than a manual download/upload round-trip.
+- **SFTP: host-to-host file copy in Grid View** — drag a file from the one
+  shared SFTP pane onto a *different* pane/tab (not its own file browser —
+  there's only one shared pane today, tied to whichever pane is focused) to
+  copy it directly to that host, landing in whatever directory that
+  session's shell is currently sitting in. The live-current-directory
+  tracking this needs already landed (OSC 7, used by the SFTP pane's own
+  `cd`-following) — what's left is the new drop target and the actual
+  transfer, which relays through a temp file behind the scenes (reusing the
+  existing download/upload code) rather than a true zero-hop pipe between
+  the two hosts.
+
+### Later
 
 - Per-profile font/theme choices (appearance is global today).
 - Font ligatures and inline image protocols (Sixel / iTerm2) are current
   SwiftTerm limitations, tracked in the compatibility matrix rather than
   promised here. Shell integration / prompt markers (OSC 133) is likewise
   blocked upstream — SwiftTerm implements only OSC 8 hyperlinks.
-
-### Later
 
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Named / pinned layout presets

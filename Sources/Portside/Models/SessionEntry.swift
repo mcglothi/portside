@@ -346,6 +346,12 @@ struct ConnectionDefaults: Codable, Equatable {
     /// `user`/`identityFile`, this can't be applied retroactively at connect
     /// time) — it only seeds the toggle when a new session is created.
     var defaultSavePassword: Bool?
+    /// Passes `-o StrictHostKeyChecking=accept-new` to ssh: a first-time
+    /// connection to an unknown host is trusted automatically (no more typing
+    /// "yes"), but ssh still hard-fails if an *already-known* host's key ever
+    /// changes — the actual MITM protection stays intact. Applies to plain
+    /// SSH connections only (not mosh's bootstrap ssh).
+    var autoAcceptNewHostKeys: Bool?
 }
 
 /// One entry in the "jump back in" history: which host, connected when.

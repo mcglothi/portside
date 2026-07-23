@@ -217,6 +217,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     var environment: HostEnvironment { entry?.environment ?? .none }
     var isProtected: Bool { entry?.isProtected ?? false }
+    /// The shell's live working directory, if it reports one (OSC 7) — used
+    /// to keep the SFTP pane following `cd` in the terminal.
+    @Published var currentDirectory: String?
 
     private var _sftp: SFTPBrowserModel?
     /// Lazy per-session file browser; only for plain SSH hosts (not local
@@ -517,7 +520,27 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         DispatchQueue.main.async { self.title = title }
     }
 
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    /// The remote shell reported its working directory via OSC 7 (most shell
+    /// configs with "shell integration" prompts emit this on every `cd`).
+    /// Portside had this delegate hook wired but unused; now it also nudges
+    /// the SFTP pane to follow along, if it's open for this session.
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        guard let directory, let path = Self.parseOSC7Path(directory) else { return }
+        DispatchQueue.main.async {
+            self.currentDirectory = path
+            if let sftp = self._sftp {
+                Task { await sftp.followShellDirectory(path) }
+            }
+        }
+    }
+
+    /// OSC 7's payload is a `file://host/url-encoded/path` URI per the
+    /// xterm/iTerm2 convention; falls back to treating it as a bare absolute
+    /// path for shells that emit it without the `file://` wrapper.
+    private static func parseOSC7Path(_ raw: String) -> String? {
+        if let url = URL(string: raw), url.isFileURL { return url.path }
+        return raw.hasPrefix("/") ? raw : nil
+    }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         runCleanup()
@@ -541,6 +564,7 @@ final class SessionManager: ObservableObject {
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
+    var connectionDefaults = ConnectionDefaults()
     /// Fires on every host connection (all paths — single, group, MultiExec);
     /// the app wires it to the store's recent-connections history.
     var onConnect: ((SessionEntry) -> Void)?
@@ -565,14 +589,23 @@ final class SessionManager: ObservableObject {
             // keypad Enter 76) or a second Ctrl-D — matching the "press ⏎ to
             // close" affordance and the common muscle memory of ⌃D to log out,
             // ⌃D again to close. A live ⌃D is left alone so it still sends EOF.
+            // Plain 'r' reconnects instead — checked by character rather than a
+            // hardcoded key code so it's layout-independent, matching the
+            // shortcut recorder's own approach.
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let isReturn = event.keyCode == 36 || event.keyCode == 76
             let isCtrlD = event.keyCode == 2 && mods == .control   // keyCode 2 == "d"
-            if isReturn || isCtrlD,
-               let focused = event.window?.firstResponder as? LocalProcessTerminalView,
+            let isPlainR = mods.isEmpty && event.charactersIgnoringModifiers?.lowercased() == "r"
+            if let focused = event.window?.firstResponder as? LocalProcessTerminalView,
                let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
-                DispatchQueue.main.async { self.close(dead) }
-                return nil
+                if isReturn || isCtrlD {
+                    DispatchQueue.main.async { self.close(dead) }
+                    return nil
+                }
+                if isPlainR {
+                    DispatchQueue.main.async { self.reconnect(dead) }
+                    return nil
+                }
             }
 
             // ⌘←/⌘→ also cycles tabs, alongside the (remappable) ⇧⌘[/⇧⌘] in the
@@ -690,7 +723,15 @@ final class SessionManager: ObservableObject {
                     NSLog("Portside: mosh requested for \(entry.name) but not installed; using ssh")
                 }
                 executable = "/usr/bin/ssh"
-                args = SSHControl.options + entry.sshArgs
+                var hostKeyOptions: [String] = []
+                if connectionDefaults.autoAcceptNewHostKeys ?? false {
+                    // Trusts an unknown host's key on first connect without
+                    // prompting, but ssh still hard-fails if an *already
+                    // known* host's key later changes — that's the actual
+                    // MITM protection, and it stays intact.
+                    hostKeyOptions = ["-o", "StrictHostKeyChecking=accept-new"]
+                }
+                args = SSHControl.options + hostKeyOptions + entry.sshArgs
             }
 
             // If the host has a saved password, set up the askpass helper so ssh
@@ -751,6 +792,12 @@ final class SessionManager: ObservableObject {
     /// Wires up and installs `session` as the sole content of a start-page tab.
     private func activate(_ session: TerminalSession, in tab: Tab) {
         prepare(session)
+        // `tab` publishes through its own ObservableObject, not through
+        // SessionManager — SessionArea only observes the manager, so without
+        // this it keeps showing the start page's content view (stale
+        // `tab.isStartPage`) until some unrelated manager-level change (like
+        // switching tabs and back) forces a re-render.
+        objectWillChange.send()
         tab.root = .leaf(session)
         tab.activePaneID = session.id
         if selectedTabID != tab.id { selectedTabID = tab.id } else { notifyWorkspaceChanged() }
@@ -896,9 +943,20 @@ final class SessionManager: ObservableObject {
         tab.broadcastArmed = armed
     }
 
+    /// Arms/disarms MultiExec, gathering every open tab into Grid View first
+    /// when arming and the active tab doesn't already have several panes to
+    /// broadcast across — so with a few separate single-host tabs open,
+    /// turning MultiExec on is one step instead of Grid View then MultiExec.
+    func setMultiExecArmed(_ armed: Bool) {
+        if armed, (selectedTab?.leaves.count ?? 0) < 2, tabs.count > 1 {
+            setGridView(true)
+        }
+        setBroadcastArmed(armed)
+    }
+
     /// Keyboard equivalent of the MultiExec toolbar toggle (⇧⌘M).
     func toggleMultiExec() {
-        setBroadcastArmed(!(selectedTab?.broadcastArmed ?? false))
+        setMultiExecArmed(!(selectedTab?.broadcastArmed ?? false))
     }
 
     /// Keyboard equivalent of the Grid View toolbar toggle (⇧⌘G).
@@ -973,7 +1031,7 @@ final class SessionManager: ObservableObject {
         let persistable = tabs.compactMap { tab in tab.root.map { (tab, $0) } }
         let tabSnapshots = persistable.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1)) }
         let selectedIndex = persistable.firstIndex { $0.0.id == selectedTabID }
-        return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex)
+        return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex, wasGridView: isGridView)
     }
 
     private func snapshot(of node: PaneNode<TerminalSession>) -> WorkspaceSnapshot.PaneSnapshot {
@@ -1016,6 +1074,12 @@ final class SessionManager: ObservableObject {
             built.append(tab)
         }
         isRestoring = false
+        // Grid View collapses everything into one tab with a big split tree —
+        // indistinguishable from an ordinary multi-pane tab unless we restore
+        // the flag too, else the toggle gets stuck (see WorkspaceSnapshot.wasGridView).
+        if plan.wasGridView, built.count == 1, built[0].leaves.count > 1 {
+            gridViewTabID = built[0].id
+        }
         let selected = plan.selectedTabIndex.flatMap { $0 < built.count ? built[$0] : nil } ?? tabs.last
         selectedTabID = selected?.id   // fires one persist at the final state
     }

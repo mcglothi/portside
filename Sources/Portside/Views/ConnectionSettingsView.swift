@@ -35,6 +35,13 @@ struct ConnectionSettingsView: View {
         )
     }
 
+    private var autoAcceptNewHostKeysBinding: Binding<Bool> {
+        Binding(
+            get: { store.defaults.autoAcceptNewHostKeys ?? false },
+            set: { var d = store.defaults; d.autoAcceptNewHostKeys = $0; store.updateDefaults(d) }
+        )
+    }
+
     private func saveDefaultPassword() {
         guard !defaultPasswordDraft.isEmpty else { return }
         if CredentialStore.setDefaultPassword(defaultPasswordDraft) {
@@ -93,9 +100,15 @@ struct ConnectionSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Host Key Verification") {
+                Toggle("Automatically accept new host keys", isOn: autoAcceptNewHostKeysBinding)
+                Text("Skips the \"yes/no\" prompt the first time you connect to a host. A host you've already connected to before is unaffected — if its key ever changes afterward, ssh still refuses to connect and warns you, exactly as it does today. Applies to plain SSH connections only, not mosh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 460, idealWidth: 480, minHeight: 280)
+        .frame(minWidth: 460, idealWidth: 480, minHeight: 360)
         .onAppear { hasDefaultPassword = CredentialStore.defaultPassword() != nil }
         .alert("Password Not Saved", isPresented: Binding(
             get: { credentialError != nil }, set: { if !$0 { credentialError = nil } }

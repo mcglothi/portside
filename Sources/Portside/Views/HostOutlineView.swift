@@ -18,6 +18,11 @@ struct HostOutlineView: NSViewRepresentable {
     /// narrowed) tree expands automatically so matches aren't hidden behind a
     /// manual disclosure triangle.
     var searching: Bool = false
+    /// Bumped by the filter field's first arrow-key press to hand keyboard
+    /// focus to the outline, so subsequent arrow keys navigate rows natively
+    /// (NSOutlineView already handles that once it's first responder) instead
+    /// of staying trapped in the text field.
+    var focusRequest: Int = 0
 
     // SwiftUI-state-driven actions the coordinator can't do on its own.
     let connect: (SessionEntry) -> Void
@@ -77,6 +82,7 @@ struct HostOutlineView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.sync(tree: tree, selection: selection)
+        context.coordinator.performFocusRequestIfNeeded()
     }
 
     // MARK: - Coordinator
@@ -93,13 +99,26 @@ struct HostOutlineView: NSViewRepresentable {
         private var lastSignature = ""
         /// Guards selection write-back while we apply selection programmatically.
         private var applyingSelection = false
+        /// Last `focusRequest` token seen, to detect the filter field's "hand
+        /// me focus" bump without acting on it more than once.
+        private var lastFocusRequest = 0
         /// Guards `expandedPaths` while a search-driven full-expand runs, so
         /// clearing the search doesn't leave every folder permanently expanded.
         private var isAutoExpanding = false
 
         init(_ parent: HostOutlineView) {
             self.parent = parent
+            self.lastFocusRequest = parent.focusRequest
             super.init()
+        }
+
+        /// Hands keyboard focus to the outline when the filter field bumps
+        /// `focusRequest` — the selection is already applied by `sync` above,
+        /// so arrow keys pick up navigating natively from there.
+        func performFocusRequestIfNeeded() {
+            guard lastFocusRequest != parent.focusRequest, let outline else { return }
+            lastFocusRequest = parent.focusRequest
+            outline.window?.makeFirstResponder(outline)
         }
 
         // MARK: Tree building

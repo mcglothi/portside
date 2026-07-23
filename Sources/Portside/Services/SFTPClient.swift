@@ -123,7 +123,7 @@ struct SFTPClient {
         return result.out
     }
 
-    private static func runProcess(
+    static func runProcess(
         _ executable: String, _ args: [String], stdin: String
     ) async throws -> (status: Int32, out: String, err: String) {
         try await withCheckedThrowingContinuation { continuation in

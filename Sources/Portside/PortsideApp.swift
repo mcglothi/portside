@@ -29,6 +29,7 @@ struct PortsideApp: App {
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
                     sessions.terminalSettings = store.terminal
+                    sessions.connectionDefaults = store.defaults
                     sessions.onConnect = { [weak store] entry in
                         store?.recordConnection(entry)
                     }
@@ -49,6 +50,7 @@ struct PortsideApp: App {
                 .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
                 .onChange(of: store.terminal) { _, new in sessions.applyTerminalSettings(new) }
+                .onChange(of: store.defaults) { _, new in sessions.connectionDefaults = new }
         }
         .commands {
             CommandGroup(after: .appInfo) {

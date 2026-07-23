@@ -24,36 +24,58 @@ struct SessionArea: View {
         .background(Color(nsColor: .textBackgroundColor))
         .toolbar {
             ToolbarItem {
-                Toggle(isOn: $sessions.filesPaneVisible) {
-                    Label("Files", systemImage: "folder")
-                }
-                .toggleStyle(.button)
+                ToolbarToggleButton(
+                    title: "Files", systemImage: "folder",
+                    help: "Show the remote file browser for this session",
+                    isOn: $sessions.filesPaneVisible
+                )
                 .disabled(armed || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
-                .help("Show the remote file browser for this session")
             }
             ToolbarItem {
-                Toggle(isOn: Binding(
-                    get: { sessions.isGridView },
-                    set: { sessions.setGridView($0) }
-                )) {
-                    Label("Grid View", systemImage: "square.grid.2x2")
-                }
-                .toggleStyle(.button)
+                ToolbarToggleButton(
+                    title: "Grid View", systemImage: "square.grid.2x2",
+                    help: "Tile every open session into one grid to watch them at once",
+                    isOn: Binding(get: { sessions.isGridView }, set: { sessions.setGridView($0) })
+                )
                 .disabled(!sessions.canGridView)
-                .help("Tile every open session into one grid to watch them at once")
             }
             ToolbarItem {
-                Toggle(isOn: Binding(
-                    get: { armed },
-                    set: { sessions.setBroadcastArmed($0) }
-                )) {
-                    Label("MultiExec", systemImage: "dot.radiowaves.left.and.right")
-                }
-                .toggleStyle(.button)
-                .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2)
-                .help("Broadcast keystrokes to every included pane in this tab (Grid View first to gather separate tabs)")
+                ToolbarToggleButton(
+                    title: "MultiExec", systemImage: "dot.radiowaves.left.and.right",
+                    help: "Broadcast keystrokes to every included pane — gathers separate tabs into Grid View first if needed",
+                    isOn: Binding(get: { armed }, set: { sessions.setMultiExecArmed($0) })
+                )
+                .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2 && sessions.tabs.count < 2)
             }
         }
+    }
+}
+
+/// A toolbar on/off button. `Toggle` styled with `.toggleStyle(.button)` is a
+/// known-flaky combination for `.help()` tooltips in a macOS toolbar (they
+/// silently don't show); a plain `Button` with the "on" state shown via
+/// `.borderedProminent` is a more reliable pattern for both the tooltip and
+/// the pressed-look.
+private struct ToolbarToggleButton: View {
+    let title: String
+    let systemImage: String
+    let help: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            // A color/tint change alone doesn't survive into a macOS unified
+            // toolbar (icons there get forced to monochrome "template"
+            // rendering) — a genuinely different glyph shape does, so the
+            // filled variant is the on-state signal here, not color.
+            Label(title, systemImage: systemImage)
+                .symbolVariant(isOn ? .fill : .none)
+        }
+        .buttonStyle(.bordered)
+        .tint(isOn ? Color.accentColor : Color.secondary)
+        .help(help)
     }
 }
 
@@ -86,8 +108,8 @@ struct TabContentView: View {
                 PaneTreeView(tab: tab)
                     .frame(minWidth: 400)
                     .layoutPriority(1)
-                if sessions.filesPaneVisible, let sftp = sessions.selected?.sftp {
-                    SFTPPaneView(model: sftp)
+                if sessions.filesPaneVisible, let session = sessions.selected, let sftp = session.sftp {
+                    SFTPPaneView(model: sftp, session: session)
                         .frame(minWidth: 260, idealWidth: 340, maxWidth: 560)
                 }
             }
@@ -149,6 +171,7 @@ struct TerminalPane: View {
                         Text("Session ended")
                             .font(.callout)
                         Button("Reconnect") { sessions.reconnect(session) }
+                            .help("Press R to reconnect")
                         Button("Close") { sessions.close(session) }
                             .keyboardShortcut(.defaultAction)
                             .help("Press ⏎ or ⌃D to close")
@@ -279,14 +302,17 @@ struct TabBar: View {
                 sessions.openStartTab()
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 5)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 26, height: 26)
+                    // Without this, a plain-style Button's hit area is just
+                    // the glyph's drawn pixels, not the padded frame around
+                    // it — the icon looks bigger than it's actually clickable.
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("New tab")
-            .padding(.trailing, 6)
+            .padding(.trailing, 4)
         }
         .background(.bar)
         .alert("Rename Tab", isPresented: Binding(
@@ -308,7 +334,8 @@ struct TabBar: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 10, weight: .semibold))
-                .padding(4)
+                .frame(width: 22, height: 26)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -496,6 +523,7 @@ struct EmptyStateView: View {
     @EnvironmentObject var store: SessionStore
     var replacingTab: Tab?
     @State private var query = ""
+    @State private var selectedIndex = 0
     @FocusState private var searchFocused: Bool
 
     private var recents: [(entry: SessionEntry, date: Date)] {
@@ -535,6 +563,18 @@ struct EmptyStateView: View {
         }
     }
 
+    private func move(_ delta: Int) {
+        guard !searchResults.isEmpty else { return }
+        let count = min(searchResults.count, 8)
+        selectedIndex = min(max(0, selectedIndex + delta), count - 1)
+    }
+
+    private func connectSelected() {
+        let shown = Array(searchResults.prefix(8))
+        guard shown.indices.contains(selectedIndex) else { return }
+        connect(shown[selectedIndex])
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "sailboat")
@@ -550,7 +590,9 @@ struct EmptyStateView: View {
                 TextField("Search hosts…", text: $query)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
-                    .onSubmit { if let first = searchResults.first { connect(first) } }
+                    .onKeyPress(.downArrow) { move(1); return .handled }
+                    .onKeyPress(.upArrow) { move(-1); return .handled }
+                    .onKeyPress(.return) { connectSelected(); return .handled }
                 if !query.isEmpty {
                     Button { query = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -573,8 +615,8 @@ struct EmptyStateView: View {
                             .foregroundStyle(.secondary)
                             .padding(.leading, 10)
                     } else {
-                        ForEach(searchResults.prefix(8)) { entry in
-                            RecentConnectionRow(entry: entry) { connect(entry) }
+                        ForEach(Array(searchResults.prefix(8).enumerated()), id: \.element.id) { index, entry in
+                            RecentConnectionRow(entry: entry, selected: index == selectedIndex) { connect(entry) }
                         }
                     }
                 }
@@ -598,14 +640,17 @@ struct EmptyStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { searchFocused = true }
+        .onChange(of: query) { _, _ in selectedIndex = 0 }
     }
 }
 
 /// One host row on the welcome screen — a recent connection (with a relative
-/// date) or a search match (no date).
+/// date) or a search match (no date, and highlightable by keyboard).
 struct RecentConnectionRow: View {
     let entry: SessionEntry
     var date: Date?
+    var selected: Bool = false
     let connect: () -> Void
     @State private var hovering = false
 
@@ -635,7 +680,8 @@ struct RecentConnectionRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 6))
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering ? Color.primary.opacity(0.07) : .clear)
+                    .fill(selected ? Color.accentColor.opacity(0.18)
+                          : (hovering ? Color.primary.opacity(0.07) : .clear))
             )
         }
         .buttonStyle(.plain)

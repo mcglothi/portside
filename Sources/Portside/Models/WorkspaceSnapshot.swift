@@ -12,6 +12,13 @@ struct WorkspaceSnapshot: Codable, Equatable {
     var tabs: [TabSnapshot] = []
     /// Position (not id) of the tab that was active — replay mints new ids.
     var selectedTabIndex: Int?
+    /// Whether Grid View was on when this was saved. Grid View collapses every
+    /// tab into one big split tree, which on its own looks indistinguishable
+    /// from an ordinary multi-pane tab — without this, restore had no way to
+    /// know the Grid View toggle should come back on, leaving it stuck (can't
+    /// turn on: only one tab exists; can't turn off: the manager doesn't think
+    /// it's in Grid View).
+    var wasGridView: Bool = false
 
     struct TabSnapshot: Codable, Equatable {
         var root: PaneSnapshot
@@ -39,12 +46,13 @@ struct WorkspaceSnapshot: Codable, Equatable {
     // Custom coding so old flat snapshots (a list of `items` = single-pane tabs)
     // still decode; new snapshots always write the tree form.
     private enum CodingKeys: String, CodingKey {
-        case tabs, selectedTabIndex, items, selectedIndex
+        case tabs, selectedTabIndex, items, selectedIndex, wasGridView
     }
 
-    init(tabs: [TabSnapshot] = [], selectedTabIndex: Int? = nil) {
+    init(tabs: [TabSnapshot] = [], selectedTabIndex: Int? = nil, wasGridView: Bool = false) {
         self.tabs = tabs
         self.selectedTabIndex = selectedTabIndex
+        self.wasGridView = wasGridView
     }
 
     init(from decoder: Decoder) throws {
@@ -60,12 +68,14 @@ struct WorkspaceSnapshot: Codable, Equatable {
             self.tabs = []
             self.selectedTabIndex = nil
         }
+        self.wasGridView = try c.decodeIfPresent(Bool.self, forKey: .wasGridView) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(tabs, forKey: .tabs)
         try c.encodeIfPresent(selectedTabIndex, forKey: .selectedTabIndex)
+        try c.encode(wasGridView, forKey: .wasGridView)
     }
 }
 
@@ -80,6 +90,7 @@ enum RestoreAction: Equatable {
 struct RestorePlan: Equatable {
     var tabs: [TabPlan] = []
     var selectedTabIndex: Int?
+    var wasGridView: Bool = false
 
     struct TabPlan: Equatable { var root: PanePlan }
 
@@ -111,7 +122,7 @@ extension WorkspaceSnapshot {
             if index == selectedTabIndex { selected = tabPlans.count }
             tabPlans.append(RestorePlan.TabPlan(root: root))
         }
-        return RestorePlan(tabs: tabPlans, selectedTabIndex: selected)
+        return RestorePlan(tabs: tabPlans, selectedTabIndex: selected, wasGridView: wasGridView)
     }
 
     private static func resolve(_ node: PaneSnapshot,

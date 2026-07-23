@@ -42,6 +42,9 @@ struct SidebarView: View {
     @State private var selection: Set<UUID> = []
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
+    /// Bumped when the filter field's first arrow-key press should hand
+    /// keyboard focus to the host list.
+    @State private var sidebarFocusRequest = 0
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -166,6 +169,16 @@ struct SidebarView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
                 TextField("Filter hosts", text: $filter)
                     .textFieldStyle(.plain)
+                    .onKeyPress(.downArrow) {
+                        guard !filter.isEmpty else { return .ignored }
+                        moveFocusToResults(selectFirst: true)
+                        return .handled
+                    }
+                    .onKeyPress(.upArrow) {
+                        guard !filter.isEmpty else { return .ignored }
+                        moveFocusToResults(selectFirst: false)
+                        return .handled
+                    }
                 if !filter.isEmpty {
                     Button { filter = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -183,6 +196,7 @@ struct SidebarView: View {
                 selection: $selection,
                 store: store,
                 searching: !filter.isEmpty,
+                focusRequest: sidebarFocusRequest,
                 connect: connect,
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
@@ -274,18 +288,39 @@ struct SidebarView: View {
                 Label("Add", systemImage: "plus")
             }
         }
-        ToolbarItem {
-            Button {
-                sessions.openLocalShell()
-            } label: {
-                Label("New Local Shell", systemImage: "terminal")
-            }
-            .help("New local shell (⌘T)")
-        }
     }
 
     private func connect(_ entry: SessionEntry) {
         sessions.connect(to: store.resolved(entry))
+    }
+
+    /// The filter field's first arrow-key press while searching: pick an
+    /// initial selection if there isn't one already, then hand keyboard focus
+    /// to the host list so further arrow keys navigate it directly (native
+    /// NSOutlineView row navigation once it's first responder).
+    private func moveFocusToResults(selectFirst: Bool) {
+        let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
+        let ids = flattenedEntryIDs(from: tree)
+        guard !ids.isEmpty else { return }
+        if selection.isEmpty {
+            selection = [selectFirst ? ids.first! : ids.last!]
+        }
+        sidebarFocusRequest += 1
+    }
+
+    /// Entry ids in the same depth-first order `HostOutlineView` renders them
+    /// (folders then their entries, root entries last) — every one is visible
+    /// while searching, since matching folders auto-expand.
+    private func flattenedEntryIDs(from tree: (root: [SessionEntry], folders: [FolderNode])) -> [UUID] {
+        var ids: [UUID] = []
+        func walk(_ nodes: [SidebarNode]) {
+            for node in nodes {
+                if let id = node.entryID { ids.append(id) }
+                walk(node.children)
+            }
+        }
+        walk(tree.folders.map(SidebarNode.folder) + tree.root.map(SidebarNode.entry))
+        return ids
     }
 
     /// Opens every currently selected host (in sidebar order).
