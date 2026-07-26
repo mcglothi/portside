@@ -123,14 +123,70 @@ struct SFTPClient {
         return result.out
     }
 
+    /// Holds the running process so a cancelled Task can kill it. A transfer
+    /// that can't be stopped is the difference between a mis-click on a huge
+    /// file being an annoyance and being a hostage situation, so cancellation
+    /// has to reach the actual `sftp` child, not just abandon the await.
+    private final class ProcessBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var process: Process?
+        private var cancelled = false
+        private var launched = false
+
+        /// Returns false if cancellation already happened, so the caller can
+        /// avoid launching at all.
+        func adopt(_ process: Process) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !cancelled else { return false }
+            self.process = process
+            return true
+        }
+
+        /// `terminate()` raises on a process that hasn't launched yet, but
+        /// skipping it would let a cancel that lands in the gap between adopt
+        /// and launch leak a transfer that runs to completion unattended.
+        /// Handing the kill to whichever side arrives second covers both.
+        func didLaunch() {
+            lock.lock()
+            launched = true
+            let doomed = cancelled ? process : nil
+            lock.unlock()
+            doomed?.terminate()
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let running = launched ? process : nil
+            lock.unlock()
+            running?.terminate()
+        }
+    }
+
     static func runProcess(
         _ executable: String, _ args: [String], stdin: String
+    ) async throws -> (status: Int32, out: String, err: String) {
+        let box = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await runProcess(executable, args, stdin: stdin, box: box)
+        } onCancel: {
+            box.cancel()
+        }
+    }
+
+    private static func runProcess(
+        _ executable: String, _ args: [String], stdin: String, box: ProcessBox
     ) async throws -> (status: Int32, out: String, err: String) {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = args
+                guard box.adopt(process) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 let outPipe = Pipe()
                 let errPipe = Pipe()
                 let inPipe = Pipe()
@@ -144,6 +200,7 @@ struct SFTPClient {
                     continuation.resume(throwing: error)
                     return
                 }
+                box.didLaunch()
 
                 inPipe.fileHandleForWriting.write(Data(stdin.utf8))
                 inPipe.fileHandleForWriting.closeFile()

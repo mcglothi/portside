@@ -116,6 +116,12 @@ exists to fill that gap without giving up native speed and macOS polish.
   needed one-liner to the host's `.bashrc`/`.zshrc` over ssh (idempotent,
   with an option to `source` it into the session immediately), and
   auto-detects which shell you're running so you don't have to know.
+- **Edit remote files in your own editor** — double-click a file in the SFTP
+  browser and it opens in whatever app you'd normally use, with every save
+  uploaded straight back to the host. It's a private local copy rather than a
+  live mount, but the round trip is invisible: no manual download, edit,
+  re-upload. The browser shows exactly what's checked out and when it last
+  saved, and a protected host asks before the file is opened.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
 - **A welcome screen that searches** — the tab bar's + button opens a
@@ -215,11 +221,6 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Inventory coverage view** — a quick way to see which hosts still have no
   environment tag, no credential profile, or no saved password, so a big
   bulk pass across a large library can be verified rather than guessed at.
-- **SFTP: open with default app + auto-reupload** — double-clicking a remote
-  file downloads it to a temp location and opens it in its default app
-  (there's no live mount); saving in that app watches the temp file (FSEvents)
-  and silently re-uploads it back to the host, so it feels like editing the
-  remote file directly rather than a manual download/upload round-trip.
 - **SFTP: host-to-host file copy in Grid View** — drag a file from the one
   shared SFTP pane onto a *different* pane/tab (not its own file browser —
   there's only one shared pane today, tied to whichever pane is focused) to

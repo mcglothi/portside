@@ -35,6 +35,37 @@ struct ConnectionSettingsView: View {
         )
     }
 
+    /// Apps that can open plain text — the realistic candidates for editing a
+    /// config file — so picking an editor is a list, not a trip through
+    /// /Applications. Computed once per view rather than per redraw:
+    /// LaunchServices lookups are not free.
+    private let textEditors = EditorApps.plainTextEditors()
+
+    private var remoteEditorBinding: Binding<String> {
+        Binding(
+            get: { store.defaults.remoteEditorPath ?? "" },
+            set: {
+                var d = store.defaults
+                d.remoteEditorPath = $0.isEmpty ? nil : $0
+                store.updateDefaults(d)
+            }
+        )
+    }
+
+    private func browseForEditor() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        if panel.runModal() == .OK, let url = panel.url {
+            var d = store.defaults
+            d.remoteEditorPath = url.path
+            store.updateDefaults(d)
+        }
+    }
+
     private func browseForKey() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -62,6 +93,32 @@ struct ConnectionSettingsView: View {
             }
             Section {
                 Text("User/key apply only when a session doesn't set its own. Default passwords are managed as credential profiles now — see Settings ▸ Profiles. Passwords are always stored in the macOS Keychain, never in the session library file.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Remote File Editing") {
+                Picker("Open remote files in", selection: remoteEditorBinding) {
+                    Text("System Default").tag("")
+                    Divider()
+                    ForEach(textEditors, id: \.path) { app in
+                        Label {
+                            Text(EditorApps.displayName(of: app))
+                        } icon: {
+                            Image(nsImage: EditorApps.icon(of: app))
+                        }
+                        .tag(app.path)
+                    }
+                    // The chosen app may live outside the plain-text handler
+                    // list (or have been picked via Other…), so keep its row
+                    // present or the picker would silently reset to Default.
+                    if let current = store.defaults.remoteEditorURL,
+                       !textEditors.contains(current) {
+                        Divider()
+                        Text(EditorApps.displayName(of: current)).tag(current.path)
+                    }
+                }
+                Button("Choose Another App…") { browseForEditor() }
+                Text("Used when you double-click a file in the SFTP browser. Right-click a file and use \"Edit With\" to override it for a single file.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

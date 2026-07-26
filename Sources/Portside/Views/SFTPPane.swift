@@ -110,6 +110,7 @@ final class SFTPBrowserModel: ObservableObject {
     @Published var showHidden = false
 
     private var loaded = false
+    private var transferTask: Task<Void, Never>?
 
     init(entry: SessionEntry) {
         self.entry = entry
@@ -155,11 +156,23 @@ final class SFTPBrowserModel: ObservableObject {
     }
 
     func upload(_ urls: [URL]) async {
+        let id = TransferCenter.shared.begin(
+            entryID: entry.id, remotePath: "", label: "Uploading…",
+            cancel: { [weak self] in self?.cancelTransfer() }
+        )
+        defer { TransferCenter.shared.finish(id) }
         await withBusy {
             // A drop before the first listing lands leaves `path` empty, which
             // would send the file to sftp's default dir and list the wrong one.
             let target = self.path.isEmpty ? try await self.client.pwd() : self.path
-            for url in urls {
+            for (index, url) in urls.enumerated() {
+                // No byte-level progress going out: `sftp put` is silent in
+                // batch mode and the remote side can't be polled the way a
+                // partially-written local file can. Per-file is honest.
+                TransferCenter.shared.relabel(id, urls.count == 1
+                    ? "Uploading \(url.lastPathComponent)"
+                    : "Uploading \(url.lastPathComponent) (\(index + 1) of \(urls.count))")
+                try Task.checkCancellation()
                 try await self.client.upload(localURL: url, toDirectory: target)
             }
             try await self.load(target)
@@ -189,19 +202,72 @@ final class SFTPBrowserModel: ObservableObject {
         (entry, join(file.name), file.name)
     }
 
+    /// Checks the file out to a local temp copy, opens it in its default app,
+    /// and re-uploads it whenever it's saved. See `RemoteFileEditor`.
+    func edit(_ file: RemoteFile, using app: URL? = nil, size: Int? = nil) {
+        RemoteFileEditor.shared.open(
+            name: file.name, remotePath: join(file.name), on: entry,
+            using: app, size: size ?? file.size
+        )
+    }
+
     func downloadToDownloads(_ file: RemoteFile) async {
-        await withBusy {
-            let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            var target = downloads.appendingPathComponent(file.name)
-            var counter = 1
-            while FileManager.default.fileExists(atPath: target.path) {
-                let base = (file.name as NSString).deletingPathExtension
-                let ext = (file.name as NSString).pathExtension
-                let suffixed = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
-                target = downloads.appendingPathComponent(suffixed)
-                counter += 1
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        var target = downloads.appendingPathComponent(file.name)
+        var counter = 1
+        while FileManager.default.fileExists(atPath: target.path) {
+            let base = (file.name as NSString).deletingPathExtension
+            let ext = (file.name as NSString).pathExtension
+            let suffixed = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
+            target = downloads.appendingPathComponent(suffixed)
+            counter += 1
+        }
+        await download(file, to: target, removePartialOnCancel: true)
+    }
+
+    /// Download to a location the user picks. The save panel already handles
+    /// "replace existing?", so unlike `downloadToDownloads` this writes exactly
+    /// where it's told rather than uniquing the name.
+    func save(_ file: RemoteFile, to target: URL) async {
+        await download(file, to: target, removePartialOnCancel: true)
+    }
+
+    /// Downloads with live progress. `sftp -q` prints none, but the listing
+    /// already gave us the size, so watching the partial file grow yields a
+    /// real percentage — the same trick the edit checkout uses.
+    private func download(_ file: RemoteFile, to target: URL, removePartialOnCancel: Bool) async {
+        let remotePath = join(file.name)
+        let id = TransferCenter.shared.begin(
+            entryID: entry.id, remotePath: remotePath,
+            label: "Downloading \(file.name)", total: file.size,
+            cancel: { [weak self] in self?.cancelTransfer() }
+        )
+        let poll = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard !Task.isCancelled else { return }
+                let size = (try? FileManager.default
+                    .attributesOfItem(atPath: target.path)[.size] as? Int) ?? nil
+                if let size { TransferCenter.shared.update(id, transferred: size) }
             }
-            try await self.client.download(remotePath: self.join(file.name), to: target)
+        }
+        defer {
+            poll.cancel()
+            TransferCenter.shared.finish(id)
+        }
+
+        await withBusy {
+            do {
+                try await self.client.download(remotePath: self.join(file.name), to: target)
+            } catch {
+                // Don't leave a truncated file sitting where the user asked for
+                // a real one — a half-written download that looks complete is
+                // worse than no download.
+                if removePartialOnCancel, Task.isCancelled || error is CancellationError {
+                    try? FileManager.default.removeItem(at: target)
+                }
+                throw error
+            }
         }
     }
 
@@ -220,8 +286,25 @@ final class SFTPBrowserModel: ObservableObject {
         do {
             try await work()
         } catch {
-            errorMessage = error.localizedDescription
+            // A user-cancelled transfer isn't an error to report at them.
+            if !(Task.isCancelled || error is CancellationError) {
+                errorMessage = error.localizedDescription
+            }
         }
+        isBusy = false
+    }
+
+    /// Runs a pane operation as a cancellable unit. Listing a directory is
+    /// instant, but a download of a multi-gigabyte file is not — without a
+    /// handle on the task there'd be no way to call it off once started.
+    func startTransfer(_ work: @escaping () async -> Void) {
+        transferTask?.cancel()
+        transferTask = Task { await work() }
+    }
+
+    func cancelTransfer() {
+        transferTask?.cancel()
+        transferTask = nil
         isBusy = false
     }
 }
@@ -229,9 +312,21 @@ final class SFTPBrowserModel: ObservableObject {
 struct SFTPPaneView: View {
     @ObservedObject var model: SFTPBrowserModel
     @ObservedObject var session: TerminalSession
+    @ObservedObject private var editor = RemoteFileEditor.shared
+    @ObservedObject private var transfers = TransferCenter.shared
     @State private var newFolderName = ""
     @State private var showingNewFolder = false
     @State private var confirmingDelete: RemoteFile?
+    /// Editing writes back to the host on every save, so a protected host asks
+    /// once before the file is checked out — same guardrail shape as MultiExec.
+    @State private var confirmingEdit: (file: RemoteFile, app: URL?)?
+    /// Left-click highlight. Purely local to the pane — there's no multi-select
+    /// or keyboard model here, just "show me which row I'm about to act on".
+    @State private var selection: RemoteFile.ID?
+    /// The editing notice shrinks to a chip once it's been quiet for a while,
+    /// so a long-running edit doesn't permanently eat the pane's height.
+    @State private var noticeExpanded = true
+    @State private var collapseTask: Task<Void, Never>?
     /// Shown once the pane's had a moment to see whether the shell reports
     /// its directory (OSC 7) at all — offers the opt-in snippet if not.
     @State private var showFollowHint = false
@@ -251,6 +346,12 @@ struct SFTPPaneView: View {
             }
             if let error = model.errorMessage {
                 errorBanner(error)
+            }
+            ForEach(transfers.transfers(for: model.entry.id)) { transfer in
+                transferBanner(transfer)
+            }
+            if !activeEdits.isEmpty {
+                editsBanner
             }
             fileList
             Divider()
@@ -291,6 +392,32 @@ struct SFTPPaneView: View {
         } message: {
             Text("This can't be undone.")
         }
+        .confirmationDialog(
+            "Edit \"\(confirmingEdit?.file.name ?? "")\" on \(model.entry.name)?",
+            isPresented: Binding(get: { confirmingEdit != nil }, set: { if !$0 { confirmingEdit = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Edit") {
+                if let pending = confirmingEdit {
+                    model.edit(pending.file, using: pending.app, size: pending.file.size)
+                }
+                confirmingEdit = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingEdit = nil }
+        } message: {
+            Text(editConfirmationMessage)
+        }
+        // Any change to an edit (opened, saved, failed) re-expands the notice
+        // and restarts the quiet timer.
+        .onChange(of: latestActivity) { _, _ in
+            noticeExpanded = true
+            collapseTask?.cancel()
+            collapseTask = Task {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard !Task.isCancelled else { return }
+                noticeExpanded = false
+            }
+        }
         .alert("New Folder", isPresented: $showingNewFolder) {
             TextField("Name", text: $newFolderName)
             Button("Create") {
@@ -323,6 +450,14 @@ struct SFTPPaneView: View {
             if model.isBusy {
                 ProgressView()
                     .controlSize(.small)
+                Button {
+                    model.cancelTransfer()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Cancel the transfer in progress")
             }
 
             Button {
@@ -451,12 +586,184 @@ struct SFTPPaneView: View {
         .background(Color.green.opacity(0.1))
     }
 
+    /// Inline rather than a modal transfer window: a sheet would block the
+    /// browser you're transferring from, and this pane already reports the
+    /// edit workflow the same way.
+    private func transferBanner(_ transfer: TransferCenter.Transfer) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transfer.label)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let fraction = transfer.fraction {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                    Text("\(Self.bytes(transfer.transferred)) of \(Self.bytes(transfer.total))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            Spacer(minLength: 4)
+            Button("Cancel") { transfers.cancel(transfer.id) }
+                .buttonStyle(.borderless)
+                .font(.caption2)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1))
+    }
+
+    private var activeEdits: [RemoteEdit] { editor.edits(for: model.entry.id) }
+
+    private var latestActivity: Date? { activeEdits.map(\.lastActivity).max() }
+
+    /// A failed upload never collapses — the whole point of the notice is that
+    /// you find out when a save didn't reach the host. Nor does a transfer in
+    /// flight: that's where the progress and the Cancel button live.
+    private var mustStayExpanded: Bool {
+        activeEdits.contains {
+            switch $0.status {
+            case .failed, .downloading, .uploading: return true
+            case .watching: return false
+            }
+        }
+    }
+
+    /// Files currently checked out for editing, with what's happening to each.
+    /// Auto-uploading to a remote host shouldn't be invisible — this is the
+    /// only signal that a save just wrote to a live server. After a quiet spell
+    /// it collapses to a chip rather than vanishing, so an armed watcher is
+    /// never completely hidden.
+    @ViewBuilder
+    private var editsBanner: some View {
+        if noticeExpanded || mustStayExpanded {
+            expandedEdits
+        } else {
+            collapsedEditsChip
+        }
+    }
+
+    private var collapsedEditsChip: some View {
+        Button {
+            noticeExpanded = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "pencil.circle.fill")
+                    .foregroundStyle(.green)
+                Text(activeEdits.count == 1
+                     ? "1 file open for editing"
+                     : "\(activeEdits.count) files open for editing")
+                    .font(.caption)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1))
+        .help("Still watching for saves — click for details")
+    }
+
+    private var expandedEdits: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(activeEdits) { edit in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: icon(for: edit.status))
+                        .foregroundStyle(tint(for: edit.status))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(edit.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(statusText(for: edit))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if case .downloading = edit.status, let fraction = edit.fractionComplete {
+                            ProgressView(value: fraction)
+                                .controlSize(.small)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    Button(isTransferring(edit) ? "Cancel" : "Stop") { editor.stop(edit.id) }
+                        .buttonStyle(.borderless)
+                        .font(.caption2)
+                        .help(isTransferring(edit)
+                              ? "Stop the transfer and discard the partial file"
+                              : "Stop watching this file and delete the local copy")
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1))
+    }
+
+    private func icon(for status: RemoteEdit.Status) -> String {
+        switch status {
+        case .downloading: return "arrow.down.circle"
+        case .watching: return "pencil.circle.fill"
+        case .uploading: return "arrow.up.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func tint(for status: RemoteEdit.Status) -> Color {
+        switch status {
+        case .downloading, .uploading: return .accentColor
+        case .watching: return .green
+        case .failed: return .yellow
+        }
+    }
+
+    private func isTransferring(_ edit: RemoteEdit) -> Bool {
+        switch edit.status {
+        case .downloading, .uploading: return true
+        case .watching, .failed: return false
+        }
+    }
+
+    private static func bytes(_ count: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
+    }
+
+    private func statusText(for edit: RemoteEdit) -> String {
+        switch edit.status {
+        case .downloading:
+            guard edit.totalBytes > 0 else { return "Opening…" }
+            return "Downloading \(Self.bytes(edit.transferredBytes)) of \(Self.bytes(edit.totalBytes))"
+        case .uploading:
+            return "Saving to \(model.entry.name)…"
+        case .failed(let message):
+            return "Upload failed: \(message)"
+        case .watching:
+            guard let last = edit.lastUploaded else {
+                return "Editing — saves upload automatically"
+            }
+            let time = last.formatted(date: .omitted, time: .standard)
+            let count = edit.uploadCount == 1 ? "Saved once" : "Saved \(edit.uploadCount)×"
+            return "\(count) — last at \(time)"
+        }
+    }
+
     /// Always visible (not hover-dependent, and not just an empty-directory
     /// placeholder) so drag/drop stays discoverable once a folder has content.
     private var hintBar: some View {
         HStack(spacing: 5) {
             Image(systemName: "arrow.up.arrow.down.circle")
-            Text("Drag files here to upload, or drag a file out to download")
+            Text("Double-click a file to edit it · drag to upload or download")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -486,12 +793,18 @@ struct SFTPPaneView: View {
     }
 
     private var fileList: some View {
+        // Selection is tracked by hand rather than with `List(selection:)`:
+        // under a selectable List, row-content gestures (the drag-out promise,
+        // the double-click) intercept mouse-down before the List sees it, which
+        // is the same conflict that produced the host sidebar's long-running
+        // click/drag jank before it was rebuilt on NSOutlineView.
         List(model.visibleFiles) { file in
             row(for: file)
-                .gesture(
-                    TapGesture(count: 2).onEnded {
-                        Task { await model.navigate(to: file) }
-                    }
+                .listRowBackground(
+                    selection == file.id
+                        ? Color(nsColor: .selectedContentBackgroundColor)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        : nil
                 )
                 .contextMenu {
                     if file.isDirectory || file.isSymlink {
@@ -500,8 +813,12 @@ struct SFTPPaneView: View {
                         }
                     }
                     if !file.isDirectory {
+                        Button("Edit") { edit(file) }
+                        editWithMenu(for: file)
+                        Divider()
+                        Button("Save To…") { saveAs(file) }
                         Button("Download to ~/Downloads") {
-                            Task { await model.downloadToDownloads(file) }
+                            model.startTransfer { await model.downloadToDownloads(file) }
                         }
                     }
                     Divider()
@@ -512,7 +829,9 @@ struct SFTPPaneView: View {
         }
         .listStyle(.inset)
         .dropDestination(for: URL.self) { urls, _ in
-            Task { await model.upload(urls) }
+            // Via startTransfer, not a bare Task, so a dropped 40GB file can be
+            // called off the same way a double-clicked one can.
+            model.startTransfer { await model.upload(urls) }
             return true
         }
         .overlay {
@@ -525,75 +844,140 @@ struct SFTPPaneView: View {
         }
     }
 
-    /// A remote row. Files are draggable out to Finder/Desktop via a file
-    /// promise (downloaded on drop); directories aren't draggable.
-    @ViewBuilder
-    private func row(for file: RemoteFile) -> some View {
-        if file.isDirectory {
-            RemoteFileRow(file: file)
+    /// Double-click: descend into directories, edit files. Files used to fall
+    /// through `navigate`'s directory guard and do nothing at all.
+    private func activate(_ file: RemoteFile) {
+        selection = file.id
+        if file.isDirectory || file.isSymlink {
+            Task { await model.navigate(to: file) }
         } else {
-            RemoteFileRow(file: file)
-                .onDrag { dragProvider(for: file) }
+            edit(file)
         }
     }
 
-    /// An item provider backed by a lazy file promise: the file is downloaded
-    /// only when the drop target (Finder) asks for it. The download runs on a
-    /// detached task with a fresh SFTPClient (reusing the ControlMaster socket)
-    /// so it never touches the main actor the drag's run loop is holding.
-    private func dragProvider(for file: RemoteFile) -> NSItemProvider {
-        let provider = NSItemProvider()
-        provider.suggestedName = file.name
-        let spec = model.dragSpec(for: file)
-        // Register as generic data so Finder uses the exact suggested filename.
-        // Using the file's specific UTI makes Finder re-append the type's
-        // preferred extension (index.html -> index.html.html) and can even
-        // rewrite it (.htm -> .html), so we preserve the name verbatim instead.
-        provider.registerFileRepresentation(
-            forTypeIdentifier: UTType.data.identifier, fileOptions: [], visibility: .all
-        ) { completion in
-            let progress = Progress(totalUnitCount: 1)
-            Task.detached {
-                do {
-                    let client = SFTPClient(entry: spec.entry)
-                    let dir = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("portside-drag-\(UUID().uuidString)")
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    let local = dir.appendingPathComponent(spec.name)
-                    try await client.download(remotePath: spec.remotePath, to: local)
-                    progress.completedUnitCount = 1
-                    completion(local, false, nil)
-                } catch {
-                    completion(nil, false, error)
+    /// The apps that can open this file, so switching editors for a one-off is
+    /// a menu rather than a trip through /Applications. Built when the menu is
+    /// opened, not per redraw — LaunchServices lookups aren't free.
+    @ViewBuilder
+    private func editWithMenu(for file: RemoteFile) -> some View {
+        Menu("Edit With") {
+            ForEach(EditorApps.candidates(for: file.name), id: \.path) { app in
+                Button {
+                    edit(file, using: app)
+                } label: {
+                    Label {
+                        Text(EditorApps.displayName(of: app))
+                    } icon: {
+                        Image(nsImage: EditorApps.icon(of: app))
+                    }
                 }
             }
-            return progress
+            Divider()
+            Button("Other…") { chooseAppThenEdit(file) }
         }
-        return provider
     }
+
+    /// Download to a chosen location. The save panel handles overwrite
+    /// confirmation and folder creation, so there's nothing to re-ask here.
+    private func saveAs(_ file: RemoteFile) {
+        selection = file.id
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = file.name
+        panel.canCreateDirectories = true
+        panel.directoryURL = FileManager.default.urls(
+            for: .downloadsDirectory, in: .userDomainMask
+        ).first
+        guard panel.runModal() == .OK, let target = panel.url else { return }
+        model.startTransfer { await model.save(file, to: target) }
+    }
+
+    private func chooseAppThenEdit(_ file: RemoteFile) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard panel.runModal() == .OK, let app = panel.url else { return }
+        edit(file, using: app)
+    }
+
+    /// Editing means downloading the whole file, so a mis-click on something
+    /// huge (a model file, a tarball, a VM image) gets caught before any bytes
+    /// move — the listing already told us the size for free.
+    private func edit(_ file: RemoteFile, using app: URL? = nil) {
+        selection = file.id
+        let isLarge = file.size > RemoteFileEditor.largeFileThreshold
+        if model.entry.isProtected || isLarge {
+            confirmingEdit = (file, app)
+        } else {
+            model.edit(file, using: app)
+        }
+    }
+
+    private var editConfirmationMessage: String {
+        guard let pending = confirmingEdit else { return "" }
+        var parts: [String] = []
+        if pending.file.size > RemoteFileEditor.largeFileThreshold {
+            let size = ByteCountFormatter.string(
+                fromByteCount: Int64(pending.file.size), countStyle: .file
+            )
+            parts.append("This file is \(size). Editing downloads all of it to your Mac first, then uploads it back every time you save. You can cancel the transfer once it starts.")
+        }
+        if model.entry.isProtected {
+            parts.append("This host is protected. Every save in your editor uploads straight back to it.")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// A remote row. All mouse handling — select, activate, and the drag-out
+    /// file promise — belongs to one AppKit overlay rather than being split
+    /// between SwiftUI gestures and a drag source, which is what made the host
+    /// sidebar's clicks and drags fight each other for months. Directories get
+    /// the same overlay minus the drag.
+    private func row(for file: RemoteFile) -> some View {
+        RemoteFileRow(file: file, isSelected: selection == file.id)
+            .overlay {
+                RemoteFileDragSource(
+                    file: file,
+                    spec: file.isDirectory ? nil : model.dragSpec(for: file),
+                    onClick: { selection = file.id },
+                    onDoubleClick: { activate(file) }
+                )
+            }
+    }
+
 }
 
 struct RemoteFileRow: View {
     let file: RemoteFile
+    var isSelected = false
 
     private var icon: String {
         if file.isSymlink { return "arrow.triangle.turn.up.right.circle" }
         return file.isDirectory ? "folder.fill" : "doc"
     }
 
+    /// The selected row sits on the system's full-strength selection blue, so
+    /// the muted greys that read well against the list background become
+    /// nearly illegible on it.
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
+                .foregroundStyle(
+                    isSelected ? Color.white
+                        : (file.isDirectory ? Color.accentColor : Color.secondary)
+                )
                 .frame(width: 16)
             Text(file.name)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
             Spacer(minLength: 8)
             if !file.isDirectory {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
                     .monospacedDigit()
             }
         }
