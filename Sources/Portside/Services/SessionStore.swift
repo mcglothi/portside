@@ -131,6 +131,18 @@ final class SessionStore: ObservableObject {
 
     /// Bulk-sets favorite status across a multi-selection, mirroring
     /// `setSavePassword(_:ids:)`.
+    /// Bulk environment tagging, for classifying a large imported inventory
+    /// without editing hosts one at a time.
+    func setEnvironment(_ environment: HostEnvironment, ids: Set<UUID>) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) && entries[i].environment != environment {
+            entries[i].environment = environment
+            changed = true
+        }
+        guard changed else { return }
+        save()
+    }
+
     func setFavorite(_ on: Bool, ids: Set<UUID>) {
         var changed = false
         for i in entries.indices where ids.contains(entries[i].id) && entries[i].isFavorite != on {

@@ -28,6 +28,47 @@ final class SessionStoreTests: XCTestCase {
         SessionEntry(name: name, folder: folder, hostname: "\(name).example.com")
     }
 
+    // MARK: - Bulk environment tagging
+
+    func testSetEnvironmentTagsOnlyTheSelection() {
+        let a = host("a"), b = host("b"), c = host("c")
+        let store = makeStore([a, b, c])
+
+        store.setEnvironment(.prod, ids: [a.id, c.id])
+
+        XCTAssertEqual(store.entry(id: a.id)?.environment, .prod)
+        XCTAssertEqual(store.entry(id: c.id)?.environment, .prod)
+        XCTAssertEqual(store.entry(id: b.id)?.environment, HostEnvironment.none,
+                       "an unselected host must not be retagged")
+    }
+
+    func testSetEnvironmentCanClearBackToNone() {
+        var a = host("a")
+        a.environment = .prod
+        let store = makeStore([a])
+
+        store.setEnvironment(.none, ids: [a.id])
+
+        XCTAssertEqual(store.entry(id: a.id)?.environment, HostEnvironment.none)
+    }
+
+    func testSetEnvironmentPersists() {
+        let a = host("a")
+        let store = makeStore([a])
+        store.setEnvironment(.staging, ids: [a.id])
+
+        // A bulk pass across a 900-host library is worthless if it doesn't survive relaunch.
+        let reloaded = SessionStore(fileURL: tempURL)
+        XCTAssertEqual(reloaded.entry(id: a.id)?.environment, .staging)
+    }
+
+    func testSetEnvironmentIgnoresUnknownIDs() {
+        let a = host("a")
+        let store = makeStore([a])
+        store.setEnvironment(.dev, ids: [UUID()])
+        XCTAssertEqual(store.entry(id: a.id)?.environment, HostEnvironment.none)
+    }
+
     // MARK: - Batch move
 
     func testMoveEntryIDsRelocatesAllToFolder() {
