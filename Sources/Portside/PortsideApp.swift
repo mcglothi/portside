@@ -24,6 +24,7 @@ struct PortsideApp: App {
     @StateObject private var sessions = SessionManager()
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
+    @StateObject private var library = LibraryCommands()
 
     var body: some Scene {
         WindowGroup("Portside") {
@@ -31,6 +32,7 @@ struct PortsideApp: App {
                 .environmentObject(store)
                 .environmentObject(sessions)
                 .environmentObject(tunnels)
+                .environmentObject(library)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     sessions.appearance = store.appearance
@@ -71,12 +73,23 @@ struct PortsideApp: App {
                     .disabled(!updater.canCheckForUpdates)
             }
             CommandGroup(after: .newItem) {
+                Button("New Session…") { library.requestNewSession() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("New Folder…") { library.requestNewFolder() }
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
                     .keyboardShortcut(shortcut(.quickConnect))
                 Button("Reopen Closed Tab") { sessions.reopenLastClosedTab() }
                     .keyboardShortcut(shortcut(.reopenClosedTab))
+                Divider()
+                Button("Import…") { library.requestImport() }
+                    .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Export Sessions…") { library.requestExportSessions() }
+                    .disabled(store.entries.isEmpty)
+                Button("Export Macros…") { library.requestExportMacros() }
+                    .disabled(store.macros.isEmpty)
+                Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
             }
             CommandGroup(after: .textEditing) {
                 Button("Find…") { sessions.selected?.toggleFind() }
@@ -100,6 +113,11 @@ struct PortsideApp: App {
                 Button("Toggle Grid View") { sessions.toggleGridView() }
                     .keyboardShortcut(shortcut(.toggleGridView))
                     .disabled(!sessions.canGridView)
+                Divider()
+                Button("Expand All Folders") { library.requestExpandAllFolders() }
+                    .disabled(store.folders.isEmpty)
+                Button("Collapse All Folders") { library.requestCollapseAllFolders() }
+                    .disabled(store.folders.isEmpty)
                 Divider()
             }
             CommandMenu("Pane") {

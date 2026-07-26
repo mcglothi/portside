@@ -27,6 +27,7 @@ struct SidebarView: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var tunnels: TunnelManager
+    @EnvironmentObject var library: LibraryCommands
     @State private var section: SidebarSection = .hosts
     @State private var filter = ""
     @State private var editingEntry: SessionEntry?
@@ -45,6 +46,8 @@ struct SidebarView: View {
     /// Bumped when the filter field's first arrow-key press should hand
     /// keyboard focus to the host list.
     @State private var sidebarFocusRequest = 0
+    @State private var expandAllRequest = 0
+    @State private var collapseAllRequest = 0
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -78,6 +81,36 @@ struct SidebarView: View {
         }
         .navigationTitle("Portside")
         .toolbar { toolbarContent }
+        // Single implementation of each library command; the toolbar menus and
+        // the menu bar both get here by bumping a token (see LibraryCommands).
+        .onChange(of: library.newSession) { _, _ in
+            section = .hosts
+            var entry = SessionEntry(name: "")
+            entry.savePassword = store.defaults.defaultSavePassword ?? false
+            editingEntry = entry
+        }
+        .onChange(of: library.newFolder) { _, _ in
+            section = .hosts
+            newFolderName = ""
+            newFolderParent = ""
+        }
+        .onChange(of: library.importFile) { _, _ in showingImporter = true }
+        .onChange(of: library.exportSessions) { _, _ in exportSessions() }
+        .onChange(of: library.exportMacros) { _, _ in exportMacros() }
+        .onChange(of: library.reimportSSHConfig) { _, _ in
+            let added = store.mergeSSHConfig()
+            importMessage = added == 0
+                ? "No new hosts found in ~/.ssh/config."
+                : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
+        }
+        .onChange(of: library.expandAllFolders) { _, _ in
+            section = .hosts
+            expandAllRequest += 1
+        }
+        .onChange(of: library.collapseAllFolders) { _, _ in
+            section = .hosts
+            collapseAllRequest += 1
+        }
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
                 switch result {
@@ -197,6 +230,8 @@ struct SidebarView: View {
                 store: store,
                 searching: !filter.isEmpty,
                 focusRequest: sidebarFocusRequest,
+                expandAllRequest: expandAllRequest,
+                collapseAllRequest: collapseAllRequest,
                 connect: connect,
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
@@ -253,39 +288,43 @@ struct SidebarView: View {
                 .help("Open the selected hosts (⌘-click to select several)")
             }
         }
+        // Creation only, so the "+" means what its icon says. Library
+        // actions live under the ellipsis beside it, and both surfaces route
+        // through LibraryCommands so the menu bar runs the same code.
         ToolbarItem {
             Menu {
                 switch section {
                 case .hosts:
-                    Button("New Session…") {
-                        var entry = SessionEntry(name: "")
-                        entry.savePassword = store.defaults.defaultSavePassword ?? false
-                        editingEntry = entry
-                    }
-                    Button("New Folder…") { newFolderName = ""; newFolderParent = "" }
-                    Divider()
-                    Button("Import…") { showingImporter = true }
-                    Button("Export Sessions…") { exportSessions() }
-                        .disabled(store.entries.isEmpty)
-                    Button("Export Macros…") { exportMacros() }
-                        .disabled(store.macros.isEmpty)
-                    Button("Re-import ~/.ssh/config") {
-                        let added = store.mergeSSHConfig()
-                        importMessage = added == 0
-                            ? "No new hosts found in ~/.ssh/config."
-                            : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
-                    }
+                    Button("New Session…") { library.requestNewSession() }
+                    Button("New Folder…") { library.requestNewFolder() }
                 case .macros:
                     Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
-                    Divider()
-                    Button("Import…") { showingImporter = true }
-                    Button("Export Macros…") { exportMacros() }
-                        .disabled(store.macros.isEmpty)
                 case .tools:
                     Button("New Local Shell") { sessions.openLocalShell() }
                 }
             } label: {
-                Label("Add", systemImage: "plus")
+                Label("New", systemImage: "plus")
+            }
+            .help("Create a session, folder, or macro")
+        }
+        if section != .tools {
+            ToolbarItem {
+                Menu {
+                    Button("Import…") { library.requestImport() }
+                    if section == .hosts {
+                        Button("Export Sessions…") { library.requestExportSessions() }
+                            .disabled(store.entries.isEmpty)
+                    }
+                    Button("Export Macros…") { library.requestExportMacros() }
+                        .disabled(store.macros.isEmpty)
+                    if section == .hosts {
+                        Divider()
+                        Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
+                    }
+                } label: {
+                    Label("Library", systemImage: "ellipsis.circle")
+                }
+                .help("Import and export your library")
             }
         }
     }
@@ -415,6 +454,7 @@ struct SidebarView: View {
 struct ToolsList: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var tunnels: TunnelManager
+    @EnvironmentObject var library: LibraryCommands
     let searchLogs: () -> Void
     let portForwarding: () -> Void
 
