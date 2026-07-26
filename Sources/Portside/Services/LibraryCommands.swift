@@ -22,6 +22,7 @@ final class LibraryCommands: ObservableObject {
     @Published private(set) var reimportSSHConfig = 0
     @Published private(set) var expandAllFolders = 0
     @Published private(set) var collapseAllFolders = 0
+    @Published private(set) var showCoverage = 0
 
     func requestNewSession() { newSession += 1 }
     func requestNewFolder() { newFolder += 1 }
@@ -31,4 +32,5 @@ final class LibraryCommands: ObservableObject {
     func requestReimportSSHConfig() { reimportSSHConfig += 1 }
     func requestExpandAllFolders() { expandAllFolders += 1 }
     func requestCollapseAllFolders() { collapseAllFolders += 1 }
+    func requestShowCoverage() { showCoverage += 1 }
 }

@@ -51,12 +51,15 @@ Answers "what in my fleet is neglected?" across four axes:
 - no saved password where one is expected
 - not connected to in 90+ days (**depends on Phase 2's history** — see note)
 
-**Decision: a sidebar destination, not a sheet.** The existing sidebar is
-already a `Hosts / Macros / Tools` segmented switcher (`SidebarSection`), so
-coverage belongs as a peer destination rather than a modal over the host list —
-it's a place you go to work for a while, not a dialog you dismiss. A sheet would
-also make the natural "fix it from here" flow (select offenders → bulk-apply)
-awkward.
+**Decision (revised in build): presented from Tools, as a sheet.**
+
+Originally planned as a fourth sidebar destination alongside
+`Hosts / Macros / Tools`. Built that way, then reverted: a fourth segment
+squeezed the section picker enough to clip its icon+title labels, and Tools was
+already the established home for exactly this kind of workbench view (Search
+Logs, Port Forwarding both open the same way). Consistency with the app beat the
+abstract argument, and the "spot a gap → fix it in bulk" flow works identically
+in a sheet. Also reachable from **View ▸ Inventory Coverage…**.
 
 Each row is a *gap*, not a host: "42 hosts have no environment tag", expanding
 to the list, with the Phase 1b bulk actions available inline. The point is to

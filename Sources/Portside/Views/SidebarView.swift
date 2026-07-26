@@ -43,6 +43,7 @@ struct SidebarView: View {
     @State private var selection: Set<UUID> = []
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
+    @State private var showingCoverage = false
     /// Bumped when the filter field's first arrow-key press should hand
     /// keyboard focus to the host list.
     @State private var sidebarFocusRequest = 0
@@ -76,41 +77,43 @@ struct SidebarView: View {
             case .hosts: hostsList
             case .macros: macrosList
             case .tools: ToolsList(searchLogs: { showingLogSearch = true },
-                                   portForwarding: { showingPortForwarding = true })
+                                   portForwarding: { showingPortForwarding = true },
+                                   coverage: { showingCoverage = true })
             }
         }
         .navigationTitle("Portside")
         .toolbar { toolbarContent }
-        // Single implementation of each library command; the toolbar menus and
-        // the menu bar both get here by bumping a token (see LibraryCommands).
-        .onChange(of: library.newSession) { _, _ in
-            section = .hosts
-            var entry = SessionEntry(name: "")
-            entry.savePassword = store.defaults.defaultSavePassword ?? false
-            editingEntry = entry
-        }
-        .onChange(of: library.newFolder) { _, _ in
-            section = .hosts
-            newFolderName = ""
-            newFolderParent = ""
-        }
-        .onChange(of: library.importFile) { _, _ in showingImporter = true }
-        .onChange(of: library.exportSessions) { _, _ in exportSessions() }
-        .onChange(of: library.exportMacros) { _, _ in exportMacros() }
-        .onChange(of: library.reimportSSHConfig) { _, _ in
-            let added = store.mergeSSHConfig()
-            importMessage = added == 0
-                ? "No new hosts found in ~/.ssh/config."
-                : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
-        }
-        .onChange(of: library.expandAllFolders) { _, _ in
-            section = .hosts
-            expandAllRequest += 1
-        }
-        .onChange(of: library.collapseAllFolders) { _, _ in
-            section = .hosts
-            collapseAllRequest += 1
-        }
+        // Single implementation of each library command; the toolbar menus
+        // and the menu bar both get here by bumping a token. Routed through a
+        // ViewModifier because inlining nine onChange handlers alongside the
+        // sheets and alerts pushed this body past what the type-checker will
+        // solve in reasonable time.
+        .modifier(LibraryCommandRouter(
+            library: library,
+            onNewSession: {
+                section = .hosts
+                var entry = SessionEntry(name: "")
+                entry.savePassword = store.defaults.defaultSavePassword ?? false
+                editingEntry = entry
+            },
+            onNewFolder: {
+                section = .hosts
+                newFolderName = ""
+                newFolderParent = ""
+            },
+            onImport: { showingImporter = true },
+            onExportSessions: { exportSessions() },
+            onExportMacros: { exportMacros() },
+            onReimportSSHConfig: {
+                let added = store.mergeSSHConfig()
+                importMessage = added == 0
+                    ? "No new hosts found in ~/.ssh/config."
+                    : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
+            },
+            onExpandAll: { section = .hosts; expandAllRequest += 1 },
+            onCollapseAll: { section = .hosts; collapseAllRequest += 1 },
+            onShowCoverage: { showingCoverage = true }
+        ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
                 switch result {
@@ -126,6 +129,9 @@ struct SidebarView: View {
                 case .delete: store.delete(macro)
                 }
             }
+        }
+        .sheet(isPresented: $showingCoverage) {
+            CoverageView().environmentObject(store)
         }
         .sheet(isPresented: $showingLogSearch) {
             LogSearchView().environmentObject(store)
@@ -457,6 +463,7 @@ struct ToolsList: View {
     @EnvironmentObject var library: LibraryCommands
     let searchLogs: () -> Void
     let portForwarding: () -> Void
+    let coverage: () -> Void
 
     var body: some View {
         List {
@@ -485,6 +492,14 @@ struct ToolsList: View {
                         }
                     }
                     .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Inventory") {
+                Button {
+                    coverage()
+                } label: {
+                    Label("Coverage…", systemImage: "checklist")
                 }
                 .buttonStyle(.plain)
             }
@@ -526,5 +541,36 @@ struct MacroRow: View {
             Divider()
             Button("Delete", role: .destructive) { store.delete(macro) }
         }
+    }
+}
+
+
+/// Routes `LibraryCommands` tokens to the sidebar's own actions. A modifier
+/// rather than inline `onChange` calls purely to keep `SidebarView.body`
+/// type-checkable — the handlers themselves are one-liners into state the
+/// sidebar owns.
+private struct LibraryCommandRouter: ViewModifier {
+    @ObservedObject var library: LibraryCommands
+    let onNewSession: () -> Void
+    let onNewFolder: () -> Void
+    let onImport: () -> Void
+    let onExportSessions: () -> Void
+    let onExportMacros: () -> Void
+    let onReimportSSHConfig: () -> Void
+    let onExpandAll: () -> Void
+    let onCollapseAll: () -> Void
+    let onShowCoverage: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: library.newSession) { _, _ in onNewSession() }
+            .onChange(of: library.newFolder) { _, _ in onNewFolder() }
+            .onChange(of: library.importFile) { _, _ in onImport() }
+            .onChange(of: library.exportSessions) { _, _ in onExportSessions() }
+            .onChange(of: library.exportMacros) { _, _ in onExportMacros() }
+            .onChange(of: library.reimportSSHConfig) { _, _ in onReimportSSHConfig() }
+            .onChange(of: library.expandAllFolders) { _, _ in onExpandAll() }
+            .onChange(of: library.collapseAllFolders) { _, _ in onCollapseAll() }
+            .onChange(of: library.showCoverage) { _, _ in onShowCoverage() }
     }
 }

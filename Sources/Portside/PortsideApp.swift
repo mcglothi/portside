@@ -119,6 +119,8 @@ struct PortsideApp: App {
                 Button("Collapse All Folders") { library.requestCollapseAllFolders() }
                     .disabled(store.folders.isEmpty)
                 Divider()
+                Button("Inventory Coverage…") { library.requestShowCoverage() }
+                Divider()
             }
             CommandMenu("Pane") {
                 Button("Split Right") { sessions.splitActivePane(.horizontal) }
