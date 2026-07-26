@@ -7,6 +7,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // regular foreground app so the window shows and takes focus.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        RemoteFileEditor.purgeStaleCopies()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Stop watching and remove the temp copies of any files still checked
+        // out for editing — they're unreachable once the app is gone.
+        MainActor.assumeIsolated { RemoteFileEditor.shared.stopAll() }
     }
 }
 
@@ -30,6 +37,7 @@ struct PortsideApp: App {
                     sessions.loggingSettings = store.logging
                     sessions.terminalSettings = store.terminal
                     sessions.connectionDefaults = store.defaults
+                    RemoteFileEditor.shared.preferredEditor = store.defaults.remoteEditorURL
                     sessions.defaultProfileID = store.defaultProfileID
                     sessions.onConnect = { [weak store] entry in
                         store?.recordConnection(entry)
@@ -51,7 +59,10 @@ struct PortsideApp: App {
                 .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
                 .onChange(of: store.terminal) { _, new in sessions.applyTerminalSettings(new) }
-                .onChange(of: store.defaults) { _, new in sessions.connectionDefaults = new }
+                .onChange(of: store.defaults) { _, new in
+                    sessions.connectionDefaults = new
+                    RemoteFileEditor.shared.preferredEditor = new.remoteEditorURL
+                }
                 .onChange(of: store.defaultProfileID) { _, new in sessions.defaultProfileID = new }
         }
         .commands {

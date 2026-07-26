@@ -362,6 +362,16 @@ struct ConnectionDefaults: Codable, Equatable {
     /// changes — the actual MITM protection stays intact. Applies to plain
     /// SSH connections only (not mosh's bootstrap ssh).
     var autoAcceptNewHostKeys: Bool?
+    /// Application bundle path that remote files opened from the SFTP browser
+    /// are edited in. nil defers to whatever macOS associates with the file
+    /// type — frequently nothing useful for `.conf`/`.yml`/extensionless
+    /// files, which is why this is worth setting once.
+    var remoteEditorPath: String?
+
+    var remoteEditorURL: URL? {
+        guard let path = remoteEditorPath, !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
 }
 
 /// A reusable identity (username + SSH key and/or password) a host can defer
