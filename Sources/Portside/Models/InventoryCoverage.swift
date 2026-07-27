@@ -19,6 +19,7 @@ enum InventoryCoverage {
         case noEnvironment
         case noCredentialProfile
         case noStoredCredentials
+        case stale
 
         var id: String { rawValue }
 
@@ -27,6 +28,7 @@ enum InventoryCoverage {
             case .noEnvironment: return "No environment tag"
             case .noCredentialProfile: return "No credential profile"
             case .noStoredCredentials: return "No stored credentials"
+            case .stale: return "Not connected recently"
             }
         }
 
@@ -35,6 +37,7 @@ enum InventoryCoverage {
             case .noEnvironment: return "tag"
             case .noCredentialProfile: return "person.badge.key"
             case .noStoredCredentials: return "key"
+            case .stale: return "clock.arrow.circlepath"
             }
         }
 
@@ -48,6 +51,8 @@ enum InventoryCoverage {
                 return "Not using a shared profile, so a password or key rotation won't reach these hosts automatically — they'd each need editing."
             case .noStoredCredentials:
                 return "No key, saved password, or profile is configured. Perfectly normal if these authenticate through ssh-agent or a ~/.ssh/config rule."
+            case .stale:
+                return "Connected to a long time ago. Often just infrastructure you don't touch often — worth a look when pruning a big imported library."
             }
         }
     }
@@ -65,12 +70,13 @@ enum InventoryCoverage {
     static func findings(
         entries: [SessionEntry],
         defaults: ConnectionDefaults,
-        profiles: [CredentialProfile]
+        profiles: [CredentialProfile],
+        staleIDs: Set<UUID> = []
     ) -> [Finding] {
         let candidates = entries.filter { $0.kind == .host }
         return Gap.allCases.compactMap { gap in
             let matched = candidates
-                .filter { matches(gap, entry: $0, defaults: defaults, profiles: profiles) }
+                .filter { matches(gap, entry: $0, defaults: defaults, profiles: profiles, staleIDs: staleIDs) }
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return matched.isEmpty ? nil : Finding(gap: gap, entries: matched)
         }
@@ -80,9 +86,12 @@ enum InventoryCoverage {
         _ gap: Gap,
         entry: SessionEntry,
         defaults: ConnectionDefaults,
-        profiles: [CredentialProfile]
+        profiles: [CredentialProfile],
+        staleIDs: Set<UUID> = []
     ) -> Bool {
         switch gap {
+        case .stale:
+            return staleIDs.contains(entry.id)
         case .noEnvironment:
             return entry.environment == .none
 
@@ -107,6 +116,9 @@ enum InventoryCoverage {
 
     /// Share of hosts with no gaps at all, for an at-a-glance summary.
     /// Returns nil when there are no hosts to report on.
+    /// Staleness is deliberately excluded: it's a usage fact, not a gap in what
+    /// the library describes, and a host you simply don't need often shouldn't
+    /// drag down a completeness number you're trying to drive to 100%.
     static func coveredFraction(
         entries: [SessionEntry],
         defaults: ConnectionDefaults,
@@ -114,8 +126,9 @@ enum InventoryCoverage {
     ) -> Double? {
         let candidates = entries.filter { $0.kind == .host }
         guard !candidates.isEmpty else { return nil }
+        let describedGaps = Gap.allCases.filter { $0 != .stale }
         let clean = candidates.filter { entry in
-            !Gap.allCases.contains { matches($0, entry: entry, defaults: defaults, profiles: profiles) }
+            !describedGaps.contains { matches($0, entry: entry, defaults: defaults, profiles: profiles) }
         }
         return Double(clean.count) / Double(candidates.count)
     }

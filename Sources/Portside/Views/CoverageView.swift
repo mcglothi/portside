@@ -17,7 +17,10 @@ struct CoverageView: View {
         InventoryCoverage.findings(
             entries: store.entries,
             defaults: store.defaults,
-            profiles: store.credentialProfiles
+            profiles: store.credentialProfiles,
+            staleIDs: ConnectionHistory.staleEntryIDs(
+                store.connectionStats, staleAfterDays: store.history.staleAfterDays
+            )
         )
     }
 
@@ -191,6 +194,10 @@ struct CoverageView: View {
                     }
                 }
             }
+        case .stale:
+            Text("Nothing to fix here — this is a usage fact, not a gap. Shown so a big imported library can be pruned with evidence.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         case .noStoredCredentials:
             // No bulk fix offered on purpose: this one is frequently *not* a
             // problem (ssh-agent, ~/.ssh/config), and turning on saved

@@ -41,11 +41,17 @@ struct PortsideApp: App {
                     sessions.connectionDefaults = store.defaults
                     RemoteFileEditor.shared.preferredEditor = store.defaults.remoteEditorURL
                     sessions.defaultProfileID = store.defaultProfileID
-                    sessions.onConnect = { [weak store] entry in
-                        store?.recordConnection(entry)
+                    tunnels.defaultProfileID = store.defaultProfileID
+                    sessions.onConnectionAttempt = { [weak store] entry, outcome in
+                        store?.recordConnection(entry, outcome: outcome)
                     }
                     sessions.onWorkspaceChange = { [weak store] snapshot in
                         store?.saveWorkspace(snapshot)
+                    }
+                    sessions.recordsCommands = store.history.keepCommandHistory
+                    sessions.excludesProtectedFromRecording = store.history.excludeProtectedHosts
+                    sessions.onCommand = { [weak store] event in
+                        store?.recordCommand(event)
                     }
                     LogManager.runMaintenance(settings: store.logging)
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
@@ -65,7 +71,17 @@ struct PortsideApp: App {
                     sessions.connectionDefaults = new
                     RemoteFileEditor.shared.preferredEditor = new.remoteEditorURL
                 }
-                .onChange(of: store.defaultProfileID) { _, new in sessions.defaultProfileID = new }
+                .onChange(of: store.defaultProfileID) { _, new in
+                    sessions.defaultProfileID = new
+                    tunnels.defaultProfileID = new
+                }
+                // Only affects sessions opened afterwards: the timeline is
+                // attached when a session is created, so already-open tabs
+                // keep whatever they started with.
+                .onChange(of: store.history) { _, new in
+                    sessions.recordsCommands = new.keepCommandHistory
+                    sessions.excludesProtectedFromRecording = new.excludeProtectedHosts
+                }
         }
         .commands {
             CommandGroup(after: .appInfo) {
@@ -120,6 +136,7 @@ struct PortsideApp: App {
                     .disabled(store.folders.isEmpty)
                 Divider()
                 Button("Inventory Coverage…") { library.requestShowCoverage() }
+                Button("History…") { library.requestShowHistory() }
                 Divider()
             }
             CommandMenu("Pane") {
@@ -167,9 +184,9 @@ struct PortsideApp: App {
                 CredentialProfilesView()
                     .environmentObject(store)
                     .tabItem { Label("Profiles", systemImage: "person.badge.key") }
-                LoggingSettingsView()
+                RecordingSettingsView()
                     .environmentObject(store)
-                    .tabItem { Label("Logging", systemImage: "doc.text.magnifyingglass") }
+                    .tabItem { Label("Recording", systemImage: "record.circle") }
                 ShortcutsSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Shortcuts", systemImage: "keyboard") }

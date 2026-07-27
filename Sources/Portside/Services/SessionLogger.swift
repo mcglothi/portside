@@ -8,6 +8,11 @@ import Foundation
 final class SessionLogger {
     let fileURL: URL
     private let handle: FileHandle
+    /// Bytes written so far. Only ever touched on `queue` -- reading it
+    /// directly from the terminal's thread was both a data race and wrong:
+    /// `append` merely *enqueues* a chunk, so the counter still reflected the
+    /// state before it. Use `settledOffset()`.
+    private var bytesWritten: Int = 0
     private let queue = DispatchQueue(label: "net.timmcg.portside.sessionlog", qos: .utility)
     private var stripper = ANSIStripper()
     private var lastWrite = Date()
@@ -48,6 +53,16 @@ final class SessionLogger {
         queue.async { [weak self] in self?.ingest(bytes) }
     }
 
+    /// Offset once everything appended so far has actually been written.
+    ///
+    /// Synchronises with the writer queue, so call it only where a position is
+    /// genuinely needed -- at a command boundary, never per chunk. Because
+    /// `append` enqueues before this runs, the wait guarantees the chunk that
+    /// carried the command has landed, which a direct read did not.
+    func settledOffset() -> Int {
+        queue.sync { bytesWritten }
+    }
+
     func close() {
         queue.async { [weak self] in
             guard let self, !self.closed else { return }
@@ -74,11 +89,15 @@ final class SessionLogger {
     }
 
     private func write(_ string: String) {
-        if let data = string.data(using: .utf8) { try? handle.write(contentsOf: data) }
+        if let data = string.data(using: .utf8) {
+            try? handle.write(contentsOf: data)
+            bytesWritten += data.count
+        }
     }
 
     private func writeData(_ data: Data) {
         try? handle.write(contentsOf: data)
+        bytesWritten += data.count
     }
 }
 

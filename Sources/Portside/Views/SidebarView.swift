@@ -44,11 +44,22 @@ struct SidebarView: View {
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
     @State private var showingCoverage = false
+    @State private var showingHistory = false
     /// Bumped when the filter field's first arrow-key press should hand
     /// keyboard focus to the host list.
     @State private var sidebarFocusRequest = 0
     @State private var expandAllRequest = 0
     @State private var collapseAllRequest = 0
+
+    private var loadFailureMessage: String {
+        var text = "Portside kept your original file and has not changed it. "
+        text += "Nothing you do in this session will be saved until it's resolved, "
+        text += "so your existing hosts can't be overwritten."
+        if let path = store.quarantinedLibraryPath {
+            text += "\n\nA copy is at \(path)"
+        }
+        return text
+    }
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -78,7 +89,8 @@ struct SidebarView: View {
             case .macros: macrosList
             case .tools: ToolsList(searchLogs: { showingLogSearch = true },
                                    portForwarding: { showingPortForwarding = true },
-                                   coverage: { showingCoverage = true })
+                                   coverage: { showingCoverage = true },
+                                   history: { showingHistory = true })
             }
         }
         .navigationTitle("Portside")
@@ -112,7 +124,8 @@ struct SidebarView: View {
             },
             onExpandAll: { section = .hosts; expandAllRequest += 1 },
             onCollapseAll: { section = .hosts; collapseAllRequest += 1 },
-            onShowCoverage: { showingCoverage = true }
+            onShowCoverage: { showingCoverage = true },
+            onShowHistory: { showingHistory = true }
         ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
@@ -133,6 +146,9 @@ struct SidebarView: View {
         .sheet(isPresented: $showingCoverage) {
             CoverageView().environmentObject(store)
         }
+        .sheet(isPresented: $showingHistory) {
+            HistoryView().environmentObject(store)
+        }
         .sheet(isPresented: $showingLogSearch) {
             LogSearchView().environmentObject(store)
         }
@@ -147,6 +163,19 @@ struct SidebarView: View {
             allowsMultipleSelection: false
         ) { result in
             handleImport(result)
+        }
+        // A quarantined library means the app is running empty and refusing to
+        // write. Silently sitting there would look like data loss and invite
+        // the user to recreate everything on top of a recoverable file.
+        .alert("Your session library could not be read", isPresented: .constant(store.loadFailure != nil)) {
+            if let path = store.quarantinedLibraryPath {
+                Button("Reveal Copy in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                }
+            }
+            Button("Continue Without Saving", role: .cancel) {}
+        } message: {
+            Text(loadFailureMessage)
         }
         .alert(
             "Import",
@@ -464,6 +493,7 @@ struct ToolsList: View {
     let searchLogs: () -> Void
     let portForwarding: () -> Void
     let coverage: () -> Void
+    let history: () -> Void
 
     var body: some View {
         List {
@@ -500,6 +530,14 @@ struct ToolsList: View {
                     coverage()
                 } label: {
                     Label("Coverage…", systemImage: "checklist")
+                }
+                .buttonStyle(.plain)
+            }
+            Section("History") {
+                Button {
+                    history()
+                } label: {
+                    Label("Commands & Connections…", systemImage: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.plain)
             }
@@ -560,6 +598,7 @@ private struct LibraryCommandRouter: ViewModifier {
     let onExpandAll: () -> Void
     let onCollapseAll: () -> Void
     let onShowCoverage: () -> Void
+    let onShowHistory: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -572,5 +611,6 @@ private struct LibraryCommandRouter: ViewModifier {
             .onChange(of: library.expandAllFolders) { _, _ in onExpandAll() }
             .onChange(of: library.collapseAllFolders) { _, _ in onCollapseAll() }
             .onChange(of: library.showCoverage) { _, _ in onShowCoverage() }
+            .onChange(of: library.showHistory) { _, _ in onShowHistory() }
     }
 }
