@@ -43,6 +43,20 @@ enum SettingsWindowSizer {
     /// edge to edge against the menu bar and the Dock.
     private static let screenMargin: CGFloat = 80
 
+    /// The shortest a page may be measured as.
+    ///
+    /// Not defensive padding — it fixes a real collapse. A page built on `List`
+    /// rather than `Form` has no intrinsic content height, because `List` is
+    /// lazy and does not know how tall its rows are until it lays them out. The
+    /// pin therefore measures it as its bare minimum: Profiles came out **152
+    /// points** against Appearance's 993, showing a header and half a row.
+    ///
+    /// Only reproducible with credential profiles saved — an empty Profiles tab
+    /// draws an `EmptyStateView`, which does report a height, so the tab
+    /// measured fine on a machine that had never added one. Reported from a
+    /// work machine on 0.17.0.
+    static let minPageHeight: CGFloat = 420
+
     /// The tallest a page may ask to be. Beyond this it scrolls instead, which
     /// is rule 2 — without the cap a long page on a short display would open a
     /// window taller than the screen, with its bottom edge unreachable.
@@ -134,10 +148,14 @@ struct SettingsPageSizing: ViewModifier {
             // ideal height. After the pin it is only an upper bound, which
             // leaves the window free to keep whatever height it had — so tabs
             // grew into the tallest page and never shrank back.
+            // The floor goes on with the cap, before the pin, so the pinned
+            // ideal is already clamped at both ends — after the pin they are
+            // only advisory and the window keeps whatever it had.
             .frame(
                 minWidth: SettingsWindowSizer.width,
                 idealWidth: SettingsWindowSizer.width,
                 maxWidth: state.pinned ? SettingsWindowSizer.width : .infinity,
+                minHeight: state.pinned ? SettingsWindowSizer.minPageHeight : nil,
                 maxHeight: state.pinned ? SettingsWindowSizer.maxPageHeight : .infinity
             )
             .fixedSize(horizontal: false, vertical: state.pinned)
