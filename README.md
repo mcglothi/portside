@@ -86,6 +86,10 @@ exists to fill that gap without giving up native speed and macOS polish.
   Nerd Fonts (or import your own), set a configurable scrollback depth (default
   10,000 lines), and optionally switch on GPU (Metal) rendering — all in
   Settings, applied live to open terminals.
+- **Inline images** — `imgcat` a screenshot, a Grafana export, or a plot from a
+  remote host and look at it where you are, instead of copying it back first.
+  Sixel, iTerm2 (OSC 1337) and Kitty graphics all render; the
+  [compatibility matrix](docs/COMPATIBILITY.md) has the details.
 - **Mosh roaming** — opt any SSH host into mosh for sessions that survive sleep
   and network changes. Portside respects your SSH alias, key, port, and saved
   password during bootstrap, and falls back to SSH when mosh is unavailable.
@@ -244,12 +248,6 @@ exists to fill that gap without giving up native speed and macOS polish.
   markers were previously listed here as blocked upstream. They aren't:
   Portside parses OSC 133 itself from the raw byte stream, which is how command
   history works — SwiftTerm never needs to see them.)
-- Inline images were listed here too, and shouldn't have been: Sixel, iTerm2
-  (OSC 1337) and Kitty graphics all work on the pinned SwiftTerm. The matrix
-  had them down as unsupported because it was last measured against a
-  pre-1.0 SwiftTerm. Sixel does carry an upstream crash on certain images —
-  see [the compatibility matrix](docs/COMPATIBILITY.md) for the specifics.
-
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Named / pinned layout presets
 - tmux control-mode (`-CC`) integration — native splits backed by a durable
