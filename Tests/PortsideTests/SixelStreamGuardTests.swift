@@ -89,6 +89,80 @@ final class SixelStreamGuardTests: XCTestCase {
         XCTAssertEqual(string(guarded(payload)), payload)
     }
 
+    // MARK: - Cancellation
+
+    /// CAN (0x18) and SUB (0x1A) cancel any sequence in progress from *every*
+    /// parser state — SwiftTerm has that as a global "anywhere" rule:
+    ///
+    ///     table.add(codes: [0x18, 0x1a, 0x99, 0x9a], state: state,
+    ///               action: .execute, next: .ground)
+    ///
+    /// The guard has to leave with it. Staying in the DCS while the terminal has
+    /// returned to ground means a later ordinary `q` and pixel-range text look
+    /// like a Sixel payload here and like plain text there, and the guard writes
+    /// a `-` into the middle of someone's output.
+    ///
+    /// Found by Codex CLI in the 0.17 pre-release review.
+    func testCancelBeforeFinalByteIsNotTreatedAsSixel() {
+        // ESC P CAN q ~ ~ ESC \ — cancelled before the DCS final byte, so the
+        // `q~~` is ordinary text as far as the terminal is concerned.
+        let payload = "\u{1b}P\u{18}q~~\u{1b}\\"
+        XCTAssertEqual(string(guarded(payload)), payload, "nothing may be inserted after a cancel")
+    }
+
+    func testSubCancelBeforeFinalByteIsNotTreatedAsSixel() {
+        let payload = "\u{1b}P\u{1a}q~~\u{1b}\\"
+        XCTAssertEqual(string(guarded(payload)), payload)
+    }
+
+    /// Cancelling *inside* a real Sixel body abandons it too: the band never
+    /// terminates, but the terminal is no longer decoding it, so there is
+    /// nothing to repair.
+    func testCancelInsideSixelBodyStopsTheRepair() {
+        let payload = "\u{1b}Pq\(white)~~~\u{18} plain text \u{1b}\\"
+        XCTAssertEqual(string(guarded(payload)), payload)
+    }
+
+    func testSubCancelInsideSixelBodyStopsTheRepair() {
+        let payload = "\u{1b}Pq\(white)~~~\u{1a} plain text \u{1b}\\"
+        XCTAssertEqual(string(guarded(payload)), payload)
+    }
+
+    /// ST before a DCS handler has been selected is a terminator too.
+    func testStringTerminatorInPrologueEndsTheSequence() {
+        let payload = "\u{1b}P\u{9c}q~~\u{1b}\\"
+        XCTAssertEqual(string(guarded(payload)), payload)
+    }
+
+    /// A cancel must not poison the next, legitimate image.
+    func testSixelAfterACancelStillGetsRepaired() {
+        let cancelled = "\u{1b}P\u{18}q~~\u{1b}\\"
+        let real = "\u{1b}Pq\(white)~~\u{1b}\\"
+        let out = string(guarded(cancelled + real))
+        XCTAssertEqual(out, cancelled + "\u{1b}Pq\(white)~~-\u{1b}\\")
+    }
+
+    /// Every cancellation vector, split at every boundary — the same treatment
+    /// the positive cases get, because the cancel and the bytes that follow it
+    /// can land in different chunks.
+    func testCancellationSurvivesEveryChunkBoundary() {
+        let payloads = [
+            "\u{1b}P\u{18}q~~\u{1b}\\",
+            "\u{1b}P\u{1a}q~~\u{1b}\\",
+            "\u{1b}Pq\(white)~~~\u{18} plain \u{1b}\\",
+            "\u{1b}P\u{9c}q~~\u{1b}\\",
+        ]
+        for payload in payloads {
+            for chunkSize in 1...payload.utf8.count {
+                XCTAssertEqual(
+                    string(guarded(payload, chunkSize: chunkSize)),
+                    payload,
+                    "\(payload.debugDescription) split into \(chunkSize)-byte chunks"
+                )
+            }
+        }
+    }
+
     // MARK: - Chunking
 
     /// Output arrives in whatever sizes the transport hands over, so the

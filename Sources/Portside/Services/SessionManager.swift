@@ -26,6 +26,12 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// Repairs unterminated sixel payloads on the way past, which would
     /// otherwise crash SwiftTerm's decoder. Temporary; see `SixelStreamGuard`.
     private var sixelGuard = SixelStreamGuard()
+    /// Test seam: the bytes actually handed to the terminal, after repair.
+    ///
+    /// Exists because the ordering below is a contract, not an implementation
+    /// detail, and there is no way to observe what reached `super` from outside.
+    /// Raised by Codex CLI in the 0.17 pre-release review.
+    var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
@@ -49,7 +55,9 @@ final class LoggingTerminalView: LocalProcessTerminalView {
                 onCommand?(event)
             }
         }
-        super.dataReceived(slice: sixelGuard.filter(slice))
+        let repaired = sixelGuard.filter(slice)
+        onTerminalBytes?(repaired)
+        super.dataReceived(slice: repaired)
     }
 
     /// Everything written to the pty funnels through this delegate method:
@@ -1357,7 +1365,11 @@ final class SessionManager: ObservableObject {
     ///
     /// Until this existed, closing a whole tab was reachable only from the tab
     /// strip's × button — so "Reopen Closed Tab" could undo something you had
-    /// no keyboard way to do. ⌘W is Close Window and stays that way.
+    /// no keyboard way to do.
+    ///
+    /// Bound to ⌘W, the terminal-app convention. Taking it costs the stock
+    /// File ▸ Close its own shortcut: SwiftUI yields ⌘W to this item and strips
+    /// its own, re-applying that on every menu-bar open. ⇧⌘W stays Close Pane.
     func closeSelectedTab() {
         guard let tab = selectedTab else { return }
         closeTab(tab)

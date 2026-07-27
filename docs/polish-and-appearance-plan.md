@@ -173,10 +173,14 @@ every pick spawns another copy.
 **This uncovered a real gap: there was no way to close a tab from the keyboard
 or the menu bar at all.** Closing a whole tab was reachable only from the tab
 strip's × button, so ⇧⌘T could undo something you had no keyboard way to do.
-Added File ▸ Close Tab, bound to ⌥⌘W — *not* ⌘W, which is Close Window and has
-never belonged to Portside, and not ⇧⌘W, which is already Close Pane. It is
-remappable like every other shortcut if the terminal-app convention (⌘W closes
-the tab) is what you want.
+Added File ▸ Close Tab. It shipped on ⌥⌘W first, on the reasoning that ⌘W is
+Close Window and had never belonged to Portside; Tim then asked for the
+terminal-app convention, so **it is ⌘W** and ⇧⌘W stays Close Pane.
+
+Taking ⌘W costs the stock File ▸ Close its own shortcut — SwiftUI yields the key
+to our item and strips its own, and re-applies that on every menu-bar open, so
+an AppKit fixup to rename and rebind it does not survive to display. The window
+is still closable by its red button, the Window menu, and ⌥⌘W Close All.
 
 One SwiftUI wrinkle worth remembering: **`.disabled` is ignored on a `Menu`
 inside a `CommandGroup`.** The submenu opens whatever you do, so the empty state
@@ -299,6 +303,46 @@ explicitly. Adding an Import action to its empty state introduced a second
 dependency, and a missing `@EnvironmentObject` is a crash, not a blank view.
 Verified by opening the sheet against an emptied library, not by reading the
 code.
+
+---
+
+## Codex CLI pre-release review, 2026-07-27 (`docs/0.17-pre-release-review.md`)
+
+Commissioned before tagging, same as the 0.16 audit. It found one real defect
+that our own tests missed, in the file we most wanted reviewed.
+
+**P1 — `SixelStreamGuard` ignored DCS cancellation.** SwiftTerm treats CAN
+(`0x18`) and SUB (`0x1A`) as cancels from *every* parser state — a global
+"anywhere" rule in its transition table — and ST as a terminator before a DCS
+handler is selected. The guard honoured none of them, so it stayed inside the
+DCS while the terminal had returned to ground. `ESC P CAN q ~~ ESC \` is plain
+text to the terminal and looked like a sixel payload to the guard, which wrote a
+`-` into the middle of it. Fixed, with cancellation vectors run at every chunk
+boundary like the positive cases.
+
+The lesson is the one the guard's own design invites: **a shim that mirrors part
+of another parser's state machine has to mirror its exits too.** Positive-path
+tests cannot find that; only asking what the *other* parser does can.
+
+**P2 — the ⌘W documentation contradicted the shipped binding.** Real, and worth
+noting how it happened: Close Tab shipped on ⌥⌘W, Tim then asked for ⌘W, and the
+implementation moved while two comments and this plan did not. Reconciled.
+
+**P2 — no assertion on raw-versus-repaired routing.** Added, and it produced a
+finding of its own. The review's rationale was that feeding repaired bytes to
+the logger would invalidate persisted transcript offsets. Measured: it does not.
+Every byte the guard inserts is inside a DCS body, and `ANSIStripper` drops DCS
+bodies wholesale, so transcript content and `settledOffset()` are identical
+either way. The terminal-path assertion is the one with teeth.
+
+**Disproved by the review, worth recording:** the 8-bit DCS opener (`0x90`)
+looked like a way around the guard, but SwiftTerm 1.15.0's ground fast path
+consumes it as printable data and never dispatches a sixel handler. No guard
+change needed; delete the guard on upgrade rather than extending it.
+
+Also confirmed clean: appearance persistence (real-library upgrade rehearsal
+passed against a copy of Tim's actual `portside.json`), the closed-tab ring's
+in-memory guarantee, the never-connected axis, and the compatibility correction.
 
 ---
 

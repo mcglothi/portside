@@ -63,7 +63,34 @@ struct SixelStreamGuard {
         return out[...]
     }
 
+    /// Abandons any sequence in progress and returns to plain passthrough.
+    private mutating func abandonSequence() {
+        state = .passthrough
+        sawIntermediate = false
+        pixelsSinceBandBreak = false
+    }
+
     private mutating func emit(_ byte: UInt8, into out: inout [UInt8]) {
+        // CAN and SUB cancel whatever is in progress, from *every* state.
+        // SwiftTerm has it as a global "anywhere" rule:
+        //
+        //     table.add(codes: [0x18, 0x1a, 0x99, 0x9a], state: state,
+        //               action: .execute, next: .ground)
+        //
+        // Staying in the DCS here while the terminal has gone back to ground is
+        // how `ESC P CAN q ~~ ESC \` -- ordinary text as far as the terminal is
+        // concerned -- got a `-` written into the middle of it. Found by Codex
+        // CLI in the 0.17 pre-release review.
+        if byte == 0x18 || byte == 0x1A {
+            if pendingESC {
+                out.append(0x1B)
+                pendingESC = false
+            }
+            abandonSequence()
+            out.append(byte)
+            return
+        }
+
         if pendingESC {
             pendingESC = false
 
@@ -111,6 +138,10 @@ struct SixelStreamGuard {
         case .dcsPrologue:
             out.append(byte)
             switch byte {
+            case 0x9C:
+                // ST before a handler has even been selected ends the sequence;
+                // there is no sixel body to owe a terminator to.
+                abandonSequence()
             case 0x20...0x2F:
                 sawIntermediate = true
             case 0x30...0x3F:
