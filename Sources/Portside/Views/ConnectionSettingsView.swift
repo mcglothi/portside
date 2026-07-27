@@ -130,6 +130,6 @@ struct ConnectionSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 460, idealWidth: 480, minHeight: 360)
+        .settingsPageSizing()
     }
 }

@@ -5,3 +5,6 @@ DerivedData/
 xcuserdata/
 *.xcodeproj
 .DS_Store
+
+# Byte-cache from Scripts/make_sixel.py
+__pycache__/

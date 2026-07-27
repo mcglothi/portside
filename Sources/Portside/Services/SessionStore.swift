@@ -290,6 +290,17 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    func setFavorite(_ isFavorite: Bool, macro: Macro) {
+        guard let i = macros.firstIndex(where: { $0.id == macro.id }),
+              macros[i].isFavorite != isFavorite else { return }
+        macros[i].isFavorite = isFavorite
+        save()
+    }
+
+    /// Macros pinned to the MultiExec bar, in library order so the bar does not
+    /// reshuffle itself as things are favourited.
+    var favoriteMacros: [Macro] { macros.filter(\.isFavorite) }
+
     func upsert(_ forward: PortForward) {
         if let i = forwards.firstIndex(where: { $0.id == forward.id }) {
             forwards[i] = forward

@@ -39,6 +39,6 @@ struct UpdateSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 420, idealWidth: 460, minHeight: 220)
+        .settingsPageSizing()
     }
 }

@@ -144,7 +144,9 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showingCoverage) {
-            CoverageView().environmentObject(store)
+            // `library` as well as `store`: the empty state offers Import…, and
+            // a missing @EnvironmentObject is a crash, not a blank view.
+            CoverageView().environmentObject(store).environmentObject(library)
         }
         .sheet(isPresented: $showingHistory) {
             HistoryView().environmentObject(store)
@@ -276,9 +278,12 @@ struct SidebarView: View {
             )
             .overlay {
                 if store.entries.isEmpty {
-                    ContentUnavailableView("No hosts yet",
-                        systemImage: "server.rack",
-                        description: Text("Add a session or import from ~/.ssh/config."))
+                    EmptyStateView(
+                        icon: "server.rack",
+                        title: "No hosts yet",
+                        detail: "Add a session, or import the hosts you already have in ~/.ssh/config.",
+                        action: EmptyStateView.Action(label: "Import…") { library.requestImport() }
+                    )
                 }
             }
         }
@@ -299,9 +304,12 @@ struct SidebarView: View {
         }
         .overlay {
             if store.macros.isEmpty {
-                ContentUnavailableView("No macros yet",
-                    systemImage: "bolt",
-                    description: Text("Macros send saved text to the active or broadcast terminals."))
+                EmptyStateView(
+                    icon: "bolt",
+                    title: "No macros yet",
+                    detail: "Macros send saved text to the active terminal, or to every broadcast target at once.",
+                    action: EmptyStateView.Action(label: "New Macro…") { editingMacro = Macro(name: "", text: "") }
+                )
             }
         }
     }
@@ -332,6 +340,12 @@ struct SidebarView: View {
                 case .hosts:
                     Button("New Session…") { library.requestNewSession() }
                     Button("New Folder…") { library.requestNewFolder() }
+                    // Also under Tools ▸ +, but Hosts is where people actually
+                    // are, and a local shell was reachable from the menu bar or
+                    // the welcome page only — not from the + they were already
+                    // clicking. Raised by a colleague of Tim's.
+                    Divider()
+                    Button("New Local Shell") { sessions.openLocalShell() }
                 case .macros:
                     Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
                 case .tools:
@@ -340,7 +354,7 @@ struct SidebarView: View {
             } label: {
                 Label("New", systemImage: "plus")
             }
-            .help("Create a session, folder, or macro")
+            .help("Create a session, folder, macro, or local shell")
         }
         if section != .tools {
             ToolbarItem {
@@ -558,6 +572,7 @@ struct MacroRow: View {
     let macro: Macro
     let run: (Macro) -> Void
     let edit: (Macro) -> Void
+    @State private var hovering = false
 
     var body: some View {
         Button {
@@ -568,14 +583,34 @@ struct MacroRow: View {
                     .foregroundStyle(.secondary)
                 Text(macro.name)
                     .lineLimit(1)
+                Spacer(minLength: 4)
+                // Same affordance the host rows use: always shown once set,
+                // offered on hover before that.
+                if macro.isFavorite || hovering {
+                    Button {
+                        store.setFavorite(!macro.isFavorite, macro: macro)
+                    } label: {
+                        Image(systemName: macro.isFavorite ? "star.fill" : "star")
+                            .font(.caption)
+                            .foregroundStyle(macro.isFavorite ? .yellow : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(macro.isFavorite
+                          ? "Remove from the MultiExec bar"
+                          : "Pin to the MultiExec bar")
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .help(macro.text)
         .contextMenu {
             Button("Run") { run(macro) }
             Button("Edit…") { edit(macro) }
+            Button(macro.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                store.setFavorite(!macro.isFavorite, macro: macro)
+            }
             Divider()
             Button("Delete", role: .destructive) { store.delete(macro) }
         }

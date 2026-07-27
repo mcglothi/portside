@@ -10,6 +10,7 @@ import SwiftUI
 /// the same either way.
 struct CoverageView: View {
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     @Environment(\.dismiss) private var dismiss
     @State private var expanded: Set<String> = []
 
@@ -20,7 +21,8 @@ struct CoverageView: View {
             profiles: store.credentialProfiles,
             staleIDs: ConnectionHistory.staleEntryIDs(
                 store.connectionStats, staleAfterDays: store.history.staleAfterDays
-            )
+            ),
+            connectedIDs: ConnectionHistory.connectedEntryIDs(store.connectionStats)
         )
     }
 
@@ -39,7 +41,7 @@ struct CoverageView: View {
                 Spacer()
                 Button("Done") { dismiss() }
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
             Divider()
             list
         }
@@ -47,19 +49,34 @@ struct CoverageView: View {
     }
 
     private var list: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                summary
-                if findings.isEmpty {
-                    allClear
-                } else {
-                    ForEach(findings) { finding in
-                        card(for: finding)
+        // An empty library and a fully-covered one both show "no findings", and
+        // they mean opposite things: nothing to survey versus nothing left to
+        // fix. Separated so the view never congratulates you on an empty list.
+        if store.entries.contains(where: { $0.kind == .host }) {
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Metrics.cardSpacing) {
+                        summary
+                        if findings.isEmpty {
+                            allClear
+                        } else {
+                            ForEach(findings) { finding in
+                                card(for: finding)
+                            }
+                        }
                     }
+                    .padding(Metrics.sheetContent)
                 }
-            }
-            .padding(10)
+            )
         }
+        return AnyView(
+            EmptyStateView(
+                icon: "square.stack.3d.up.slash",
+                title: "No hosts to survey",
+                detail: "Coverage reports what Portside doesn't know about your fleet — environment tags, credential profiles, hosts you've never reached. Import a ~/.ssh/config or add a session to get started.",
+                action: EmptyStateView.Action(label: "Import…") { library.requestImport() }
+            )
+        )
     }
 
     private var summary: some View {
@@ -152,7 +169,7 @@ struct CoverageView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(Metrics.cardPadding)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 
@@ -196,6 +213,13 @@ struct CoverageView: View {
             }
         case .stale:
             Text("Nothing to fix here — this is a usage fact, not a gap. Shown so a big imported library can be pruned with evidence.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        case .neverConnected:
+            // Deliberately no bulk action. The obvious one would be "delete
+            // these", and an unvisited host is exactly as likely to be one you
+            // simply haven't needed yet as one that was never real.
+            Text("Nothing to fix here — open one to find out. Only connections Portside recorded count, so hosts you used before history was on will appear here too.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         case .noStoredCredentials:

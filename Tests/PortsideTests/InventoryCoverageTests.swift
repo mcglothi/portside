@@ -179,3 +179,86 @@ final class InventoryCoverageTests: XCTestCase {
         XCTAssertNotNil(findings.first { $0.gap == .noCredentialProfile })
     }
 }
+
+/// The "never connected" axis, added in 0.17. Distinct from stale: a host
+/// nobody has ever opened and a host untouched for 90+ days mean opposite
+/// things — one is an import that was never verified, the other is drift.
+final class NeverConnectedCoverageTests: XCTestCase {
+
+    private func host(_ name: String) -> SessionEntry {
+        SessionEntry(name: name, hostname: "\(name).example.com")
+    }
+
+    private func stat(_ entry: SessionEntry, daysAgo: Int) -> ConnectionStat {
+        ConnectionStat(entryID: entry.id,
+                       count: 1,
+                       lastConnected: Date().addingTimeInterval(-Double(daysAgo) * 86_400))
+    }
+
+    private func matches(_ entry: SessionEntry, connectedIDs: Set<UUID>?) -> Bool {
+        InventoryCoverage.matches(.neverConnected,
+                                  entry: entry,
+                                  defaults: ConnectionDefaults(),
+                                  profiles: [],
+                                  connectedIDs: connectedIDs)
+    }
+
+    func testHostWithNoRecordedConnectionIsReported() {
+        let visited = host("hopper")
+        let unvisited = host("babbage")
+        let connected = ConnectionHistory.connectedEntryIDs([stat(visited, daysAgo: 1)])
+
+        XCTAssertTrue(matches(unvisited, connectedIDs: connected))
+        XCTAssertFalse(matches(visited, connectedIDs: connected))
+    }
+
+    /// A host connected to years ago is stale, not unvisited. Reporting it as
+    /// both would double-count it and muddle two opposite meanings.
+    func testLongAgoConnectionIsStaleNotNeverConnected() {
+        let ancient = host("truenas")
+        let stats = [stat(ancient, daysAgo: 400)]
+
+        XCTAssertFalse(matches(ancient, connectedIDs: ConnectionHistory.connectedEntryIDs(stats)))
+        XCTAssertTrue(
+            ConnectionHistory.staleEntryIDs(stats, staleAfterDays: 90).contains(ancient.id),
+            "the same host should land in stale instead"
+        )
+    }
+
+    /// No history at all is not evidence that nothing has been connected to —
+    /// recording may be off, or the library may be minutes old. Declaring the
+    /// whole fleet unvisited in that state is noise, not a finding.
+    func testEmptyHistoryReportsNothing() {
+        XCTAssertNil(ConnectionHistory.connectedEntryIDs([]))
+        XCTAssertFalse(matches(host("hopper"), connectedIDs: nil))
+    }
+
+    func testUnvisitedHostsAppearAsAFinding() {
+        let visited = host("hopper")
+        let unvisited = host("babbage")
+        let findings = InventoryCoverage.findings(
+            entries: [visited, unvisited],
+            defaults: ConnectionDefaults(),
+            profiles: [],
+            connectedIDs: ConnectionHistory.connectedEntryIDs([stat(visited, daysAgo: 1)])
+        )
+
+        let finding = findings.first { $0.gap == .neverConnected }
+        XCTAssertEqual(finding?.entries.map(\.name), ["babbage"])
+    }
+
+    /// Staleness and never-connected are both usage facts, not gaps in what the
+    /// library describes, so neither may drag the score down — 100% has to stay
+    /// reachable for a fleet that is fully described but not fully visited.
+    func testNeverConnectedDoesNotAffectTheScore() {
+        var entry = host("babbage")
+        entry.environment = .prod
+        entry.savePassword = true
+
+        let covered = InventoryCoverage.coveredFraction(
+            entries: [entry], defaults: ConnectionDefaults(), profiles: []
+        )
+
+        XCTAssertEqual(covered, 1.0, "a fully described but never-visited host is still covered")
+    }
+}

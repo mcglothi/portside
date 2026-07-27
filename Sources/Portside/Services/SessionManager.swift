@@ -23,9 +23,22 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
     private var suppressInputMirror = false
+    /// Repairs unterminated sixel payloads on the way past, which would
+    /// otherwise crash SwiftTerm's decoder. Temporary; see `SixelStreamGuard`.
+    private var sixelGuard = SixelStreamGuard()
+    /// Test seam: the bytes actually handed to the terminal, after repair.
+    ///
+    /// Exists because the ordering below is a contract, not an implementation
+    /// detail, and there is no way to observe what reached `super` from outside.
+    /// Raised by Codex CLI in the 0.17 pre-release review.
+    var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
+        // The log and the command timeline get the bytes as they actually
+        // arrived. Only the terminal sees the repaired stream -- the guard can
+        // change the byte count, and transcript offsets have to keep matching
+        // what is on disk.
         logger?.append(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
@@ -42,7 +55,9 @@ final class LoggingTerminalView: LocalProcessTerminalView {
                 onCommand?(event)
             }
         }
-        super.dataReceived(slice: slice)
+        let repaired = sixelGuard.filter(slice)
+        onTerminalBytes?(repaired)
+        super.dataReceived(slice: repaired)
     }
 
     /// Everything written to the pty funnels through this delegate method:
@@ -1301,24 +1316,63 @@ final class SessionManager: ObservableObject {
     /// front) — not inside `close(_:)`'s per-leaf teardown — avoids recording
     /// a degenerate single-pane remnant when a multi-pane tab's leaves close
     /// one at a time as part of closing the whole tab.
-    private var closedTabHistory: [RestorePlan.TabPlan] = []
-    private static let closedTabHistoryLimit = 10
+    ///
+    /// See `ClosedTabRing` for why this is in-memory only.
+    @Published private(set) var closedTabRing = ClosedTabRing()
+
+    var closedTabs: [ClosedTab] { closedTabRing.entries }
 
     private func rememberForReopen(_ tab: Tab) {
         guard let root = tab.root, let plan = planNode(for: root) else { return }
-        closedTabHistory.append(RestorePlan.TabPlan(root: plan))
-        if closedTabHistory.count > Self.closedTabHistoryLimit {
-            closedTabHistory.removeFirst()
-        }
+        let tabPlan = RestorePlan.TabPlan(root: plan)
+        closedTabRing.record(ClosedTab(plan: tabPlan,
+                                       title: tab.customTitle ?? tab.activeLeaf?.title ?? "shell",
+                                       customTitle: tab.customTitle,
+                                       paneCount: tabPlan.root.leafCount,
+                                       closedAt: Date()))
     }
 
     /// Reopens the most recently closed tab (⇧⌘T), same as a browser's
     /// "reopen closed tab" — reuses the same restore-plan builder as launch
     /// restore and Duplicate Tab.
     func reopenLastClosedTab() {
-        guard let plan = closedTabHistory.popLast(), let tab = buildTab(plan) else { return }
+        guard let closed = closedTabRing.takeMostRecent() else { return }
+        restore(closed)
+    }
+
+    /// Reopens a specific closed tab chosen from the menu, rather than only the
+    /// most recent one.
+    func reopenClosedTab(id: ClosedTab.ID) {
+        guard let closed = closedTabRing.take(id: id) else { return }
+        restore(closed)
+    }
+
+    private func restore(_ closed: ClosedTab) {
+        guard let tab = buildTab(closed.plan) else { return }
+        tab.customTitle = closed.customTitle
         tabs.append(tab)
         selectedTabID = tab.id
+    }
+
+    /// Forgets every closed tab without reopening any (File ▸ Recently Closed ▸
+    /// Clear). The ring is a record of what you had open, so it needs a way to
+    /// be dropped on purpose, same as the connection log.
+    func clearClosedTabs() {
+        closedTabRing.clear()
+    }
+
+    /// Closes the current tab (File ▸ Close Tab).
+    ///
+    /// Until this existed, closing a whole tab was reachable only from the tab
+    /// strip's × button — so "Reopen Closed Tab" could undo something you had
+    /// no keyboard way to do.
+    ///
+    /// Bound to ⌘W, the terminal-app convention. Taking it costs the stock
+    /// File ▸ Close its own shortcut: SwiftUI yields ⌘W to this item and strips
+    /// its own, re-applying that on every menu-bar open. ⇧⌘W stays Close Pane.
+    func closeSelectedTab() {
+        guard let tab = selectedTab else { return }
+        closeTab(tab)
     }
 
     /// Closes every tab except the given one (tab menu ▸ Close Others).

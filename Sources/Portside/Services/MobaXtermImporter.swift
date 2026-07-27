@@ -99,6 +99,77 @@ enum MobaXtermImporter {
 
     // MARK: - Macros
 
+    /// MobaXterm records each keystroke as `258:<code>:<locale>:<label>`. For a
+    /// printable key the label *is* the character; for everything else it is a
+    /// name. Appending the label blindly turned `yum update -y` into
+    /// `yumSPACEupdateSPACE-y`, which is why only macros containing a space (or
+    /// another named key) were affected. Reported from a real import by Tim,
+    /// 2026-07-27.
+    ///
+    /// A macro that genuinely types the word SPACE is unambiguous: it arrives as
+    /// five separate single-character tokens, not one named token.
+    private static let namedKeys: [String: String] = [
+        "SPACE": " ",
+        "TAB": "\t",
+        "RETURN": "\n",
+        "ENTER": "\n",
+        "ESC": "\u{1b}",
+        "ESCAPE": "\u{1b}",
+        "PIPE": "|",
+        "COLON": ":",
+    ]
+
+    /// MobaXterm escapes the characters that would otherwise collide with its
+    /// own file format — `|` separates tokens, `:` separates fields, `=` splits
+    /// name from sequence, `;` starts a comment. The names are French, which is
+    /// the giveaway that these are the app's own escapes rather than key
+    /// labels: PTVIRG is *point-virgule*, DBLDOT is *deux-points*.
+    ///
+    /// Found by reading a real 867-host library exported from Tim's work
+    /// machine, where these were far more common than the `SPACE` that started
+    /// the investigation: 58 double quotes, 22 semicolons, 20 pipes, 14 equals,
+    /// 11 colons, across 22 of 32 macros.
+    ///
+    /// Decoded before anything else, because an escape stands for a single
+    /// character and has to be one by the time the label is measured.
+    ///
+    /// An unrecognised `__NAME__` is deliberately left in the text rather than
+    /// dropped. It stands for *some* literal character, so removing it would
+    /// silently change a command — and leaving it visible is what got this
+    /// reported in the first place.
+    private static let formatEscapes: [String: String] = [
+        "__DBLQUO__": "\"",
+        "__PTVIRG__": ";",
+        "__PIIPE__": "|",
+        "__EQQUAL__": "=",
+        "__DBLDOT__": ":",
+    ]
+
+    static func decodeEscapes(_ text: String) -> String {
+        var out = text
+        for (token, literal) in formatEscapes {
+            out = out.replacingOccurrences(of: token, with: literal)
+        }
+        return out
+    }
+
+    /// A `__NAME__` still in the text after decoding: an escape this importer
+    /// does not know yet.
+    static func isUnknownEscape(_ label: String) -> Bool {
+        guard label.hasPrefix("__"), label.hasSuffix("__"), label.count > 4 else { return false }
+        let middle = label.dropFirst(2).dropLast(2)
+        return !middle.isEmpty && middle.allSatisfy { $0.isUppercase || $0.isNumber }
+    }
+
+    /// `Ctrl+C` and friends, which MobaXterm records as a modifier label.
+    static func controlCharacter(for label: String) -> String? {
+        guard label.count == 6, label.uppercased().hasPrefix("CTRL+"),
+              let letter = label.uppercased().last,
+              let ascii = letter.asciiValue, ascii >= 65, ascii <= 90
+        else { return nil }
+        return String(UnicodeScalar(ascii - 64))
+    }
+
     static func parseMacros(_ content: String) -> Result {
         var result = Result()
         var inMacros = false
@@ -111,7 +182,7 @@ enum MobaXtermImporter {
             }
             guard inMacros, let eq = line.firstIndex(of: "=") else { continue }
 
-            let name = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            let name = decodeEscapes(String(line[..<eq]).trimmingCharacters(in: .whitespaces))
             let sequence = String(line[line.index(after: eq)...])
             guard !name.isEmpty, !sequence.isEmpty else { continue }
 
@@ -125,9 +196,51 @@ enum MobaXtermImporter {
                 }
                 let parts = token.components(separatedBy: ":")
                 guard parts.count >= 4 else { continue }
-                let char = parts.dropFirst(3).joined(separator: ":")
-                if char.hasPrefix("SLEEPEQUAL") { continue }
-                text.append(char)
+                // Escapes first: `__DBLQUO__` is eleven characters standing for
+                // one, and everything below measures the label's length.
+                let label = decodeEscapes(parts.dropFirst(3).joined(separator: ":"))
+                if label.hasPrefix("SLEEPEQUAL") { continue }
+
+                // Backspace is applied rather than recorded. The alternative is
+                // emitting a literal BS into the macro text, which replays only
+                // if the far-side shell's erase character agrees and reads as
+                // line noise in the editor. Deleting here means the stored macro
+                // is the command the person actually meant to type.
+                //
+                // Safe as an exact match because the label is the whole field —
+                // a macro typing the word BACKUP arrives as six separate
+                // single-character tokens.
+                let upper = label.uppercased()
+                if upper == "BACK" || upper == "BACKSPACE" {
+                    if !text.isEmpty { text.removeLast() }
+                    endedWithReturn = false
+                    continue
+                }
+                if let control = controlCharacter(for: label) {
+                    text.append(control)
+                    endedWithReturn = false
+                    continue
+                }
+                if let literal = namedKeys[label.uppercased()] {
+                    text.append(literal)
+                    endedWithReturn = literal == "\n"
+                    continue
+                }
+                // An escape we do not know stands for *some* literal character,
+                // so dropping it would silently change a command. Kept visible
+                // instead — which is how the known ones came to be reported.
+                if label.count > 1, isUnknownEscape(label) {
+                    text.append(label)
+                    endedWithReturn = false
+                    continue
+                }
+                // Anything else longer than one character is a key name we do
+                // not have a text form for — arrows, F-keys, HOME. Appending it
+                // is what produced `yumSPACEupdateSPACE-y`, so it is dropped
+                // instead: a missing keystroke is recoverable by eye, a word
+                // spliced into the middle of a command is not.
+                guard label.count == 1 else { continue }
+                text.append(label)
                 endedWithReturn = false
             }
             if endedWithReturn, text.hasSuffix("\n") {

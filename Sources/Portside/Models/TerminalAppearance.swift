@@ -19,6 +19,10 @@ struct TerminalAppearance: Equatable {
     var alertHex: String = "#FF9500"
     var cursorShape: CursorShape = .block
     var cursorBlinks: Bool = true
+    /// The app's own light/dark appearance, deliberately independent of the
+    /// terminal colours above. A dark terminal inside a light app (or the
+    /// reverse) is a normal preference; the two must never be coupled.
+    var appAppearance: AppAppearance = .followSystem
 
     static let `default` = TerminalTheme.systemDefault.appearance()
 
@@ -69,7 +73,7 @@ extension TerminalAppearance: Codable {
     enum CodingKeys: String, CodingKey {
         case fontName, fontSize, themeName, paletteName
         case foregroundHex, backgroundHex, cursorHex, ansiHex, alertHex
-        case cursorShape, cursorBlinks
+        case cursorShape, cursorBlinks, appAppearance
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +94,9 @@ extension TerminalAppearance: Codable {
         alertHex = try c.decodeIfPresent(String.self, forKey: .alertHex) ?? "#FF9500"
         cursorShape = try c.decodeIfPresent(CursorShape.self, forKey: .cursorShape) ?? .block
         cursorBlinks = try c.decodeIfPresent(Bool.self, forKey: .cursorBlinks) ?? true
+        // Libraries written before 0.17 have no key here, and an unknown value
+        // from a newer build must not throw the whole appearance away.
+        appAppearance = (try? c.decodeIfPresent(AppAppearance.self, forKey: .appAppearance)) ?? .followSystem
     }
 
     func encode(to encoder: Encoder) throws {
@@ -104,6 +111,36 @@ extension TerminalAppearance: Codable {
         try c.encode(alertHex, forKey: .alertHex)
         try c.encode(cursorShape, forKey: .cursorShape)
         try c.encode(cursorBlinks, forKey: .cursorBlinks)
+        try c.encode(appAppearance, forKey: .appAppearance)
+    }
+}
+
+/// The app chrome's light/dark setting — sidebar, tab strip, settings, panels.
+///
+/// Deliberately *not* derived from the terminal theme. The terminal keeps
+/// drawing its own colours whatever this is set to, so a dark terminal in a
+/// light app stays possible, which is a combination people actually want.
+enum AppAppearance: String, Codable, CaseIterable, Identifiable {
+    case followSystem, light, dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .followSystem: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    /// `nil` hands the decision back to macOS, which is what `NSApplication`
+    /// expects for "follow system" — not a third concrete appearance.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .followSystem: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
     }
 }
 

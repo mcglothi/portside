@@ -66,7 +66,7 @@ struct HistoryView: View {
             Spacer()
             Button("Done") { dismiss() }
         }
-        .padding(12)
+        .padding(Metrics.sheetChrome)
     }
 
     // MARK: - Commands
@@ -331,20 +331,10 @@ struct HistoryView: View {
 
     // MARK: - Helpers
 
+    /// Kept as a shim so the call sites stay short; the look lives in
+    /// `EmptyStateView`, which this view's original version became.
     private func empty(icon: String, title: String, detail: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.largeTitle)
-                .foregroundStyle(.tertiary)
-            Text(title).font(.callout)
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        EmptyStateView(icon: icon, title: title, detail: detail)
     }
 
     private func hostName(for id: UUID?) -> String {

@@ -74,7 +74,10 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **`~/.ssh/config` import** — seeds the library on first launch (follows
   `Include` directives); re-import merges new hosts anytime.
 - **Import from MobaXterm** — bring over `.mxtsessions` / `.mxtmacros` files
-  with their folder structure intact.
+  with their folder structure intact. (Macros imported before 0.17 could pick up
+  literal key names — `yumSPACEupdate` — from MobaXterm's keystroke format.
+  `Scripts/repair_moba_macros.py` fixes those in place; re-importing does not,
+  since import skips macros whose name already exists.)
 - **Export & import** — back up or move your library as portable JSON;
   sessions (with folders) and macros export separately and re-import into any
   Portside install. Passwords stay in the Keychain and never travel.
@@ -86,6 +89,11 @@ exists to fill that gap without giving up native speed and macOS polish.
   Nerd Fonts (or import your own), set a configurable scrollback depth (default
   10,000 lines), and optionally switch on GPU (Metal) rendering — all in
   Settings, applied live to open terminals.
+- **Inline images** — `imgcat` a screenshot, a Grafana export, or a plot from a
+  remote host and look at it where you are, instead of copying it back first.
+  Sixel, iTerm2 (OSC 1337) and Kitty graphics all render; the
+  [compatibility matrix](docs/COMPATIBILITY.md) has the details. Try it without
+  installing anything: `cat docs/demo/portside-logo.six`.
 - **Mosh roaming** — opt any SSH host into mosh for sessions that survive sleep
   and network changes. Portside respects your SSH alias, key, port, and saved
   password during bootstrap, and falls back to SSH when mosh is unavailable.
@@ -211,6 +219,11 @@ exists to fill that gap without giving up native speed and macOS polish.
   back in" — hidden while actively searching, same as recents. Pin from a
   sidebar right-click (single host or a multi-selection), a hover star icon
   on each sidebar row, or a Favorite toggle in the session editor.
+- ✅ **App appearance** (light / dark / follow system), independent of the
+  terminal's color theme; **favourite macros** pinned to the MultiExec bar;
+  **browsable recently-closed tabs**; **⌘W closes the tab**; a **"never
+  connected"** coverage category; and inline images documented at last —
+  Sixel, iTerm2 and Kitty graphics all render.
 - ✅ **Changelog on update** — the Sparkle update prompt now shows a
   cumulative changelog covering everything since whatever version you're
   updating from, not just the latest release's own notes, since releases
@@ -218,13 +231,6 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ### Next up
 
-- App UI appearance (light / dark / follow system) — distinct from the
-  terminal's own color theme — plus a broader density, empty-state and
-  chrome pass. Planned for 0.17.
-- Browsable "recently closed tabs" — reopen any of the last N closed
-  tabs/layouts, not just the single most recent one (⇧⌘T today).
-- A "never connected" category in the coverage view, distinct from hosts that
-  have gone stale.
 - **SFTP: host-to-host file copy in Grid View** — drag a file from the one
   shared SFTP pane onto a *different* pane/tab (not its own file browser —
   there's only one shared pane today, tied to whichever pane is focused) to
@@ -239,13 +245,11 @@ exists to fill that gap without giving up native speed and macOS polish.
 ### Later
 
 - Per-profile font/theme choices (appearance is global today).
-- Font ligatures and inline image protocols (Sixel / iTerm2) are current
-  SwiftTerm limitations, tracked in the compatibility matrix rather than
-  promised here. (Shell integration / prompt markers were previously listed here as blocked
-  upstream. They aren't: Portside parses OSC 133 itself from the raw byte
-  stream, which is how command history works — SwiftTerm never needs to see
-  them.)
-
+- Font ligatures are a current SwiftTerm limitation, tracked in the
+  compatibility matrix rather than promised here. (Shell integration / prompt
+  markers were previously listed here as blocked upstream. They aren't:
+  Portside parses OSC 133 itself from the raw byte stream, which is how command
+  history works — SwiftTerm never needs to see them.)
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Named / pinned layout presets
 - tmux control-mode (`-CC`) integration — native splits backed by a durable

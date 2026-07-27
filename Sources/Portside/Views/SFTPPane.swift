@@ -17,39 +17,66 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
         switch self {
         case .bash:
             return #"""
-            # Portside shell integration v2 (https://github.com/mcglothi/portside)
-            # __portside_integration_v2 -- version marker; the installer greps for this
+            # Portside shell integration v3 (https://github.com/mcglothi/portside)
+            # __portside_integration_v3 -- version marker; the installer greps for this
             # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
             # and command boundaries (OSC 133) so commands can be timestamped.
-            __portside_preexec() {
-              [ -n "$COMP_LINE" ] && return              # tab completion, not a command
-              [ "$BASH_COMMAND" = "$PROMPT_COMMAND" ] && return
-              [ -n "$__portside_running" ] && return     # DEBUG fires per simple command
-              __portside_running=1
-              printf '\033]133;C\007'
-              printf '\033]133;E;%s\007' "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')"
-            }
-            __portside_precmd() {
-              local __portside_ret=$?
-              if [ -n "$__portside_running" ]; then
-                printf '\033]133;D;%s\007' "$__portside_ret"
-                unset __portside_running
-              fi
-              printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-$(hostname)}" "$PWD"
-              printf '\033]133;A\007'
-            }
-            case "$PROMPT_COMMAND" in
-              *__portside_precmd*) ;;
-              *) PROMPT_COMMAND="__portside_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+            #
+            # Interactive shells only. bash reads this file for NON-interactive
+            # remote shells as well, and the DEBUG trap below fires there too --
+            # its OSC 133 output then lands in whatever binary protocol is using
+            # the channel. sftp reports that as "Received message too long", with
+            # a length that decodes back to the escape's own first four bytes.
+            case "$-" in
+              *i*)
+                __portside_preexec() {
+                  [ -n "$COMP_LINE" ] && return              # tab completion, not a command
+                  [ "$BASH_COMMAND" = "$PROMPT_COMMAND" ] && return
+                  [ -n "$__portside_running" ] && return     # DEBUG fires per simple command
+                  __portside_running=1
+                  printf '\033]133;C\007'
+                  printf '\033]133;E;%s\007' "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')"
+                }
+                __portside_precmd() {
+                  local __portside_ret=$?
+                  if [ -n "$__portside_running" ]; then
+                    printf '\033]133;D;%s\007' "$__portside_ret"
+                    unset __portside_running
+                  fi
+                  printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-$(hostname)}" "$PWD"
+                  printf '\033]133;A\007'
+                }
+                case "$PROMPT_COMMAND" in
+                  *__portside_precmd*) ;;
+                  *) PROMPT_COMMAND="__portside_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+                esac
+                trap '__portside_preexec' DEBUG
+                ;;
+              *)
+                # Repairs a v2 block sitting earlier in this file, which set that
+                # trap unconditionally. Appending this version is not enough on
+                # its own -- v2's trap is already armed by the time we get here,
+                # so it has to be disarmed. Only ever clears Portside's own trap.
+                case "$(trap -p DEBUG 2>/dev/null)" in
+                  *__portside_preexec*) trap - DEBUG ;;
+                esac
+                ;;
             esac
-            trap '__portside_preexec' DEBUG
             """#
         case .zsh:
             return #"""
-            # Portside shell integration v2 (https://github.com/mcglothi/portside)
-            # __portside_integration_v2 -- version marker; the installer greps for this
+            # Portside shell integration v3 (https://github.com/mcglothi/portside)
+            # __portside_integration_v3 -- version marker; the installer greps for this
             # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
             # and command boundaries (OSC 133) so commands can be timestamped.
+            #
+            # Guarded to interactive shells to match bash, where an unguarded
+            # DEBUG trap corrupted sftp. zsh was never exposed to that: it reads
+            # .zshenv rather than .zshrc for non-interactive shells, and precmd
+            # and preexec do not fire without a prompt. The guard is here so the
+            # two snippets cannot drift apart on the point that mattered.
+            case "$-" in
+              *i*)
             autoload -Uz add-zsh-hook 2>/dev/null
             __portside_osc7() {
               local __portside_ret=$?
@@ -67,27 +94,72 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
             }
             add-zsh-hook precmd __portside_osc7 2>/dev/null
             add-zsh-hook preexec __portside_preexec 2>/dev/null
+                ;;
+            esac
             """#
         }
     }
 
     var rcFile: String { "~/.\(rawValue)rc" }
 
+    /// Disarms a v2 block already in the file, before the v3 block is appended.
+    ///
+    /// Appending alone cannot fix an affected host. v2's `trap ... DEBUG` is
+    /// armed the moment its line runs, and the DEBUG trap fires *before* every
+    /// subsequent command — including the first command of the v3 block that
+    /// would disarm it. The one OSC 133 burst is already on the wire by then,
+    /// which is exactly the four bytes sftp chokes on. Verified by sourcing v2
+    /// and v3 in that order under a real non-interactive bash: still corrupt.
+    ///
+    /// So the line itself has to go. The match is anchored to column zero,
+    /// which only v2 wrote — v3's own `trap` sits indented inside its
+    /// interactive guard and is left alone. A backup is kept beside the file,
+    /// and the rewrite goes through `cat >` rather than `mv` so the original
+    /// inode, permissions and ownership survive.
+    ///
+    /// zsh needs none of this: it never set a DEBUG trap.
+    var repairCommand: String {
+        switch self {
+        case .zsh:
+            return "# zsh needs no repair: it never set a DEBUG trap."
+        case .bash:
+            return #"""
+            if grep -q "^trap '__portside_preexec' DEBUG$" "$f" 2>/dev/null; then
+              cp "$f" "$f.portside-backup" 2>/dev/null
+              sed "s|^trap '__portside_preexec' DEBUG$|# (disabled by Portside v3: this trap also fired in non-interactive shells, corrupting sftp)|" "$f" > "$f.portside-tmp" \
+                && cat "$f.portside-tmp" > "$f" \
+                && rm -f "$f.portside-tmp"
+            fi
+            """#
+        }
+    }
+
     /// Appends the snippet to the host's rc file over ssh — idempotent (a
     /// second install is a no-op, detected via the marker already baked into
     /// the snippet text) and reuses the interactive session's ControlMaster
     /// socket, so there's no extra auth prompt.
     ///
-    /// The marker is version-stamped. v1 only reported the working directory;
-    /// a host carrying it needs the v2 block appended to gain command markers,
-    /// so matching on the old name would have locked existing users out of the
-    /// new feature. On zsh the v2 function replaces v1's by name and
-    /// `add-zsh-hook` won't double-register it. On bash, v1's inline
-    /// PROMPT_COMMAND entry survives alongside v2's, which harmlessly reports
-    /// the same directory twice per prompt.
+    /// The marker is version-stamped, and the installer greps for the *current*
+    /// version so an older block does not count as installed. v1 only reported
+    /// the working directory; v2 added command markers; **v3 fixes a bug that
+    /// broke SFTP on hosts carrying v2**, so re-running the install is how an
+    /// affected host is repaired.
+    ///
+    /// v3 has to do more than append, because v2's unguarded DEBUG trap is
+    /// already armed by the time the appended block runs — see the snippet's
+    /// non-interactive branch, which disarms it.
+    ///
+    /// Older blocks are left in place rather than edited out. They have a start
+    /// marker but no end marker, so deleting a range from someone's `.bashrc`
+    /// would be guesswork on a file we do not own. What survives is inert: on
+    /// zsh the newer functions replace the old ones by name and `add-zsh-hook`
+    /// will not double-register, and on bash the leftover PROMPT_COMMAND entry
+    /// reports the same directory twice per prompt, which nothing notices.
     func install(on entry: SessionEntry) async throws {
         let remoteCommand = """
-        f=\(rcFile); grep -qF '__portside_integration_v2' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
+        f=\(rcFile)
+        \(repairCommand)
+        grep -qF '__portside_integration_v3' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
         \(text)
         PORTSIDE_EOF
         """
@@ -165,6 +237,13 @@ final class SFTPBrowserModel: ObservableObject {
 
     var visibleFiles: [RemoteFile] {
         showHidden ? files : files.filter { !$0.name.hasPrefix(".") }
+    }
+
+    /// The directory has contents, but the hidden-file filter is hiding all of
+    /// them — worth saying, because "Empty directory" over a folder full of
+    /// dotfiles sends people hunting for a transfer that actually worked.
+    var hasHiddenFilesOnly: Bool {
+        !files.isEmpty && visibleFiles.isEmpty
     }
 
     func loadIfNeeded() async {
@@ -882,10 +961,23 @@ struct SFTPPaneView: View {
         }
         .overlay {
             if model.visibleFiles.isEmpty && !model.isBusy && model.errorMessage == nil {
-                Text("Empty directory\nDrop files here to upload")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.tertiary)
-                    .font(.callout)
+                // A directory with only dotfiles in it is not empty, and saying
+                // so sends people hunting for a transfer that worked fine.
+                if model.hasHiddenFilesOnly {
+                    EmptyStateView(
+                        icon: "eye.slash",
+                        title: "Only hidden files here",
+                        detail: "This directory contains nothing but dotfiles. Turn on Show Hidden Files to see them.",
+                        compact: true
+                    )
+                } else {
+                    EmptyStateView(
+                        icon: "folder",
+                        title: "Empty directory",
+                        detail: "Drop files here to upload them to this host.",
+                        compact: true
+                    )
+                }
             }
         }
     }

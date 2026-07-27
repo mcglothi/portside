@@ -25,6 +25,20 @@ struct PortsideApp: App {
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
+    @State private var settingsTab = "Appearance"
+
+    /// Drives the app chrome's light/dark setting. `nil` means "follow system",
+    /// which is `NSApplication`'s own way of saying it — not a third value.
+    ///
+    /// Fires on every appearance change, including font and theme edits, so it
+    /// checks before assigning: reassigning the same appearance makes AppKit
+    /// redraw every window for nothing, which is visible as a flicker while
+    /// dragging the font-size slider.
+    private func applyAppAppearance(_ appAppearance: AppAppearance) {
+        let desired = appAppearance.nsAppearance
+        guard NSApp.appearance?.name != desired?.name else { return }
+        NSApp.appearance = desired
+    }
 
     var body: some Scene {
         WindowGroup("Portside") {
@@ -35,6 +49,7 @@ struct PortsideApp: App {
                 .environmentObject(library)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
+                    applyAppAppearance(store.appearance.appAppearance)
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
                     sessions.terminalSettings = store.terminal
@@ -64,7 +79,10 @@ struct PortsideApp: App {
                         store.entry(id: id).map(store.resolved)
                     }
                 }
-                .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
+                .onChange(of: store.appearance) { _, new in
+                    applyAppAppearance(new.appAppearance)
+                    sessions.applyAppearance(new)
+                }
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
                 .onChange(of: store.terminal) { _, new in sessions.applyTerminalSettings(new) }
                 .onChange(of: store.defaults) { _, new in
@@ -96,8 +114,33 @@ struct PortsideApp: App {
                     .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
                     .keyboardShortcut(shortcut(.quickConnect))
+                Button("Close Tab") { sessions.closeSelectedTab() }
+                    .keyboardShortcut(shortcut(.closeTab))
+                    .disabled(sessions.selectedTab == nil)
                 Button("Reopen Closed Tab") { sessions.reopenLastClosedTab() }
                     .keyboardShortcut(shortcut(.reopenClosedTab))
+                    .disabled(sessions.closedTabs.isEmpty)
+                // ⇧⌘T still walks back one at a time; this is for reaching
+                // past the most recent one without reopening everything after
+                // it first. Most-recent first, which is the reverse of how the
+                // ring is stored.
+                //
+                // The empty case is a disabled placeholder rather than a
+                // disabled menu: SwiftUI ignores `.disabled` on a `Menu` inside
+                // a command group, so the submenu opens regardless and needs
+                // something honest inside it.
+                Menu("Recently Closed") {
+                    if sessions.closedTabs.isEmpty {
+                        Button("No Recently Closed Tabs") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(sessions.closedTabRing.mostRecentFirst) { closed in
+                            Button(closed.menuLabel) { sessions.reopenClosedTab(id: closed.id) }
+                        }
+                        Divider()
+                        Button("Clear Recently Closed") { sessions.clearClosedTabs() }
+                    }
+                }
                 Divider()
                 Button("Import…") { library.requestImport() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
@@ -171,29 +214,40 @@ struct PortsideApp: App {
         }
 
         Settings {
-            TabView {
+            // Selection is tracked only so the window can be resized when it
+            // changes: SwiftUI sizes the Settings window once and then leaves
+            // it, so each tab inherited the previous tab's height.
+            TabView(selection: $settingsTab) {
                 AppearanceSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                    .tag("Appearance")
                 TerminalSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Terminal", systemImage: "terminal") }
+                    .tag("Terminal")
                 ConnectionSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Connection", systemImage: "network") }
+                    .tag("Connection")
                 CredentialProfilesView()
                     .environmentObject(store)
                     .tabItem { Label("Profiles", systemImage: "person.badge.key") }
+                    .tag("Profiles")
                 RecordingSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Recording", systemImage: "record.circle") }
+                    .tag("Recording")
                 ShortcutsSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+                    .tag("Shortcuts")
                 UpdateSettingsView()
                     .environmentObject(updater)
                     .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+                    .tag("Updates")
             }
+            .onChange(of: settingsTab) { _, _ in SettingsWindowSizer.fitToContent() }
         }
     }
 

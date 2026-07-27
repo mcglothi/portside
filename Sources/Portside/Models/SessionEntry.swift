@@ -396,6 +396,30 @@ struct Macro: Identifiable, Codable, Hashable {
     var name: String
     var text: String
     var sendReturn = true
+    /// Pinned to the MultiExec macro bar. With more macros than fit across the
+    /// window the bar is unusable, so it shows favourites when there are any.
+    var isFavorite = false
+}
+
+// Tolerant Codable, and not optional politeness: Swift's *synthesized* decoder
+// ignores property defaults and throws `keyNotFound` on a missing key, while
+// `SessionStore.Document.macros` is non-optional. So adding a field to this
+// struct without this would make one old macro fail the entire library load --
+// the same shape as the 0.16 audit's migration P0. Verified by removing this
+// decoder and watching two decode tests fail.
+extension Macro {
+    enum CodingKeys: String, CodingKey {
+        case id, name, text, sendReturn, isFavorite
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        sendReturn = try c.decodeIfPresent(Bool.self, forKey: .sendReturn) ?? true
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+    }
 }
 
 struct FolderNode: Identifiable {

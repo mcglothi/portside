@@ -141,13 +141,13 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case newLocalShell, quickConnect, find
     case zoomIn, zoomOut, actualSize
     case splitRight, splitDown, zoomPane, focusNextPane, focusPreviousPane, closePane
-    case nextTab, previousTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
+    case nextTab, previousTab, closeTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
 
     var id: String { rawValue }
 
     var category: String {
         switch self {
-        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .reopenClosedTab:
+        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .closeTab, .reopenClosedTab:
             return "Tabs"
         case .splitRight, .splitDown, .zoomPane, .focusNextPane, .focusPreviousPane, .closePane:
             return "Panes"
@@ -175,6 +175,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .closePane: return "Close Pane"
         case .nextTab: return "Show Next Tab"
         case .previousTab: return "Show Previous Tab"
+        case .closeTab: return "Close Tab"
         case .reopenClosedTab: return "Reopen Closed Tab"
         case .toggleMultiExec: return "Toggle MultiExec"
         case .toggleGridView: return "Toggle Grid View"
@@ -200,6 +201,15 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .closePane: return KeyBinding(key: .character("w"), modifiers: [.command, .shift])
         case .nextTab: return KeyBinding(key: .character("]"), modifiers: [.command, .shift])
         case .previousTab: return KeyBinding(key: .character("["), modifiers: [.command, .shift])
+        // The terminal-app convention: ⌘W closes the tab, as in Terminal.app
+        // and iTerm2. ⇧⌘W stays Close Pane.
+        //
+        // Claiming ⌘W costs the stock File ▸ Close its shortcut — SwiftUI
+        // yields the key to this item and strips its own, and it re-applies
+        // that decision on every menu-bar open, so an AppKit fixup to rename
+        // and rebind it does not survive to display. The window is still
+        // closable by its red button, the Window menu, and ⌥⌘W Close All.
+        case .closeTab: return KeyBinding(key: .character("w"), modifiers: [.command])
         case .reopenClosedTab: return KeyBinding(key: .character("t"), modifiers: [.command, .shift])
         case .toggleMultiExec: return KeyBinding(key: .character("m"), modifiers: [.command, .shift])
         case .toggleGridView: return KeyBinding(key: .character("g"), modifiers: [.command, .shift])
