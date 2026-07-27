@@ -184,6 +184,46 @@ final class MobaXtermEscapeTests: XCTestCase {
         XCTAssertEqual(imported.text, "top\u{03}")
     }
 
+    /// Backspace is applied, not recorded. Emitting a literal BS would only
+    /// replay if the far-side shell's erase character agreed, and reads as line
+    /// noise in the editor; deleting here stores the command actually meant.
+    ///
+    /// From the work library, which had
+    /// `sudo mount nim03__DBLDOT__/nim/software /mnt /BACKBACK` — a `/` typed
+    /// and then backspaced away along with the space before it.
+    func testBackspaceLabelsDeleteRatherThanAppear() throws {
+        let keys = ["/", "m", "n", "t", "SPACE", "/", "BACK", "BACK"]
+        let imported = try XCTUnwrap(macro(named: "mount", sequence: tuples(keys)))
+
+        XCTAssertEqual(imported.text, "/mnt")
+    }
+
+    func testBackspaceOnEmptyTextIsHarmless() throws {
+        let imported = try XCTUnwrap(macro(named: "odd", sequence: tuples(["BACK", "h", "i"])))
+
+        XCTAssertEqual(imported.text, "hi")
+    }
+
+    /// Exact-match on the whole field, so this is unambiguous here even though
+    /// it is not once the text has been flattened: a macro typing BACKUP
+    /// arrives as six separate single-character tokens.
+    func testTypingTheWordBackupIsNotTreatedAsBackspace() throws {
+        let imported = try XCTUnwrap(
+            macro(named: "backup", sequence: tuples(["B", "A", "C", "K", "U", "P"]))
+        )
+
+        XCTAssertEqual(imported.text, "BACKUP")
+    }
+
+    /// A backspace after a Return means the macro no longer ends on one.
+    func testBackspaceAfterReturnClearsSendReturn() throws {
+        let sequence = tuples(["h", "i"]) + "|RETURN|" + tuples(["BACK"])
+        let imported = try XCTUnwrap(macro(named: "oops", sequence: sequence))
+
+        XCTAssertEqual(imported.text, "hi")
+        XCTAssertFalse(imported.sendReturn)
+    }
+
     /// An unknown `__NAME__` stands for *some* literal character, so dropping it
     /// would silently change a command. Left visible so it gets reported —
     /// which is exactly how these were found.

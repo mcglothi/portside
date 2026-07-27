@@ -201,6 +201,21 @@ enum MobaXtermImporter {
                 let label = decodeEscapes(parts.dropFirst(3).joined(separator: ":"))
                 if label.hasPrefix("SLEEPEQUAL") { continue }
 
+                // Backspace is applied rather than recorded. The alternative is
+                // emitting a literal BS into the macro text, which replays only
+                // if the far-side shell's erase character agrees and reads as
+                // line noise in the editor. Deleting here means the stored macro
+                // is the command the person actually meant to type.
+                //
+                // Safe as an exact match because the label is the whole field —
+                // a macro typing the word BACKUP arrives as six separate
+                // single-character tokens.
+                let upper = label.uppercased()
+                if upper == "BACK" || upper == "BACKSPACE" {
+                    if !text.isEmpty { text.removeLast() }
+                    endedWithReturn = false
+                    continue
+                }
                 if let control = controlCharacter(for: label) {
                     text.append(control)
                     endedWithReturn = false

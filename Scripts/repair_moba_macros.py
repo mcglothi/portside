@@ -61,9 +61,11 @@ CTRL = re.compile(r"Ctrl\+([A-Za-z])")
 # a repair rather than rewritten: BACK is probably backspace, but "probably" is
 # not good enough to rewrite somebody's command with.
 RESIDUAL_LABELS = [
-    "BACKBACK", "BACKSPACE", "DELETE", "INSERT", "PGUP", "PGDN",
-    "HOME", "END", "ALTGR",
+    "DELETE", "INSERT", "PGUP", "PGDN", "HOME", "END", "ALTGR",
 ]
+
+# Backspace, applied rather than recorded — see `apply_backspaces`.
+BACKSPACE_LABELS = ("BACKSPACE", "BACK")
 
 
 def portside_running():
@@ -74,6 +76,31 @@ def portside_running():
         return False
 
 
+def apply_backspaces(text):
+    """Applies BACK/BACKSPACE labels as deletions, left to right.
+
+    `/BACKBACK` at the end of a line means the person typed `/` and then hit
+    backspace twice, so it and the space before it go.
+
+    Less safe here than in the importer, where the label is a whole field and
+    can be matched exactly. By the time text reaches this script it is all one
+    string, so a macro genuinely containing BACKUP would lose its U. The dry run
+    prints every before/after for exactly this reason — read them.
+    """
+    out, i = [], 0
+    while i < len(text):
+        for label in BACKSPACE_LABELS:  # longest first
+            if text.startswith(label, i):
+                if out:
+                    out.pop()
+                i += len(label)
+                break
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def repair(text):
     """Returns (new_text, changed). Longest names first so ESCAPE beats ESC."""
     out = text
@@ -82,6 +109,9 @@ def repair(text):
     for name in sorted(NAMED_KEYS, key=len, reverse=True):
         out = out.replace(name, NAMED_KEYS[name])
     out = CTRL.sub(lambda m: chr(ord(m.group(1).upper()) - 64), out)
+    # Last, so the deletions land on decoded characters rather than on the
+    # middle of an escape token.
+    out = apply_backspaces(out)
     return out, out != text
 
 
@@ -96,7 +126,9 @@ def classify(text):
     whitespace at all, which is the signature of every space having become a
     word. Otherwise the macro is reported for a human to look at.
     """
-    if any(token in text for token in FORMAT_ESCAPES) or CTRL.search(text):
+    if (any(token in text for token in FORMAT_ESCAPES)
+            or CTRL.search(text)
+            or any(label in text for label in BACKSPACE_LABELS)):
         return "damaged"
     if not any(name in text for name in NAMED_KEYS):
         return "clean"
