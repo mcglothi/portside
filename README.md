@@ -74,7 +74,10 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **`~/.ssh/config` import** — seeds the library on first launch (follows
   `Include` directives); re-import merges new hosts anytime.
 - **Import from MobaXterm** — bring over `.mxtsessions` / `.mxtmacros` files
-  with their folder structure intact.
+  with their folder structure intact. (Macros imported before 0.17 could pick up
+  literal key names — `yumSPACEupdate` — from MobaXterm's keystroke format.
+  `Scripts/repair_moba_macros.py` fixes those in place; re-importing does not,
+  since import skips macros whose name already exists.)
 - **Export & import** — back up or move your library as portable JSON;
   sessions (with folders) and macros export separately and re-import into any
   Portside install. Passwords stay in the Keychain and never travel.
