@@ -59,7 +59,7 @@ the front end, which draws them.
 
 | Capability | Status | Notes |
 |---|---|---|
-| Sixel graphics | ⚠️ | Decodes and renders, but see the crash below. |
+| Sixel graphics | ✅ | Decodes and renders. Needs a workaround; see below. |
 | iTerm2 inline images (OSC 1337) | ✅ | Base64 payload is decoded and drawn. |
 | Kitty graphics protocol | ✅ | `a=T` transmit-and-display reaches the renderer. |
 
@@ -78,9 +78,15 @@ with a runnable repro and the one-line upstream fix.
 
 **Fixed upstream, not yet released.** SwiftTerm commit `58915b10` ("Fix sixel
 crash") landed 2026-07-19, two hours and forty-six minutes after `v1.15.0` was
-tagged — and `v1.15.0` is what Portside pins. Until a release carries it, the
-crash is present in shipped builds. Remediation options are weighed in
-[the 0.17 plan](polish-and-appearance-plan.md).
+tagged — and `v1.15.0` is what Portside pins.
+
+**Portside works around it** in `SixelStreamGuard`, which appends the band
+terminator the encoder left off as the bytes go past, using the same raw-byte
+tap that parses OSC 133. A trailing `-` folds the last band into the measured
+width but plots nothing, so the decoded image is identical to what the upstream
+fix produces — asserted against a real `Terminal` in `SixelStreamGuardTests`
+rather than assumed. **Delete the guard once the pin moves to a SwiftTerm
+carrying `58915b10`.**
 
 ## How this was tested
 

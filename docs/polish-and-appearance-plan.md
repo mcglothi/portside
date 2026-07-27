@@ -63,27 +63,39 @@ relevant to a terminal whose input is untrusted remote output:
 So this is not a defect to report. **It is a release to wait for, work around,
 or pin past** — see the decision below.
 
-**Remediation options, cheapest first:**
+**Decided: ship a byte-tap guard.** ✅ Done — `SixelStreamGuard`.
 
-1. **Wait for `v1.16.0`.** Zero work, unknown date. Leaves a
-   remote-triggerable crash in shipped builds for as long as it takes.
-2. **Pin to the fix revision.** `Package.swift` says `from: "1.2.0"`; pinning
-   `.revision("58915b10…")` or later picks up the crash fix *and* the four
-   hardening commits above. Cost: releases would ship off an untagged
-   dependency, which is a real reproducibility and supply-chain question for a
-   notarised app, even though `Package.resolved` pins the SHA either way.
-3. **Ship the byte-tap guard.** `LoggingTerminalView` already taps raw bytes in
-   `dataReceived` before handing them to SwiftTerm — the same seam OSC 133
-   parsing uses — so Portside can detect a sixel DCS terminating without
-   `$`/`-` and inject a `-` before the `ESC \`. Independent of upstream release
-   timing and removable in one commit, but it becomes dead code the moment
-   1.16 lands.
-4. **Stop advertising Sixel.** `enableSixelReported = false` stops applications
-   probing. A mitigation, not a fix — it does nothing about a program that
-   emits sixel unconditionally. Only worth it as a companion to (1).
+`LoggingTerminalView` already taps raw bytes in `dataReceived` before handing
+them to SwiftTerm — the same seam OSC 133 parsing uses — so the guard appends
+the band terminator the encoder left off, on the way past. A trailing `-` folds
+the last band into the measured width but plots no pixels, so the decoded image
+is identical to what the upstream fix produces. `SixelStreamGuardTests` asserts
+that equivalence against a real `Terminal` instead of assuming it, and checks
+every chunk boundary from 1 byte upward, because output arrives in whatever
+sizes the transport hands over and the terminator decision has to survive a
+split between the `ESC` and the `\`.
 
-Worth also asking upstream to cut a release, since the fix has been sitting on
-`main` unreleased and every SwiftTerm embedder is exposed to the same crash.
+The log and the command timeline still receive the bytes exactly as they
+arrived — only the terminal sees the repaired stream — because the guard can
+change the byte count and transcript offsets have to keep matching what is on
+disk.
+
+Rejected alternatives, and why:
+
+- **Wait for `v1.16.0`.** Zero work, unknown date, leaves a remote-triggerable
+  crash in shipped builds for as long as it takes.
+- **Pin to the fix revision.** Picks up the crash fix *and* the four hardening
+  commits above, but notarised releases would ship off an untagged dependency —
+  a real reproducibility question for a signed app.
+- **Stop advertising Sixel** (`enableSixelReported = false`). A mitigation, not
+  a fix: it does nothing about a program that emits sixel unconditionally.
+
+**Delete the guard when the pin moves.** It is dead weight the moment a
+SwiftTerm carrying `58915b10` is released, and it is written to be removed in
+one commit.
+
+No upstream report was filed — the defect is already fixed on `main`, so a bug
+report would have been a duplicate.
 
 There is a second, cosmetic finding alongside it: a single-band sixel of width 1
 decodes to a 0×0 image rather than 1×6, because the sizing loop's `p + 1 <
