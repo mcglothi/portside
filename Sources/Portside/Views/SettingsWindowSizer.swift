@@ -13,9 +13,19 @@ import SwiftUI
 /// Two rules:
 ///
 /// 1. If the content fits on screen, the window grows to show all of it.
-/// 2. If it does not, the window stops at the screen and the page scrolls —
-///    and the window stays **resizable**, so auto-sizing is a starting point
-///    rather than a cage.
+/// 2. If it does not, the window stops at the screen and the page scrolls. The
+///    pages are grouped `Form`s and scrolled before any of this existed, so
+///    nothing here can make content unreachable.
+///
+/// **Manual resizing is only partly working.** `.resizable` is set, and the
+/// window can be dragged while the screen cap is actively constraining the page
+/// — measured by forcing the cap below the content height. On the ordinary path,
+/// where the page is shorter than the screen, the window snaps straight back to
+/// the content's ideal height, so a drag does not stick. The pin is released
+/// and the constraints do relax (`contentMin` drops to 88, `contentMax` to
+/// infinity), so the block is SwiftUI re-imposing the ideal size rather than a
+/// leftover constraint of ours. Unresolved; auto-sizing plus scrolling is what
+/// actually carries the behaviour today.
 ///
 /// Both are done through SwiftUI's own layout rather than by measuring and
 /// calling `setContentSize`. An earlier attempt measured in AppKit and silently
@@ -36,20 +46,38 @@ enum SettingsWindowSizer {
     /// The tallest a page may ask to be. Beyond this it scrolls instead, which
     /// is rule 2 — without the cap a long page on a short display would open a
     /// window taller than the screen, with its bottom edge unreachable.
+    /// `PORTSIDE_SETTINGS_MAX_HEIGHT` forces the cap, so the small-screen path
+    /// can be exercised without changing display resolution. The interesting
+    /// case is a page taller than the screen, and on a large display no page
+    /// reaches that — so without a seam the scrolling path never gets tested.
     static var maxPageHeight: CGFloat {
+        if let override = ProcessInfo.processInfo.environment["PORTSIDE_SETTINGS_MAX_HEIGHT"],
+           let forced = Double(override) {
+            return CGFloat(forced)
+        }
         let visible = NSScreen.main?.visibleFrame.height ?? 900
         return max(320, visible - screenMargin)
     }
 
-    /// Marks the Settings window resizable. SwiftUI does not, and the auto-size
-    /// is meant to be a starting point rather than a cage.
+    /// SwiftUI's own name for the window. Matched exactly: the *main* window's
+    /// identifier is a SwiftUI type name that happens to contain
+    /// "TerminalSettings" and "LoggingSettings", so a `contains("Settings")`
+    /// test picks it up too.
+    private static let settingsWindowIdentifier = "com_apple_SwiftUI_Settings_window"
+
+    /// Marks the Settings window resizable. SwiftUI does not, and it strips the
+    /// flag again while laying a page out — hence the second call after the pin
+    /// is released. See the type comment: this makes the control appear and work
+    /// while the screen cap binds, but does not fully survive on the ordinary
+    /// path.
     static func makeResizable() {
         DispatchQueue.main.async {
             NSApp.windows
-                .filter { ($0.identifier?.rawValue ?? "").contains("Settings") }
+                .filter { $0.identifier?.rawValue == Self.settingsWindowIdentifier }
                 .forEach { $0.styleMask.insert(.resizable) }
         }
     }
+
 
     /// Re-pins the pages so the newly selected tab is measured at its own
     /// content height, then releases the pin so the window can still be dragged
@@ -62,6 +90,11 @@ enum SettingsWindowSizer {
         DispatchQueue.main.async {
             DispatchQueue.main.async {
                 SettingsSizingState.shared.pinned = false
+                // Again, after the pin is released. SwiftUI resets the style
+                // mask while it is laying the page out, so setting this only at
+                // the start left the window with relaxed constraints and no
+                // resize control -- looking adjustable and refusing to move.
+                makeResizable()
             }
         }
     }
@@ -92,12 +125,21 @@ struct SettingsPageSizing: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .frame(width: SettingsWindowSizer.width)
+            // Every bound is relaxed once unpinned. Holding a fixed width and a
+            // capped height permanently left the window with contentMin equal
+            // to contentMax, so it could not be dragged at all — `.resizable`
+            // was in the style mask and did nothing.
+            //
             // The cap goes *before* the pin so the pin adopts the already-capped
-            // ideal height. After the pin it only sets an upper bound, which
+            // ideal height. After the pin it is only an upper bound, which
             // leaves the window free to keep whatever height it had — so tabs
             // grew into the tallest page and never shrank back.
-            .frame(maxHeight: SettingsWindowSizer.maxPageHeight)
+            .frame(
+                minWidth: SettingsWindowSizer.width,
+                idealWidth: SettingsWindowSizer.width,
+                maxWidth: state.pinned ? SettingsWindowSizer.width : .infinity,
+                maxHeight: state.pinned ? SettingsWindowSizer.maxPageHeight : .infinity
+            )
             .fixedSize(horizontal: false, vertical: state.pinned)
             .onAppear { SettingsWindowSizer.fitToContent() }
     }
