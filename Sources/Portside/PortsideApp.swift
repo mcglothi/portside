@@ -26,6 +26,19 @@ struct PortsideApp: App {
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
 
+    /// Drives the app chrome's light/dark setting. `nil` means "follow system",
+    /// which is `NSApplication`'s own way of saying it — not a third value.
+    ///
+    /// Fires on every appearance change, including font and theme edits, so it
+    /// checks before assigning: reassigning the same appearance makes AppKit
+    /// redraw every window for nothing, which is visible as a flicker while
+    /// dragging the font-size slider.
+    private func applyAppAppearance(_ appAppearance: AppAppearance) {
+        let desired = appAppearance.nsAppearance
+        guard NSApp.appearance?.name != desired?.name else { return }
+        NSApp.appearance = desired
+    }
+
     var body: some Scene {
         WindowGroup("Portside") {
             ContentView()
@@ -35,6 +48,7 @@ struct PortsideApp: App {
                 .environmentObject(library)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
+                    applyAppAppearance(store.appearance.appAppearance)
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
                     sessions.terminalSettings = store.terminal
@@ -64,7 +78,10 @@ struct PortsideApp: App {
                         store.entry(id: id).map(store.resolved)
                     }
                 }
-                .onChange(of: store.appearance) { _, new in sessions.applyAppearance(new) }
+                .onChange(of: store.appearance) { _, new in
+                    applyAppAppearance(new.appAppearance)
+                    sessions.applyAppearance(new)
+                }
                 .onChange(of: store.logging) { _, new in sessions.loggingSettings = new }
                 .onChange(of: store.terminal) { _, new in sessions.applyTerminalSettings(new) }
                 .onChange(of: store.defaults) { _, new in

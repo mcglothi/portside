@@ -116,22 +116,36 @@ capability nobody knows Portside has.
 
 ---
 
-## Phase 1 — App appearance
+## Phase 1 — App appearance ✅ Done
 
 **Locked with Tim during 0.16 planning, unchanged:** the setting lives next to
 the terminal colour theme in Settings ▸ Appearance, clearly separated. Adjacent
 so the relationship is obvious, explicitly independent so a dark terminal in a
 light app (or the reverse) stays possible. The two must never be coupled.
 
-Implementation is `NSApp.appearance` driven from a persisted enum on
-`TerminalAppearance` — tolerant Codable, default `.followSystem`, following the
-same decoding precedent as `WorkspaceSnapshot`.
+Shipped as `AppAppearance` on `TerminalAppearance` — tolerant Codable, default
+`.followSystem` — driving `NSApp.appearance` from `PortsideApp`. Settings gets
+an "App Appearance" section directly above "Font" and "Theme", with a line
+saying outright that the terminal keeps its own colours, because that is the
+question the control invites.
 
-The one thing to watch is SwiftTerm's own view. The terminal draws its own
-background from the colour theme, not from the effective appearance, so the
-seam between app chrome and terminal is where a mismatch will show — check the
-split divider, the tab strip under an active tab, and the SFTP pane's border
-against both appearances before calling it done.
+Two things worth keeping in mind:
+
+- **"Follow system" is `nil`, not a third appearance.** Returning `.aqua` for it
+  would pin the app to light and look identical until the user changed their
+  system theme — a bug that hides for as long as your test machine stays light.
+  `AppAppearanceTests` asserts the `nil`.
+- **The apply is guarded.** It runs on every appearance change, including font
+  and theme edits, and reassigning the same `NSAppearance` makes AppKit redraw
+  every window — visible as a flicker while dragging the font-size slider.
+
+Verified in a real build against a **dark** system, so the override is doing
+something rather than agreeing with macOS by accident: light chrome renders with
+the dark terminal theme intact and a clean seam, and dark renders dark. The
+first attempt at the dark check was a false negative — `open` reactivated the
+still-running app instead of restarting it, so it kept the old in-memory value.
+Quit and confirm the process is gone before relaunching, or the check is
+measuring nothing.
 
 ---
 

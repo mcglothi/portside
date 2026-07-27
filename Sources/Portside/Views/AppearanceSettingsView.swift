@@ -49,8 +49,31 @@ struct AppearanceSettingsView: View {
         )
     }
 
+    private var appAppearanceBinding: Binding<AppAppearance> {
+        Binding(
+            get: { store.appearance.appAppearance },
+            set: { var updated = store.appearance; updated.appAppearance = $0; store.updateAppearance(updated) }
+        )
+    }
+
     var body: some View {
         Form {
+            // Sits directly above the terminal's own colours so the
+            // relationship is obvious, and says outright that it isn't one of
+            // them -- a dark terminal in a light app is a normal preference,
+            // and people reasonably expect this control to have broken it.
+            Section("App Appearance") {
+                Picker("Interface", selection: appAppearanceBinding) {
+                    ForEach(AppAppearance.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Applies to the sidebar, tabs and panels. The terminal keeps the colours set under Theme below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Font") {
                 Picker("Family", selection: appearance.fontName) {
                     // Keep the current selection visible even if it isn't a
