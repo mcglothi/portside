@@ -31,21 +31,34 @@ enum ContainerLister {
     }
 
     /// The `ps` / `get pods` command for this entry, or nil for plain hosts.
+    ///
+    /// Built as an argument array and quoted once at the end. Context and
+    /// namespace come from the session library, which can be imported from a
+    /// file someone else wrote — joining them in raw let a crafted namespace
+    /// run arbitrary commands the moment the user browsed pods.
     static func enumerationCommand(for entry: SessionEntry) -> String? {
+        enumerationArguments(for: entry).map(ShellQuoting.command)
+    }
+
+    /// The same command as an argument array, for callers that can execute
+    /// without a shell at all.
+    static func enumerationArguments(for entry: SessionEntry) -> [String]? {
         switch entry.kind {
         case .container:
             let engine = entry.container?.engine.rawValue ?? "docker"
-            return "\(engine) ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'"
+            return [engine, "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}"]
         case .kubernetes:
             var parts = ["kubectl"]
+            // `--flag=value` rather than `--flag value`: a value beginning with
+            // a dash would otherwise be read by kubectl as another flag.
             if let ctx = entry.kubernetes?.context.trimmingCharacters(in: .whitespaces), !ctx.isEmpty {
-                parts += ["--context", ctx]
+                parts.append("--context=\(ctx)")
             }
             if let ns = entry.kubernetes?.namespace.trimmingCharacters(in: .whitespaces), !ns.isEmpty {
-                parts += ["-n", ns]
+                parts.append("--namespace=\(ns)")
             }
             parts += ["get", "pods", "--no-headers"]
-            return parts.joined(separator: " ")
+            return parts
         case .host, .serial, .telnet:
             return nil
         }

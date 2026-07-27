@@ -22,6 +22,9 @@ enum TunnelStatus: Equatable {
 /// SFTP sessions piggybacking on it.
 final class TunnelManager: ObservableObject {
     @Published private(set) var statuses: [UUID: TunnelStatus] = [:]
+    /// Mirrors the store so tunnels resolve credentials exactly as sessions do
+    /// — including the default profile, which they previously ignored.
+    var defaultProfileID: UUID?
 
     private var processes: [UUID: Process] = [:]
     /// Forwards the user stopped on purpose, so termination reads as
@@ -71,7 +74,11 @@ final class TunnelManager: ObservableObject {
 
         var environment = ProcessInfo.processInfo.environment
         var cleanup: (() -> Void)?
-        if entry.savePassword, let password = CredentialStore.password(for: entry.id),
+        // Resolves the same way a session does. Checking only the host's own
+        // Keychain entry meant a tunnel to a profile-backed host silently
+        // failed to authenticate -- most visibly for auto-start tunnels, which
+        // run before any session has established a ControlMaster to ride on.
+        if let password = CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID),
            let injected = AskpassInjector.environment(for: password) {
             for pair in injected.env {
                 if let eq = pair.firstIndex(of: "=") {

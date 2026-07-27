@@ -13,7 +13,14 @@ struct QuickConnectView: View {
     private var results: [SessionEntry] {
         let all = store.entries
         guard !query.isEmpty else {
-            let recent = store.recentEntries(limit: 8).map(\.entry)
+            // Frecency rather than pure recency: a host hit constantly should
+            // outrank one touched once yesterday. Recents top up the list
+            // rather than being replaced by it -- an either/or meant one new
+            // statistic could displace everything a user had been using.
+            let ranked = store.frecentEntries(limit: 8)
+            let rankedIDs = Set(ranked.map(\.id))
+            let legacy = store.recentEntries(limit: 8).map(\.entry).filter { !rankedIDs.contains($0.id) }
+            let recent = Array((ranked + legacy).prefix(8))
             let recentIDs = Set(recent.map(\.id))
             let rest = all
                 .filter { !recentIDs.contains($0.id) }

@@ -21,6 +21,87 @@ if [ -z "$SPARKLE_BIN" ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Release gate.
+#
+# The build compiles whatever is in the working tree, but `gh release create`
+# tags whatever the remote's default branch points at. Those are different
+# things, and nothing used to check they agreed: v0.14.0 shipped a correct
+# binary under a tag pointing at the previous release's source, and had to be
+# repaired with a force-moved tag afterwards. Treating "commit and push first"
+# as a habit rather than a precondition is what allowed that.
+#
+# Every check can be waived with PORTSIDE_ALLOW_UNSAFE_RELEASE=1, which prints
+# loudly. Nothing here is a judgement call the script should make silently.
+# ---------------------------------------------------------------------------
+UNSAFE="${PORTSIDE_ALLOW_UNSAFE_RELEASE:-}"
+
+gate_fail() {
+    if [ -n "$UNSAFE" ]; then
+        echo "warning: $1 (overridden by PORTSIDE_ALLOW_UNSAFE_RELEASE)" >&2
+    else
+        echo "error: $1" >&2
+        echo "       Fix it, or re-run with PORTSIDE_ALLOW_UNSAFE_RELEASE=1 to override." >&2
+        exit 1
+    fi
+}
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)"
+
+# 1. Clean tree: anything uncommitted is in the build but not in the tag.
+if [ -n "$(git status --porcelain)" ]; then
+    git status --short >&2
+    gate_fail "working tree is dirty — the build would contain changes the tag does not"
+fi
+
+# 2. On the branch the release will be tagged against.
+if [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
+    gate_fail "on branch '$BRANCH' but the release tags '$DEFAULT_BRANCH' — merge first"
+fi
+
+# 3. HEAD actually pushed, so the tag resolves to the source that was built.
+git fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
+LOCAL_HEAD="$(git rev-parse HEAD)"
+REMOTE_HEAD="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo none)"
+if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+    echo "       local  HEAD: $LOCAL_HEAD" >&2
+    echo "       origin HEAD: $REMOTE_HEAD" >&2
+    gate_fail "HEAD is not what origin/$DEFAULT_BRANCH points at — push before releasing"
+fi
+
+# 4. Version not already released.
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+    gate_fail "tag v$VERSION already exists"
+fi
+
+# 5. Signed and notarized, or explicitly acknowledged. An ad-hoc build published
+#    to the appcast is one users cannot launch without Gatekeeper warnings.
+if [ -z "${PORTSIDE_SIGN_IDENTITY:-}" ]; then
+    gate_fail "PORTSIDE_SIGN_IDENTITY is not set — this would publish an ad-hoc signed build"
+fi
+if [ -z "${PORTSIDE_NOTARY_PROFILE:-}" ]; then
+    gate_fail "PORTSIDE_NOTARY_PROFILE is not set — this would publish an unnotarized build"
+fi
+
+# 6. The changelog entry has to exist before the release notes are extracted.
+if [ -f CHANGELOG.md ] && ! grep -q "^## $VERSION\b" CHANGELOG.md; then
+    gate_fail "CHANGELOG.md has no '## $VERSION' section — add it before releasing"
+fi
+
+if [ -n "$UNSAFE" ]; then
+    echo "==> Release gate OVERRIDDEN — publishing anyway (branch $BRANCH @ ${LOCAL_HEAD:0:9})"
+else
+    echo "==> Release gate passed (branch $BRANCH @ ${LOCAL_HEAD:0:9}, signed + notarized)"
+fi
+
+# 7. Tests, before anything is packaged. A release is the one build where
+#    "I'll run them in a minute" is not good enough.
+if [ -z "$UNSAFE" ]; then
+    echo "==> Running tests"
+    swift test
+fi
+
 echo "==> Building Portside $VERSION (build $BUILD)"
 PORTSIDE_VERSION="$VERSION" PORTSIDE_BUILD="$BUILD" ./Scripts/make_app.sh
 

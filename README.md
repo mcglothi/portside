@@ -21,7 +21,8 @@ brew install mcglothi/tap/portside
 ```
 
 Builds are Developer ID signed and notarized by Apple, and keep themselves
-current via Sparkle. Requires macOS 14+.
+current via Sparkle. Requires macOS 14+ on **Apple silicon** — Intel Macs
+aren't supported. If that matters to you, please open an issue.
 
 ![Portside's foldered session library with transport and environment badges](docs/screenshots/library.png)
 
@@ -116,6 +117,22 @@ exists to fill that gap without giving up native speed and macOS polish.
   needed one-liner to the host's `.bashrc`/`.zshrc` over ssh (idempotent,
   with an option to `source` it into the session immediately), and
   auto-detects which shell you're running so you don't have to know.
+- **Inventory coverage** — for a large imported library, a view of what
+  Portside doesn't know about your fleet: hosts with no environment tag, no
+  credential profile, or no stored credentials, each fixable in bulk from the
+  same place. Deliberately framed as coverage rather than errors — a host
+  authenticating through ssh-agent isn't misconfigured, and the view says so.
+- **Bulk classification** — tag environment (prod/staging/dev/personal) or
+  apply a credential profile across a multi-selection or a whole folder.
+- **History** — per-host connection totals are kept automatically and rank
+  Quick Connect by frecency, so a host you use constantly outranks one touched
+  once yesterday; hosts you haven't touched in months surface in Coverage.
+  Optionally, a full log of every connection attempt with its outcome, and
+  (opt-in) a record of every command run with its timing and exit code, taken
+  from OSC 133 shell integration. Selecting a command shows the surrounding
+  session transcript, so history reads as a table of contents for your logs.
+  All of it is governed from one Settings ▸ Recording pane with a single
+  privacy rule.
 - **Edit remote files in your own editor** — double-click a file in the SFTP
   browser and it opens in whatever app you'd normally use, with every save
   uploaded straight back to the host. It's a private local copy rather than a
@@ -201,26 +218,13 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ### Next up
 
-- Sidebar: an Expand All / Collapse All action for folders.
 - App UI appearance (light / dark / follow system) — distinct from the
-  terminal's own color theme, which stays per-appearance-profile as today.
-- Bulk-tag environment (prod/staging/dev/personal) across a multi-selection
-  or a whole folder, alongside the existing bulk "Save Password in Keychain"
-  action — aimed at managing a large (500+) imported host inventory.
-- **Connection history** — grow today's capped 20-entry recents list into a
-  real, searchable, browsable history (its own view, separate from Quick
-  Connect), with a "clear history" action and a way to exclude protected
-  hosts from being logged at all. Rolls in:
-  - Browsable "recently closed tabs" — reopen any of the last N closed
-    tabs/layouts, not just the single most recent one (⇧⌘T today).
-  - Frecency-ranked Quick Connect — blend frequency and recency instead of
-    pure recency, so a host you hit constantly outranks one touched once
-    yesterday.
-  - Stale-host detection — surface hosts not connected to in 90+ days,
-    pairing with the coverage-view idea below.
-- **Inventory coverage view** — a quick way to see which hosts still have no
-  environment tag, no credential profile, or no saved password, so a big
-  bulk pass across a large library can be verified rather than guessed at.
+  terminal's own color theme — plus a broader density, empty-state and
+  chrome pass. Planned for 0.17.
+- Browsable "recently closed tabs" — reopen any of the last N closed
+  tabs/layouts, not just the single most recent one (⇧⌘T today).
+- A "never connected" category in the coverage view, distinct from hosts that
+  have gone stale.
 - **SFTP: host-to-host file copy in Grid View** — drag a file from the one
   shared SFTP pane onto a *different* pane/tab (not its own file browser —
   there's only one shared pane today, tied to whichever pane is focused) to
@@ -237,8 +241,10 @@ exists to fill that gap without giving up native speed and macOS polish.
 - Per-profile font/theme choices (appearance is global today).
 - Font ligatures and inline image protocols (Sixel / iTerm2) are current
   SwiftTerm limitations, tracked in the compatibility matrix rather than
-  promised here. Shell integration / prompt markers (OSC 133) is likewise
-  blocked upstream — SwiftTerm implements only OSC 8 hyperlinks.
+  promised here. (Shell integration / prompt markers were previously listed here as blocked
+  upstream. They aren't: Portside parses OSC 133 itself from the raw byte
+  stream, which is how command history works — SwiftTerm never needs to see
+  them.)
 
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Named / pinned layout presets

@@ -10,14 +10,38 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
     /// Fires when output arrives, so a background tab can flag new activity.
     var onOutput: (() -> Void)?
+    /// Whether the transport has produced any bytes. An ssh that is still
+    /// dialling a host that will never answer stays alive but silent, so
+    /// "still running" alone can't distinguish connecting from connected.
+    private(set) var sawOutput = false
+    /// Fires when the shell reports a completed command via OSC 133. Sits on
+    /// the raw byte tap because SwiftTerm doesn't parse OSC 133 -- it sees the
+    /// markers, ignores them, and we read them here on the way past.
+    var onCommand: ((CommandEvent) -> Void)?
+    var commandTimeline: CommandTimeline?
     /// When set, input bytes go here instead of the child pty. Sits below the
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
     private var suppressInputMirror = false
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
+        sawOutput = true
         logger?.append(slice)
         onOutput?()
+        if onCommand != nil, commandTimeline != nil {
+            for var event in commandTimeline!.consume(slice) {
+                // Anchor the command in the transcript. settledOffset() waits
+                // for the queued write, so the offset reflects this chunk --
+                // reading the counter directly raced the writer and pointed at
+                // output from before the command. Only runs at a command
+                // boundary, so the synchronisation is rare.
+                if let logger {
+                    event.logPath = logger.fileURL.path
+                    event.logOffset = logger.settledOffset()
+                }
+                onCommand?(event)
+            }
+        }
         super.dataReceived(slice: slice)
     }
 
@@ -207,6 +231,24 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     let entry: SessionEntry?
     @Published var title: String
     @Published var isRunning = true
+    /// Guards against the connection attempt being resolved twice.
+    var resolvedConnectionOutcome = false
+
+    /// Positive evidence the session actually came up.
+    ///
+    /// For ssh and mosh, being alive isn't enough — a connection to a host that
+    /// never answers sits there silently until its timeout, and would otherwise
+    /// be counted as a success. Any output means something on the far end
+    /// replied. Direct transports are judged on liveness alone: a serial
+    /// console can legitimately sit silent until you press a key, so requiring
+    /// output would mark real connections as failures.
+    var didConnect: Bool {
+        guard isRunning else { return false }
+        switch entry?.kind {
+        case .host, .none: return terminalView.sawOutput
+        default: return true
+        }
+    }
     @Published var includedInMultiExec: Bool
     /// New output arrived while this session's tab wasn't the visible one.
     @Published var hasActivity = false
@@ -570,11 +612,18 @@ final class SessionManager: ObservableObject {
     var defaultProfileID: UUID?
     /// Fires on every host connection (all paths — single, group, MultiExec);
     /// the app wires it to the store's recent-connections history.
-    var onConnect: ((SessionEntry) -> Void)?
     /// Fires whenever the open session layout changes (open/close/select/
     /// MultiExec membership), so the app can persist a restore snapshot. Held
     /// off during `restore` so replay persists once, at the correct final state.
     var onWorkspaceChange: ((WorkspaceSnapshot) -> Void)?
+    /// Set when command history is enabled; receives each completed command.
+    var onCommand: ((CommandEvent) -> Void)?
+    /// Reports an attempt and, once resolved, whether it actually connected.
+    var onConnectionAttempt: ((SessionEntry, ConnectionOutcome) -> Void)?
+    var recordsCommands = false
+    /// Mirrors the recording privacy setting so logging honours it too, not
+    /// just connection and command history.
+    var excludesProtectedFromRecording = false
 
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
@@ -695,7 +744,9 @@ final class SessionManager: ObservableObject {
     /// askpass) without placing it in a tab — so a group can be assembled into
     /// a single split tab.
     private func makeSession(for entry: SessionEntry) -> TerminalSession {
-        let logger = LogManager.makeLogger(for: entry, settings: loggingSettings)
+        let logger = LogManager.makeLogger(
+            for: entry, settings: loggingSettings, excludeProtected: excludesProtectedFromRecording
+        )
 
         if entry.kind == .serial {
             // Straight to the device — no child process, no ssh machinery.
@@ -750,13 +801,7 @@ final class SessionManager: ObservableObject {
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
             var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
-            let profilePassword = entry.credentialProfileID.flatMap(CredentialStore.profilePassword)
-            let defaultProfilePassword = defaultProfileID.flatMap(CredentialStore.profilePassword)
-            if entry.savePassword,
-               let password = profilePassword
-                   ?? CredentialStore.password(for: entry.id)
-                   ?? defaultProfilePassword
-                   ?? CredentialStore.defaultPassword(),
+            if let password = CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID),
                let injected = AskpassInjector.environment(for: password) {
                 environment += injected.env
                 expireSecret = injected.expireSecret
@@ -774,13 +819,40 @@ final class SessionManager: ObservableObject {
     /// the connection. Shells buffer stdin, so a slightly early send still runs
     /// at the first prompt; only an interactive password prompt (no saved
     /// credential) would swallow it, hence the editor's note.
+    /// How long a transport must survive before we call it connected.
+    ///
+    /// There's no portable "authenticated" callback: ssh, mosh, telnet and
+    /// serial all just run a child or open a socket. But a failed connection
+    /// dies fast and loudly — bad credentials, refused, no route, unknown host
+    /// all exit in well under a second — while a live session sits there. So
+    /// survival past this window is the positive evidence, and it costs
+    /// nothing to observe.
+    private static let connectionGracePeriod: TimeInterval = 4
+
     private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
         if let command = entry.postConnectCommand {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
                 session?.sendText(command + "\r")
             }
         }
-        onConnect?(entry)
+        // Logged immediately so a failure leaves a trace, but deliberately not
+        // counted: only a confirmed connection updates the totals that drive
+        // Quick Connect's ranking and stale-host detection.
+        onConnectionAttempt?(entry, .attempted)
+        confirmConnection(session, entry: entry)
+    }
+
+    /// Resolves the attempt once the grace period has passed, or as soon as the
+    /// session ends — whichever happens first.
+    private func confirmConnection(_ session: TerminalSession, entry: SessionEntry) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectionGracePeriod) {
+            [weak self, weak session] in
+            guard let self else { return }
+            guard let session else { return }        // torn down; nothing to claim
+            guard !session.resolvedConnectionOutcome else { return }
+            session.resolvedConnectionOutcome = true
+            self.onConnectionAttempt?(entry, session.didConnect ? .connected : .failed)
+        }
     }
 
     func openLocalShell() {
@@ -1327,6 +1399,14 @@ final class SessionManager: ObservableObject {
         session.terminalView.onOutput = { [weak self, weak session] in
             guard let self, let session else { return }
             self.markActivity(for: session)
+        }
+        // Command capture only runs when it's switched on, so an unopted user
+        // pays nothing -- the timeline is never even allocated.
+        if recordsCommands {
+            session.terminalView.commandTimeline = CommandTimeline(entryID: session.entry?.id)
+            session.terminalView.onCommand = { [weak self] event in
+                self?.onCommand?(event)
+            }
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)
         session.prefersMetal = terminalSettings.useMetalRenderer

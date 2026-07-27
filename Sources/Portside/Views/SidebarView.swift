@@ -27,6 +27,7 @@ struct SidebarView: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var tunnels: TunnelManager
+    @EnvironmentObject var library: LibraryCommands
     @State private var section: SidebarSection = .hosts
     @State private var filter = ""
     @State private var editingEntry: SessionEntry?
@@ -42,9 +43,23 @@ struct SidebarView: View {
     @State private var selection: Set<UUID> = []
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
+    @State private var showingCoverage = false
+    @State private var showingHistory = false
     /// Bumped when the filter field's first arrow-key press should hand
     /// keyboard focus to the host list.
     @State private var sidebarFocusRequest = 0
+    @State private var expandAllRequest = 0
+    @State private var collapseAllRequest = 0
+
+    private var loadFailureMessage: String {
+        var text = "Portside kept your original file and has not changed it. "
+        text += "Nothing you do in this session will be saved until it's resolved, "
+        text += "so your existing hosts can't be overwritten."
+        if let path = store.quarantinedLibraryPath {
+            text += "\n\nA copy is at \(path)"
+        }
+        return text
+    }
 
     private var filteredEntries: [SessionEntry] {
         guard !filter.isEmpty else { return store.entries }
@@ -73,11 +88,45 @@ struct SidebarView: View {
             case .hosts: hostsList
             case .macros: macrosList
             case .tools: ToolsList(searchLogs: { showingLogSearch = true },
-                                   portForwarding: { showingPortForwarding = true })
+                                   portForwarding: { showingPortForwarding = true },
+                                   coverage: { showingCoverage = true },
+                                   history: { showingHistory = true })
             }
         }
         .navigationTitle("Portside")
         .toolbar { toolbarContent }
+        // Single implementation of each library command; the toolbar menus
+        // and the menu bar both get here by bumping a token. Routed through a
+        // ViewModifier because inlining nine onChange handlers alongside the
+        // sheets and alerts pushed this body past what the type-checker will
+        // solve in reasonable time.
+        .modifier(LibraryCommandRouter(
+            library: library,
+            onNewSession: {
+                section = .hosts
+                var entry = SessionEntry(name: "")
+                entry.savePassword = store.defaults.defaultSavePassword ?? false
+                editingEntry = entry
+            },
+            onNewFolder: {
+                section = .hosts
+                newFolderName = ""
+                newFolderParent = ""
+            },
+            onImport: { showingImporter = true },
+            onExportSessions: { exportSessions() },
+            onExportMacros: { exportMacros() },
+            onReimportSSHConfig: {
+                let added = store.mergeSSHConfig()
+                importMessage = added == 0
+                    ? "No new hosts found in ~/.ssh/config."
+                    : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
+            },
+            onExpandAll: { section = .hosts; expandAllRequest += 1 },
+            onCollapseAll: { section = .hosts; collapseAllRequest += 1 },
+            onShowCoverage: { showingCoverage = true },
+            onShowHistory: { showingHistory = true }
+        ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
                 switch result {
@@ -94,6 +143,12 @@ struct SidebarView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingCoverage) {
+            CoverageView().environmentObject(store)
+        }
+        .sheet(isPresented: $showingHistory) {
+            HistoryView().environmentObject(store)
+        }
         .sheet(isPresented: $showingLogSearch) {
             LogSearchView().environmentObject(store)
         }
@@ -108,6 +163,19 @@ struct SidebarView: View {
             allowsMultipleSelection: false
         ) { result in
             handleImport(result)
+        }
+        // A quarantined library means the app is running empty and refusing to
+        // write. Silently sitting there would look like data loss and invite
+        // the user to recreate everything on top of a recoverable file.
+        .alert("Your session library could not be read", isPresented: .constant(store.loadFailure != nil)) {
+            if let path = store.quarantinedLibraryPath {
+                Button("Reveal Copy in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                }
+            }
+            Button("Continue Without Saving", role: .cancel) {}
+        } message: {
+            Text(loadFailureMessage)
         }
         .alert(
             "Import",
@@ -197,6 +265,8 @@ struct SidebarView: View {
                 store: store,
                 searching: !filter.isEmpty,
                 focusRequest: sidebarFocusRequest,
+                expandAllRequest: expandAllRequest,
+                collapseAllRequest: collapseAllRequest,
                 connect: connect,
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
@@ -253,39 +323,43 @@ struct SidebarView: View {
                 .help("Open the selected hosts (⌘-click to select several)")
             }
         }
+        // Creation only, so the "+" means what its icon says. Library
+        // actions live under the ellipsis beside it, and both surfaces route
+        // through LibraryCommands so the menu bar runs the same code.
         ToolbarItem {
             Menu {
                 switch section {
                 case .hosts:
-                    Button("New Session…") {
-                        var entry = SessionEntry(name: "")
-                        entry.savePassword = store.defaults.defaultSavePassword ?? false
-                        editingEntry = entry
-                    }
-                    Button("New Folder…") { newFolderName = ""; newFolderParent = "" }
-                    Divider()
-                    Button("Import…") { showingImporter = true }
-                    Button("Export Sessions…") { exportSessions() }
-                        .disabled(store.entries.isEmpty)
-                    Button("Export Macros…") { exportMacros() }
-                        .disabled(store.macros.isEmpty)
-                    Button("Re-import ~/.ssh/config") {
-                        let added = store.mergeSSHConfig()
-                        importMessage = added == 0
-                            ? "No new hosts found in ~/.ssh/config."
-                            : "Added \(added) new host\(added == 1 ? "" : "s") from ~/.ssh/config."
-                    }
+                    Button("New Session…") { library.requestNewSession() }
+                    Button("New Folder…") { library.requestNewFolder() }
                 case .macros:
                     Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
-                    Divider()
-                    Button("Import…") { showingImporter = true }
-                    Button("Export Macros…") { exportMacros() }
-                        .disabled(store.macros.isEmpty)
                 case .tools:
                     Button("New Local Shell") { sessions.openLocalShell() }
                 }
             } label: {
-                Label("Add", systemImage: "plus")
+                Label("New", systemImage: "plus")
+            }
+            .help("Create a session, folder, or macro")
+        }
+        if section != .tools {
+            ToolbarItem {
+                Menu {
+                    Button("Import…") { library.requestImport() }
+                    if section == .hosts {
+                        Button("Export Sessions…") { library.requestExportSessions() }
+                            .disabled(store.entries.isEmpty)
+                    }
+                    Button("Export Macros…") { library.requestExportMacros() }
+                        .disabled(store.macros.isEmpty)
+                    if section == .hosts {
+                        Divider()
+                        Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
+                    }
+                } label: {
+                    Label("Library", systemImage: "ellipsis.circle")
+                }
+                .help("Import and export your library")
             }
         }
     }
@@ -415,8 +489,11 @@ struct SidebarView: View {
 struct ToolsList: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var tunnels: TunnelManager
+    @EnvironmentObject var library: LibraryCommands
     let searchLogs: () -> Void
     let portForwarding: () -> Void
+    let coverage: () -> Void
+    let history: () -> Void
 
     var body: some View {
         List {
@@ -445,6 +522,22 @@ struct ToolsList: View {
                         }
                     }
                     .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Inventory") {
+                Button {
+                    coverage()
+                } label: {
+                    Label("Coverage…", systemImage: "checklist")
+                }
+                .buttonStyle(.plain)
+            }
+            Section("History") {
+                Button {
+                    history()
+                } label: {
+                    Label("Commands & Connections…", systemImage: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.plain)
             }
@@ -486,5 +579,38 @@ struct MacroRow: View {
             Divider()
             Button("Delete", role: .destructive) { store.delete(macro) }
         }
+    }
+}
+
+
+/// Routes `LibraryCommands` tokens to the sidebar's own actions. A modifier
+/// rather than inline `onChange` calls purely to keep `SidebarView.body`
+/// type-checkable — the handlers themselves are one-liners into state the
+/// sidebar owns.
+private struct LibraryCommandRouter: ViewModifier {
+    @ObservedObject var library: LibraryCommands
+    let onNewSession: () -> Void
+    let onNewFolder: () -> Void
+    let onImport: () -> Void
+    let onExportSessions: () -> Void
+    let onExportMacros: () -> Void
+    let onReimportSSHConfig: () -> Void
+    let onExpandAll: () -> Void
+    let onCollapseAll: () -> Void
+    let onShowCoverage: () -> Void
+    let onShowHistory: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: library.newSession) { _, _ in onNewSession() }
+            .onChange(of: library.newFolder) { _, _ in onNewFolder() }
+            .onChange(of: library.importFile) { _, _ in onImport() }
+            .onChange(of: library.exportSessions) { _, _ in onExportSessions() }
+            .onChange(of: library.exportMacros) { _, _ in onExportMacros() }
+            .onChange(of: library.reimportSSHConfig) { _, _ in onReimportSSHConfig() }
+            .onChange(of: library.expandAllFolders) { _, _ in onExpandAll() }
+            .onChange(of: library.collapseAllFolders) { _, _ in onCollapseAll() }
+            .onChange(of: library.showCoverage) { _, _ in onShowCoverage() }
+            .onChange(of: library.showHistory) { _, _ in onShowHistory() }
     }
 }

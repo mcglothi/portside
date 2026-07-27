@@ -17,18 +17,56 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
         switch self {
         case .bash:
             return #"""
-            # Portside: report the working directory so its SFTP pane can follow `cd` (https://github.com/mcglothi/portside)
+            # Portside shell integration v2 (https://github.com/mcglothi/portside)
+            # __portside_integration_v2 -- version marker; the installer greps for this
+            # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
+            # and command boundaries (OSC 133) so commands can be timestamped.
+            __portside_preexec() {
+              [ -n "$COMP_LINE" ] && return              # tab completion, not a command
+              [ "$BASH_COMMAND" = "$PROMPT_COMMAND" ] && return
+              [ -n "$__portside_running" ] && return     # DEBUG fires per simple command
+              __portside_running=1
+              printf '\033]133;C\007'
+              printf '\033]133;E;%s\007' "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')"
+            }
+            __portside_precmd() {
+              local __portside_ret=$?
+              if [ -n "$__portside_running" ]; then
+                printf '\033]133;D;%s\007' "$__portside_ret"
+                unset __portside_running
+              fi
+              printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-$(hostname)}" "$PWD"
+              printf '\033]133;A\007'
+            }
             case "$PROMPT_COMMAND" in
-              *__portside_osc7*) ;;
-              *) PROMPT_COMMAND='printf "\033]7;file://%s%s\033\\" "${HOSTNAME:-$(hostname)}" "$PWD"'"${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+              *__portside_precmd*) ;;
+              *) PROMPT_COMMAND="__portside_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
             esac
+            trap '__portside_preexec' DEBUG
             """#
         case .zsh:
             return #"""
-            # Portside: report the working directory so its SFTP pane can follow `cd` (https://github.com/mcglothi/portside)
+            # Portside shell integration v2 (https://github.com/mcglothi/portside)
+            # __portside_integration_v2 -- version marker; the installer greps for this
+            # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
+            # and command boundaries (OSC 133) so commands can be timestamped.
             autoload -Uz add-zsh-hook 2>/dev/null
-            __portside_osc7() { printf '\033]7;file://%s%s\033\\' "${HOST:-$(hostname)}" "$PWD" }
+            __portside_osc7() {
+              local __portside_ret=$?
+              if [[ -n "$__portside_running" ]]; then
+                printf '\033]133;D;%s\007' "$__portside_ret"
+                unset __portside_running
+              fi
+              printf '\033]7;file://%s%s\033\\' "${HOST:-$(hostname)}" "$PWD"
+              printf '\033]133;A\007'
+            }
+            __portside_preexec() {
+              __portside_running=1
+              printf '\033]133;C\007'
+              printf '\033]133;E;%s\007' "$(printf '%s' "$1" | base64 | tr -d '\n')"
+            }
             add-zsh-hook precmd __portside_osc7 2>/dev/null
+            add-zsh-hook preexec __portside_preexec 2>/dev/null
             """#
         }
     }
@@ -39,9 +77,17 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
     /// second install is a no-op, detected via the marker already baked into
     /// the snippet text) and reuses the interactive session's ControlMaster
     /// socket, so there's no extra auth prompt.
+    ///
+    /// The marker is version-stamped. v1 only reported the working directory;
+    /// a host carrying it needs the v2 block appended to gain command markers,
+    /// so matching on the old name would have locked existing users out of the
+    /// new feature. On zsh the v2 function replaces v1's by name and
+    /// `add-zsh-hook` won't double-register it. On bash, v1's inline
+    /// PROMPT_COMMAND entry survives alongside v2's, which harmlessly reports
+    /// the same directory twice per prompt.
     func install(on entry: SessionEntry) async throws {
         let remoteCommand = """
-        f=\(rcFile); grep -qF '__portside_osc7' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
+        f=\(rcFile); grep -qF '__portside_integration_v2' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
         \(text)
         PORTSIDE_EOF
         """

@@ -24,6 +24,7 @@ struct PortsideApp: App {
     @StateObject private var sessions = SessionManager()
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
+    @StateObject private var library = LibraryCommands()
 
     var body: some Scene {
         WindowGroup("Portside") {
@@ -31,6 +32,7 @@ struct PortsideApp: App {
                 .environmentObject(store)
                 .environmentObject(sessions)
                 .environmentObject(tunnels)
+                .environmentObject(library)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     sessions.appearance = store.appearance
@@ -39,11 +41,17 @@ struct PortsideApp: App {
                     sessions.connectionDefaults = store.defaults
                     RemoteFileEditor.shared.preferredEditor = store.defaults.remoteEditorURL
                     sessions.defaultProfileID = store.defaultProfileID
-                    sessions.onConnect = { [weak store] entry in
-                        store?.recordConnection(entry)
+                    tunnels.defaultProfileID = store.defaultProfileID
+                    sessions.onConnectionAttempt = { [weak store] entry, outcome in
+                        store?.recordConnection(entry, outcome: outcome)
                     }
                     sessions.onWorkspaceChange = { [weak store] snapshot in
                         store?.saveWorkspace(snapshot)
+                    }
+                    sessions.recordsCommands = store.history.keepCommandHistory
+                    sessions.excludesProtectedFromRecording = store.history.excludeProtectedHosts
+                    sessions.onCommand = { [weak store] event in
+                        store?.recordCommand(event)
                     }
                     LogManager.runMaintenance(settings: store.logging)
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
@@ -63,7 +71,17 @@ struct PortsideApp: App {
                     sessions.connectionDefaults = new
                     RemoteFileEditor.shared.preferredEditor = new.remoteEditorURL
                 }
-                .onChange(of: store.defaultProfileID) { _, new in sessions.defaultProfileID = new }
+                .onChange(of: store.defaultProfileID) { _, new in
+                    sessions.defaultProfileID = new
+                    tunnels.defaultProfileID = new
+                }
+                // Only affects sessions opened afterwards: the timeline is
+                // attached when a session is created, so already-open tabs
+                // keep whatever they started with.
+                .onChange(of: store.history) { _, new in
+                    sessions.recordsCommands = new.keepCommandHistory
+                    sessions.excludesProtectedFromRecording = new.excludeProtectedHosts
+                }
         }
         .commands {
             CommandGroup(after: .appInfo) {
@@ -71,12 +89,23 @@ struct PortsideApp: App {
                     .disabled(!updater.canCheckForUpdates)
             }
             CommandGroup(after: .newItem) {
+                Button("New Session…") { library.requestNewSession() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("New Folder…") { library.requestNewFolder() }
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
                     .keyboardShortcut(shortcut(.quickConnect))
                 Button("Reopen Closed Tab") { sessions.reopenLastClosedTab() }
                     .keyboardShortcut(shortcut(.reopenClosedTab))
+                Divider()
+                Button("Import…") { library.requestImport() }
+                    .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Export Sessions…") { library.requestExportSessions() }
+                    .disabled(store.entries.isEmpty)
+                Button("Export Macros…") { library.requestExportMacros() }
+                    .disabled(store.macros.isEmpty)
+                Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
             }
             CommandGroup(after: .textEditing) {
                 Button("Find…") { sessions.selected?.toggleFind() }
@@ -100,6 +129,14 @@ struct PortsideApp: App {
                 Button("Toggle Grid View") { sessions.toggleGridView() }
                     .keyboardShortcut(shortcut(.toggleGridView))
                     .disabled(!sessions.canGridView)
+                Divider()
+                Button("Expand All Folders") { library.requestExpandAllFolders() }
+                    .disabled(store.folders.isEmpty)
+                Button("Collapse All Folders") { library.requestCollapseAllFolders() }
+                    .disabled(store.folders.isEmpty)
+                Divider()
+                Button("Inventory Coverage…") { library.requestShowCoverage() }
+                Button("History…") { library.requestShowHistory() }
                 Divider()
             }
             CommandMenu("Pane") {
@@ -147,9 +184,9 @@ struct PortsideApp: App {
                 CredentialProfilesView()
                     .environmentObject(store)
                     .tabItem { Label("Profiles", systemImage: "person.badge.key") }
-                LoggingSettingsView()
+                RecordingSettingsView()
                     .environmentObject(store)
-                    .tabItem { Label("Logging", systemImage: "doc.text.magnifyingglass") }
+                    .tabItem { Label("Recording", systemImage: "record.circle") }
                 ShortcutsSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Shortcuts", systemImage: "keyboard") }

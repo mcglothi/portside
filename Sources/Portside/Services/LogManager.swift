@@ -40,9 +40,41 @@ enum LogManager {
     }()
 
     /// Creates a logger for a session, or nil when logging is off.
-    static func makeLogger(for entry: SessionEntry, settings: LoggingSettings) -> SessionLogger? {
-        makeLogger(hostKey: hostKey(for: entry), title: entry.name,
-                   subtitle: entry.subtitle, settings: settings)
+    /// `excludeProtected` comes from the recording privacy setting. Logging
+    /// previously ignored it entirely, so a user who opted a protected host out
+    /// of history still had that host's full terminal transcript -- including
+    /// anything echoed to the screen -- written to disk. The setting read as a
+    /// privacy guarantee while covering only part of the surface.
+    static func makeLogger(
+        for entry: SessionEntry, settings: LoggingSettings, excludeProtected: Bool = false
+    ) -> SessionLogger? {
+        guard !(excludeProtected && entry.isProtected) else { return nil }
+        return makeLogger(hostKey: hostKey(for: entry), title: entry.name,
+                          subtitle: entry.subtitle, settings: settings)
+    }
+
+    /// A window of the transcript around a recorded command, so history can
+    /// show what actually happened rather than just that something ran.
+    ///
+    /// Reads by seeking rather than loading the file: a long session's
+    /// transcript can be very large, and this is called while scrolling a list.
+    /// Returns nil if the transcript has since been compressed, moved, or
+    /// deleted — recorded commands outlive the files they point at.
+    static func excerpt(path: String, around offset: Int, span: Int = 1_600) -> String? {
+        guard FileManager.default.fileExists(atPath: path),
+              let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
+        defer { try? handle.close() }
+
+        let start = max(0, offset - span / 2)
+        guard (try? handle.seek(toOffset: UInt64(start))) != nil,
+              let data = try? handle.read(upToCount: span), !data.isEmpty else { return nil }
+
+        // A window into UTF-8 can start or end mid-character; drop the ragged
+        // edges rather than failing to decode the whole excerpt.
+        var bytes = [UInt8](data)
+        while !bytes.isEmpty && (bytes[0] & 0xC0) == 0x80 { bytes.removeFirst() }
+        while !bytes.isEmpty && String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+        return String(bytes: bytes, encoding: .utf8)
     }
 
     static func makeLogger(hostKey key: String, title: String, subtitle: String,

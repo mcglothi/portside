@@ -26,6 +26,10 @@ final class SessionStore: ObservableObject {
     @Published var defaultProfileID: UUID?
     @Published var logging = LoggingSettings()
     @Published var terminal = TerminalSettings()
+    @Published private(set) var connectionStats: [ConnectionStat] = []
+    @Published private(set) var connectionLog: [ConnectionLogEntry] = []
+    @Published private(set) var history = HistorySettings()
+    @Published private(set) var commandHistory: [CommandEvent] = []
     @Published var keyBindings = KeyBindings()
     /// The last-persisted open session layout, replayed on launch when
     /// `terminal.restoreMode` allows. Written continuously as tabs change.
@@ -46,12 +50,39 @@ final class SessionStore: ObservableObject {
         var keyBindings: KeyBindings?
         var credentialProfiles: [CredentialProfile]?
         var defaultProfileID: UUID?
+        var connectionStats: [ConnectionStat]?
+        var connectionLog: [ConnectionLogEntry]?
+        var history: HistorySettings?
+        // Read-only now: present in libraries written before history moved to
+        // its own file, and migrated out on first load.
+        var commandHistory: [CommandEvent]?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
     var allThemes: [TerminalTheme] { TerminalTheme.builtIns + customThemes }
 
     private let fileURL: URL
+
+    /// History lives beside the library rather than inside it, for three
+    /// reasons: recording a command would otherwise rewrite the entire host
+    /// library (hosts, folders, macros, profiles) on every command typed;
+    /// `portside.json` is what Export Sessions writes, so recorded command
+    /// lines would travel with any shared or backed-up library; and history is
+    /// churn-heavy data with a completely different lifetime from the library
+    /// it sits next to.
+    private var historyFileURL: URL {
+        fileURL.deletingPathExtension().appendingPathExtension("history.json")
+    }
+
+    /// Set when history was migrated out of the library mid-load; the library
+    /// is rewritten once loading has finished, never during.
+    private var needsLegacyHistoryCleanup = false
+
+    private struct HistoryDocument: Codable {
+        var connectionStats: [ConnectionStat]?
+        var connectionLog: [ConnectionLogEntry]?
+        var commandHistory: [CommandEvent]?
+    }
     /// When true, first-launch seeding reads ~/.ssh/config. Tests pass a temp
     /// file and disable seeding so they start from an empty, isolated library.
     private let seedsFromSSHConfig: Bool
@@ -131,6 +162,18 @@ final class SessionStore: ObservableObject {
 
     /// Bulk-sets favorite status across a multi-selection, mirroring
     /// `setSavePassword(_:ids:)`.
+    /// Bulk environment tagging, for classifying a large imported inventory
+    /// without editing hosts one at a time.
+    func setEnvironment(_ environment: HostEnvironment, ids: Set<UUID>) {
+        var changed = false
+        for i in entries.indices where ids.contains(entries[i].id) && entries[i].environment != environment {
+            entries[i].environment = environment
+            changed = true
+        }
+        guard changed else { return }
+        save()
+    }
+
     func setFavorite(_ on: Bool, ids: Set<UUID>) {
         var changed = false
         for i in entries.indices where ids.contains(entries[i].id) && entries[i].isFavorite != on {
@@ -271,13 +314,182 @@ final class SessionStore: ObservableObject {
 
     /// Moves (or adds) the host to the front of the history. Capped well above
     /// what the welcome screen shows so deleted hosts don't shrink the list.
+    /// Records the outcome of a connection attempt.
+    ///
+    /// Only a confirmed connection touches the aggregate. An attempt that
+    /// failed is still worth logging, but counting it would inflate the host's
+    /// total, reset its last-connected date, lift it up Quick Connect's
+    /// ranking, and stop it ever showing as stale — all on the strength of a
+    /// connection that never happened.
+    func recordConnection(_ entry: SessionEntry, outcome: ConnectionOutcome) {
+        guard !(history.excludeProtectedHosts && entry.isProtected) else { return }
+        let now = Date()
+
+        if history.keepFullLog {
+            connectionLog.append(ConnectionLogEntry(entryID: entry.id, at: now, outcome: outcome))
+            connectionLog = ConnectionHistory.trimmed(connectionLog, to: history.logLimit)
+            saveHistory()
+        }
+        guard outcome == .connected else { return }
+        recordConnection(entry)
+    }
+
     func recordConnection(_ entry: SessionEntry) {
+        // Opting a protected host out leaves it out of everything -- recents,
+        // aggregate, and log -- rather than half-recording it.
+        guard !(history.excludeProtectedHosts && entry.isProtected) else { return }
+
+        let now = Date()
         recents.removeAll { $0.entryID == entry.id }
-        recents.insert(RecentConnection(entryID: entry.id, date: Date()), at: 0)
+        recents.insert(RecentConnection(entryID: entry.id, date: now), at: 0)
         if recents.count > 20 {
             recents.removeLast(recents.count - 20)
         }
+
+        connectionStats = ConnectionHistory.recording(
+            entryID: entry.id, at: now, into: connectionStats
+        )
+        saveHistory()
+        save()   // recents still live in the library
+    }
+
+    func updateHistorySettings(_ settings: HistorySettings) {
+        let wasKeepingLog = history.keepFullLog
+        let wasKeepingCommands = history.keepCommandHistory
+        history = settings
+        // Same contract as the connection log: opting out discards what was
+        // already gathered, or opting out wouldn't mean much.
+        // Both clears must happen BEFORE the write. Persisting first and
+        // clearing after left the opted-out data on disk to be reloaded next
+        // launch -- the deletion appeared to work and silently didn't.
+        let stoppedLog = wasKeepingLog && !settings.keepFullLog
+        let stoppedCommands = wasKeepingCommands && !settings.keepCommandHistory
+        if stoppedCommands { commandHistory = [] }
+        if stoppedLog { connectionLog = [] }
+        if stoppedLog || stoppedCommands { saveHistory() }
         save()
+    }
+
+    /// Clears history. Aggregate, log and commands go together -- "clear
+    /// history" that left per-host counts or recorded command lines behind
+    /// would not be believed, and shouldn't be.
+    func clearHistory() {
+        connectionStats = []
+        connectionLog = []
+        commandHistory = []
+        recents = []
+        saveHistory()
+        save()
+    }
+
+    /// Records a command the shell reported. Honours the same protected-host
+    /// exclusion as connection history: opting a host out has to mean out of
+    /// everything, or the setting is worthless.
+    /// Reads the history file, falling back to whatever the library still
+    /// carries from before history moved out — then writes the sidecar and
+    /// leaves the library to drop the old keys on its next save.
+    private func loadHistory(migratingFrom doc: Document) {
+        if let data = try? Data(contentsOf: historyFileURL) {
+            do {
+                let history = try JSONDecoder().decode(HistoryDocument.self, from: data)
+                connectionStats = history.connectionStats ?? []
+                connectionLog = history.connectionLog ?? []
+                commandHistory = history.commandHistory ?? []
+                return
+            } catch {
+                // Same rule as the library: an unreadable file is preserved
+                // rather than quietly replaced by whatever we fall back to.
+                // History is less precious than the library, so this doesn't
+                // block the app — but it doesn't get silently destroyed either.
+                let backup = historyFileURL.deletingPathExtension()
+                    .appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                try? data.write(to: backup, options: .atomic)
+                NSLog("Portside: history at \(historyFileURL.path) could not be read — preserved at \(backup.path)")
+                connectionStats = []
+                connectionLog = []
+                commandHistory = []
+                seedStatsFromRecentsIfNeeded()
+                return
+            }
+        }
+        connectionStats = doc.connectionStats ?? []
+        connectionLog = doc.connectionLog ?? []
+        commandHistory = doc.commandHistory ?? []
+        seedStatsFromRecentsIfNeeded()
+        let hadLegacyHistory = !(connectionStats.isEmpty && connectionLog.isEmpty && commandHistory.isEmpty)
+        if hadLegacyHistory {
+            saveHistory()
+            // Deliberately NOT save() here. This runs part-way through load(),
+            // before workspace/keyBindings/credentialProfiles/defaultProfileID
+            // have been read out of the document -- saving now would write
+            // their empty defaults over the real ones, losing a user's
+            // credential profiles on the first launch after upgrading.
+            needsLegacyHistoryCleanup = true
+        }
+    }
+
+    /// Upgrading users arrive with up to 20 recents and no aggregate stats.
+    /// Without seeding, their first new connection creates the only stat, and
+    /// Quick Connect -- which prefers ranked stats once any exist -- would show
+    /// that single host and drop everything else they'd been using.
+    ///
+    /// Each recent seeds one connection at its recorded time, which is exactly
+    /// what's known: it happened once, then.
+    private func seedStatsFromRecentsIfNeeded() {
+        guard connectionStats.isEmpty, !recents.isEmpty else { return }
+        for recent in recents {
+            connectionStats = ConnectionHistory.recording(
+                entryID: recent.entryID, at: recent.date, into: connectionStats
+            )
+        }
+    }
+
+    private func saveHistory() {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(HistoryDocument(
+                connectionStats: connectionStats,
+                connectionLog: connectionLog,
+                commandHistory: commandHistory
+            )).write(to: historyFileURL, options: .atomic)
+        } catch {
+            NSLog("Portside: could not save history — \(error)")
+        }
+    }
+
+    func recordCommand(_ event: CommandEvent) {
+        guard history.keepCommandHistory else { return }
+        if history.excludeProtectedHosts,
+           let id = event.entryID, entry(id: id)?.isProtected == true {
+            return
+        }
+        commandHistory.append(event)
+        if commandHistory.count > history.commandLimit {
+            commandHistory.removeFirst(commandHistory.count - history.commandLimit)
+        }
+        saveHistory()
+    }
+
+    func commands(forEntry entryID: UUID? = nil, limit: Int = 500) -> [CommandEvent] {
+        let scoped = entryID.map { id in commandHistory.filter { $0.entryID == id } } ?? commandHistory
+        return Array(scoped.sorted { $0.startedAt > $1.startedAt }.prefix(limit))
+    }
+
+    /// Hosts ordered by frecency, joined against the library so deleted ones
+    /// drop out.
+    func frecentEntries(limit: Int, now: Date = Date()) -> [SessionEntry] {
+        var result: [SessionEntry] = []
+        for id in ConnectionHistory.ranked(connectionStats, now: now) {
+            guard let entry = entry(id: id) else { continue }
+            result.append(resolved(entry))
+            if result.count == limit { break }
+        }
+        return result
+    }
+
+    func stat(for entryID: UUID) -> ConnectionStat? {
+        connectionStats.first { $0.entryID == entryID }
     }
 
     /// The history joined against the library — deleted hosts drop out.
@@ -517,9 +729,56 @@ final class SessionStore: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Set when the library existed but could not be decoded. Saving is
+    /// suppressed while true, so a bad read can never become a bad write.
+    private(set) var loadFailure: String?
+    /// Where the unreadable library was preserved.
+    private(set) var quarantinedLibraryPath: String?
+
     private func load() {
-        if let data = try? Data(contentsOf: fileURL),
-           let doc = try? JSONDecoder().decode(Document.self, from: data) {
+        let existingData = try? Data(contentsOf: fileURL)
+        if let existingData {
+            do {
+                let doc = try JSONDecoder().decode(Document.self, from: existingData)
+                apply(doc)
+                if seedsFromSSHConfig { migrateLegacyDefault() }
+                return
+            } catch {
+                // A library that exists but won't decode is NOT a first launch.
+                // Treating it as one reseeded from ~/.ssh/config and saved over
+                // the top, destroying a library that a schema bug, a bad hand
+                // edit, or a newer build might otherwise have recovered.
+                quarantine(existingData, error: error)
+                return
+            }
+        }
+        loadFresh()
+        if seedsFromSSHConfig { migrateLegacyDefault() }
+    }
+
+    /// Copies the undecodable library aside and refuses to write until the user
+    /// decides what to do. Nothing is lost, and nothing is overwritten.
+    private func quarantine(_ data: Data, error: Error) {
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
+        let suffix = stamp.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backup = fileURL.deletingPathExtension()
+            .appendingPathExtension("unreadable-\(suffix).json")
+        try? data.write(to: backup, options: .atomic)
+
+        quarantinedLibraryPath = backup.path
+        loadFailure = "\(error)"
+        NSLog("Portside: library at \(fileURL.path) could not be read — preserved at \(backup.path)")
+    }
+
+    private func loadFresh() {
+        if seedsFromSSHConfig {
+            entries = SSHConfigImporter.importEntries()
+            save()
+        }
+    }
+
+    private func apply(_ doc: Document) {
             entries = doc.entries
             macros = doc.macros
             forwards = doc.forwards ?? []
@@ -530,25 +789,25 @@ final class SessionStore: ObservableObject {
             defaults = doc.defaults ?? ConnectionDefaults()
             logging = doc.logging ?? LoggingSettings()
             terminal = doc.terminal ?? TerminalSettings()
+            history = doc.history ?? HistorySettings()
+            loadHistory(migratingFrom: doc)
             workspace = doc.workspace ?? WorkspaceSnapshot()
             keyBindings = doc.keyBindings ?? KeyBindings()
             credentialProfiles = doc.credentialProfiles ?? []
             defaultProfileID = doc.defaultProfileID
-        } else if seedsFromSSHConfig {
-            entries = SSHConfigImporter.importEntries()
-            save()
-        }
-        // Only the real app instance (never a test's isolated fileURL init,
-        // which always passes seedsFromSSHConfig: false) may touch the actual
-        // system Keychain here — CredentialStore isn't test-isolated itself,
-        // so without this guard a test run reads/mutates the real default
-        // password out from under the user.
-        if seedsFromSSHConfig {
-            migrateLegacyDefault()
-        }
+            if needsLegacyHistoryCleanup {
+                needsLegacyHistoryCleanup = false
+                save()
+            }
     }
 
     private func save() {
+        // A library we couldn't read must never be written over by the empty
+        // state that failure left us in.
+        guard loadFailure == nil else {
+            NSLog("Portside: refusing to save over an unreadable library")
+            return
+        }
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -561,7 +820,9 @@ final class SessionStore: ObservableObject {
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging,
                                         terminal: terminal, workspace: workspace, keyBindings: keyBindings,
-                                        credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID))
+                                        credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID,
+                                        connectionStats: connectionStats, connectionLog: connectionLog,
+                                        history: history))
                 .write(to: fileURL, options: .atomic)
         } catch {
             NSLog("Portside: failed to save library: \(error)")

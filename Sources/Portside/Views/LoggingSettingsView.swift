@@ -1,7 +1,10 @@
 import AppKit
 import SwiftUI
 
-struct LoggingSettingsView: View {
+/// Transcript controls, embedded in `RecordingSettingsView` rather than owning
+/// their own Settings tab — logging and history are one decision for the user
+/// even though they're two mechanisms underneath.
+struct LoggingControls: View {
     @EnvironmentObject var store: SessionStore
 
     private var logging: Binding<LoggingSettings> {
@@ -23,44 +26,36 @@ struct LoggingSettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section("Session Logging") {
-                Toggle("Log session output to files", isOn: logging.enabled)
-                Text("Each session is saved as a timestamped text file under a per-host folder, e.g. …/logs/tesla/tesla_2026-07-09_10-05-30.log. ANSI colors are stripped so logs stay searchable.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        Toggle("Save session transcripts to files", isOn: logging.enabled)
 
-            Section("Location") {
-                HStack {
-                    TextField("Folder", text: Binding(
-                        get: { store.logging.directoryPath.isEmpty
-                            ? store.logging.resolvedDirectory.path : store.logging.directoryPath },
-                        set: { var l = store.logging; l.directoryPath = $0; store.updateLogging(l) }))
-                        .truncationMode(.middle)
-                    Button("Choose…") { chooseDirectory() }
-                    Button("Reveal") {
-                        NSWorkspace.shared.activateFileViewerSelecting([store.logging.resolvedDirectory])
-                    }
+        if store.logging.enabled {
+            HStack {
+                TextField("Folder", text: Binding(
+                    get: {
+                        store.logging.directoryPath.isEmpty
+                            ? store.logging.resolvedDirectory.path
+                            : store.logging.directoryPath
+                    },
+                    set: { var l = store.logging; l.directoryPath = $0; store.updateLogging(l) }))
+                    .truncationMode(.middle)
+                Button("Choose…") { chooseDirectory() }
+                Button("Reveal") {
+                    NSWorkspace.shared.activateFileViewerSelecting([store.logging.resolvedDirectory])
                 }
             }
 
-            Section("Retention") {
-                Picker("Compress logs older than", selection: Binding(
-                    get: { store.logging.compressAfterDays },
-                    set: { var l = store.logging; l.compressAfterDays = $0; store.updateLogging(l) })) {
-                    Text("Never").tag(0)
-                    Text("7 days").tag(7)
-                    Text("14 days").tag(14)
-                    Text("30 days").tag(30)
-                    Text("90 days").tag(90)
-                }
-                Text("Old logs are gzipped on launch to save space; they're still included in Search Logs.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Picker("Compress transcripts older than", selection: Binding(
+                get: { store.logging.compressAfterDays },
+                set: { var l = store.logging; l.compressAfterDays = $0; store.updateLogging(l) })) {
+                Text("Never").tag(0)
+                Text("7 days").tag(7)
+                Text("14 days").tag(14)
+                Text("30 days").tag(30)
+                Text("90 days").tag(90)
             }
+            Text("Saved per host as timestamped text, ANSI stripped so they stay searchable. Old ones are gzipped on launch and still included in Search Logs.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 480, idealWidth: 520, minHeight: 380)
     }
 }

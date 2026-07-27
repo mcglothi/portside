@@ -23,6 +23,11 @@ struct HostOutlineView: NSViewRepresentable {
     /// (NSOutlineView already handles that once it's first responder) instead
     /// of staying trapped in the text field.
     var focusRequest: Int = 0
+    /// Bumped to expand or collapse every folder. Tokens rather than a bool
+    /// because the action is an *event*, not a state the view can be in — the
+    /// user can expand all, collapse one by hand, then expand all again.
+    var expandAllRequest: Int = 0
+    var collapseAllRequest: Int = 0
 
     // SwiftUI-state-driven actions the coordinator can't do on its own.
     let connect: (SessionEntry) -> Void
@@ -83,6 +88,7 @@ struct HostOutlineView: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.sync(tree: tree, selection: selection)
         context.coordinator.performFocusRequestIfNeeded()
+        context.coordinator.performExpansionRequestsIfNeeded()
     }
 
     // MARK: - Coordinator
@@ -102,6 +108,8 @@ struct HostOutlineView: NSViewRepresentable {
         /// Last `focusRequest` token seen, to detect the filter field's "hand
         /// me focus" bump without acting on it more than once.
         private var lastFocusRequest = 0
+        private var lastExpandAllRequest = 0
+        private var lastCollapseAllRequest = 0
         /// Guards `expandedPaths` while a search-driven full-expand runs, so
         /// clearing the search doesn't leave every folder permanently expanded.
         private var isAutoExpanding = false
@@ -109,7 +117,47 @@ struct HostOutlineView: NSViewRepresentable {
         init(_ parent: HostOutlineView) {
             self.parent = parent
             self.lastFocusRequest = parent.focusRequest
+            self.lastExpandAllRequest = parent.expandAllRequest
+            self.lastCollapseAllRequest = parent.collapseAllRequest
             super.init()
+        }
+
+        /// Expand/collapse everything. Deliberately *not* wrapped in
+        /// `isAutoExpanding`: unlike the search-driven expand, this is the user
+        /// asking, so the resulting notifications should record into
+        /// `expandedPaths` and survive the next reload.
+        /// Finds a folder node anywhere in the tree by its path.
+        private func node(forFolderPath path: String) -> SidebarNode? {
+            func search(_ nodes: [SidebarNode]) -> SidebarNode? {
+                for node in nodes {
+                    if node.folderPath == path { return node }
+                    if let hit = search(node.children) { return hit }
+                }
+                return nil
+            }
+            return search(roots)
+        }
+
+        /// Expands or collapses one folder's whole subtree, including itself.
+        private func setSubtreeExpanded(_ expanded: Bool, folderPath: String) {
+            guard let outline, let node = node(forFolderPath: folderPath) else { return }
+            if expanded {
+                outline.expandItem(node, expandChildren: true)
+            } else {
+                outline.collapseItem(node, collapseChildren: true)
+            }
+        }
+
+        func performExpansionRequestsIfNeeded() {
+            guard let outline else { return }
+            if lastExpandAllRequest != parent.expandAllRequest {
+                lastExpandAllRequest = parent.expandAllRequest
+                outline.expandItem(nil, expandChildren: true)
+            }
+            if lastCollapseAllRequest != parent.collapseAllRequest {
+                lastCollapseAllRequest = parent.collapseAllRequest
+                outline.collapseItem(nil, collapseChildren: true)
+            }
         }
 
         /// Hands keyboard focus to the outline when the filter field bumps
@@ -421,6 +469,7 @@ struct HostOutlineView: NSViewRepresentable {
                     store.setSavePassword(true, ids: selected)
                 })
                 addCredentialProfileMenu(menu, forSelection: selected)
+                addEnvironmentMenu(menu, forSelection: selected)
                 menu.addItem(ClosureMenuItem(title: "Add \(selected.count) Selected to Favorites") {
                     store.setFavorite(true, ids: selected)
                 })
@@ -441,6 +490,7 @@ struct HostOutlineView: NSViewRepresentable {
                 store.toggleFavorite(entry.id)
             })
             addMoveMenu(menu, forSelection: [entry.id], currentFolder: entry.folder)
+            addEnvironmentMenu(menu, forSelection: [entry.id])
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
         }
@@ -488,6 +538,26 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(item)
         }
 
+        /// "Set Environment ▸", the tagging half of classifying a large
+        /// imported inventory. Mirrors the credential-profile submenu so both
+        /// bulk actions read the same on a selection and on a folder.
+        private func addEnvironmentMenu(_ menu: NSMenu, forSelection ids: Set<UUID>) {
+            let store = parent.store
+            let submenu = NSMenu()
+            for environment in HostEnvironment.allCases where environment != .none {
+                submenu.addItem(ClosureMenuItem(title: environment.label) {
+                    store.setEnvironment(environment, ids: ids)
+                })
+            }
+            submenu.addItem(.separator())
+            submenu.addItem(ClosureMenuItem(title: "None") {
+                store.setEnvironment(.none, ids: ids)
+            })
+            let item = NSMenuItem(title: "Set Environment", action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+
         private func buildFolderMenu(_ menu: NSMenu, folder: FolderNode) {
             let store = parent.store
             let inFolder = store.entriesInFolder(folder.path)
@@ -497,8 +567,24 @@ struct HostOutlineView: NSViewRepresentable {
                 menu.addItem(ClosureMenuItem(title: "Open All in MultiExec") { self.parent.openFolder(folder.path, true) })
                 menu.addItem(.separator())
                 addCredentialProfileMenu(menu, forSelection: Set(inFolder.map(\.id)))
+                addEnvironmentMenu(menu, forSelection: Set(inFolder.map(\.id)))
                 menu.addItem(.separator())
             }
+            // Scoped to this folder's own subtree rather than the whole
+            // library — the global versions live in View and the toolbar, and
+            // repeating them here would be the less useful of the two.
+            //
+            // Shown unconditionally: gating on "has subfolders" made the menu
+            // silently vary with structure, so a library of top-level folders
+            // never saw it at all. With no subfolders these simply open or
+            // close the folder itself, which is what the labels say.
+            menu.addItem(ClosureMenuItem(title: "Expand All in \(folder.name)") {
+                self.setSubtreeExpanded(true, folderPath: folder.path)
+            })
+            menu.addItem(ClosureMenuItem(title: "Collapse All in \(folder.name)") {
+                self.setSubtreeExpanded(false, folderPath: folder.path)
+            })
+            menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "New Subfolder…") { self.parent.newSubfolder(folder.path) })
             menu.addItem(ClosureMenuItem(title: "Rename…") { self.parent.renameFolder(folder.path, folder.name) })
             menu.addItem(.separator())
