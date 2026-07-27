@@ -8,3 +8,7 @@ xcuserdata/
 
 # Byte-cache from Scripts/make_sixel.py
 __pycache__/
+.gitnexus
+
+# GitNexus tool skills (regenerate with `gitnexus analyze`)
+.claude/skills/gitnexus/
