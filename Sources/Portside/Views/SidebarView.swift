@@ -332,6 +332,12 @@ struct SidebarView: View {
                 case .hosts:
                     Button("New Session…") { library.requestNewSession() }
                     Button("New Folder…") { library.requestNewFolder() }
+                    // Also under Tools ▸ +, but Hosts is where people actually
+                    // are, and a local shell was reachable from the menu bar or
+                    // the welcome page only — not from the + they were already
+                    // clicking. Raised by a colleague of Tim's.
+                    Divider()
+                    Button("New Local Shell") { sessions.openLocalShell() }
                 case .macros:
                     Button("New Macro…") { editingMacro = Macro(name: "", text: "") }
                 case .tools:
@@ -340,7 +346,7 @@ struct SidebarView: View {
             } label: {
                 Label("New", systemImage: "plus")
             }
-            .help("Create a session, folder, or macro")
+            .help("Create a session, folder, macro, or local shell")
         }
         if section != .tools {
             ToolbarItem {
