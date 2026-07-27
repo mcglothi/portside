@@ -123,7 +123,7 @@ struct RecordingSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 480, minHeight: 420)
+        .settingsPageSizing()
         .confirmationDialog(
             "Clear all connection history?",
             isPresented: $confirmingClear,

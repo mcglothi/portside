@@ -47,6 +47,6 @@ struct TerminalSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 480, idealWidth: 520, minHeight: 240)
+        .settingsPageSizing()
     }
 }

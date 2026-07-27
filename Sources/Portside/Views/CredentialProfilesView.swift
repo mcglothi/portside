@@ -68,7 +68,7 @@ struct CredentialProfilesView: View {
             }
             .padding(Metrics.sheetContent)
         }
-        .frame(minWidth: 460, idealWidth: 480, minHeight: 360)
+        .settingsPageSizing()
         .sheet(item: $editingProfile) { profile in
             CredentialProfileEditorView(profile: profile) { result in
                 switch result {

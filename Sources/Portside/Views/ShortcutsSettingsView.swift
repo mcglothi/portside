@@ -24,7 +24,7 @@ struct ShortcutsSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 460, idealWidth: 520, minHeight: 480, idealHeight: 560)
+        .settingsPageSizing()
         .alert(
             "Shortcut Already Used",
             isPresented: Binding(get: { pendingConflict != nil }, set: { if !$0 { pendingConflict = nil } })

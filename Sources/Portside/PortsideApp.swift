@@ -25,6 +25,7 @@ struct PortsideApp: App {
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
+    @State private var settingsTab = "Appearance"
 
     /// Drives the app chrome's light/dark setting. `nil` means "follow system",
     /// which is `NSApplication`'s own way of saying it — not a third value.
@@ -213,29 +214,40 @@ struct PortsideApp: App {
         }
 
         Settings {
-            TabView {
+            // Selection is tracked only so the window can be resized when it
+            // changes: SwiftUI sizes the Settings window once and then leaves
+            // it, so each tab inherited the previous tab's height.
+            TabView(selection: $settingsTab) {
                 AppearanceSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                    .tag("Appearance")
                 TerminalSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Terminal", systemImage: "terminal") }
+                    .tag("Terminal")
                 ConnectionSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Connection", systemImage: "network") }
+                    .tag("Connection")
                 CredentialProfilesView()
                     .environmentObject(store)
                     .tabItem { Label("Profiles", systemImage: "person.badge.key") }
+                    .tag("Profiles")
                 RecordingSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Recording", systemImage: "record.circle") }
+                    .tag("Recording")
                 ShortcutsSettingsView()
                     .environmentObject(store)
                     .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+                    .tag("Shortcuts")
                 UpdateSettingsView()
                     .environmentObject(updater)
                     .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+                    .tag("Updates")
             }
+            .onChange(of: settingsTab) { _, _ in SettingsWindowSizer.fitToContent() }
         }
     }
 
