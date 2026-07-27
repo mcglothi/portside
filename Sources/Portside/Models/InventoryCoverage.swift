@@ -116,9 +116,13 @@ enum InventoryCoverage {
 
     /// Share of hosts with no gaps at all, for an at-a-glance summary.
     /// Returns nil when there are no hosts to report on.
-    /// Staleness is deliberately excluded: it's a usage fact, not a gap in what
-    /// the library describes, and a host you simply don't need often shouldn't
-    /// drag down a completeness number you're trying to drive to 100%.
+    /// Counts only the gaps a user can actually close for every host.
+    ///
+    /// Staleness is a usage fact, not a gap in what the library describes. And
+    /// not using a *shared* profile is a legitimate choice — a host with its own
+    /// key is fully configured — so counting it made 100% unreachable for
+    /// perfectly good setups, which turns the number into noise. Both are still
+    /// listed as findings; they just don't drag the score down.
     static func coveredFraction(
         entries: [SessionEntry],
         defaults: ConnectionDefaults,
@@ -126,7 +130,7 @@ enum InventoryCoverage {
     ) -> Double? {
         let candidates = entries.filter { $0.kind == .host }
         guard !candidates.isEmpty else { return nil }
-        let describedGaps = Gap.allCases.filter { $0 != .stale }
+        let describedGaps: [Gap] = [.noEnvironment, .noStoredCredentials]
         let clean = candidates.filter { entry in
             !describedGaps.contains { matches($0, entry: entry, defaults: defaults, profiles: profiles) }
         }

@@ -151,17 +151,31 @@ final class InventoryCoverageTests: XCTestCase {
     }
 
     func testCoveredFractionCountsOnlyFullyCoveredHosts() {
-        let profile = CredentialProfile(name: "P")
         var good = host("good")
         good.environment = .prod
         good.identityFile = "~/.ssh/k"
-        good.credentialProfileID = profile.id
 
         let bad = host("bad")
 
         let fraction = InventoryCoverage.coveredFraction(
-            entries: [good, bad], defaults: noDefaults, profiles: [profile]
+            entries: [good, bad], defaults: noDefaults, profiles: []
         )
         XCTAssertEqual(fraction, 0.5)
+    }
+
+    func testAHostWithItsOwnKeyCountsAsFullyCovered() {
+        // Not using a shared profile is a legitimate setup; scoring it as a gap
+        // made 100% unreachable and the number meaningless.
+        var solo = host("solo")
+        solo.environment = .dev
+        solo.identityFile = "~/.ssh/id_ed25519"
+
+        XCTAssertEqual(
+            InventoryCoverage.coveredFraction(entries: [solo], defaults: noDefaults, profiles: []),
+            1.0
+        )
+        // Still reported, just not scored.
+        let findings = InventoryCoverage.findings(entries: [solo], defaults: noDefaults, profiles: [])
+        XCTAssertNotNil(findings.first { $0.gap == .noCredentialProfile })
     }
 }

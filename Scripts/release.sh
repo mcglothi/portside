@@ -95,6 +95,13 @@ else
     echo "==> Release gate passed (branch $BRANCH @ ${LOCAL_HEAD:0:9}, signed + notarized)"
 fi
 
+# 7. Tests, before anything is packaged. A release is the one build where
+#    "I'll run them in a minute" is not good enough.
+if [ -z "$UNSAFE" ]; then
+    echo "==> Running tests"
+    swift test
+fi
+
 echo "==> Building Portside $VERSION (build $BUILD)"
 PORTSIDE_VERSION="$VERSION" PORTSIDE_BUILD="$BUILD" ./Scripts/make_app.sh
 
