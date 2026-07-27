@@ -212,15 +212,55 @@ that was never real.
 
 In roughly descending order of how often you'd notice:
 
-- **Empty states.** The file browser, coverage view and history browser all
-  render blank today. Each needs to say what would fill it and how.
+- **Empty states** ✅ Done — see below.
 - **Density and spacing consistency** across the newer views, which were built
-  independently and don't quite agree.
-- **Sidebar and tab-strip chrome.**
-- **Iconography consistency.**
+  independently and don't quite agree. *Not started.*
+- **Sidebar and tab-strip chrome.** *Not started.*
+- **Iconography consistency.** *Not started.*
 
 This is the part with no hard acceptance test, so it is also the part most
 likely to expand. Timebox it and cut from the bottom of the list.
+
+### Empty states ✅ Done
+
+Four views could show nothing, and each had invented its own way of saying so:
+the sidebar used `ContentUnavailableView`, the history browser hand-rolled
+icon/title/detail, the coverage view had a bare line of caption text, and the
+file browser had two lines jammed into one `Text`. They read as different apps,
+and the thin ones read as a bug rather than a state.
+
+All four now go through one `EmptyStateView`, which **wraps
+`ContentUnavailableView`** rather than replacing it — full-size states stay
+native and follow the platform as it changes. The compact variant is hand-rolled
+only because there is no small `ContentUnavailableView` and the full one swamps
+a pane inside a split.
+
+The shape is fixed on purpose: an icon, a short statement of *what is not here*,
+and a detail line saying **what would put something here**. An empty state that
+only says "nothing yet" tells you what you can already see. An action is offered
+only when the thing that fills the view is one control away — a wrong button is
+worse than no button.
+
+Two states now say something they previously got wrong:
+
+- **The coverage view treated an empty library and a fully-covered one as the
+  same thing.** They are opposites — nothing to survey versus nothing left to
+  fix — and the old code would congratulate you on an inventory you had not
+  imported yet.
+- **The file browser called a directory of dotfiles "Empty directory."** It now
+  distinguishes genuinely empty from hidden-by-filter, because the old wording
+  sent people hunting for a transfer that had worked fine.
+
+Also renamed `EmptyStateView` → `WelcomeView`. The name was taken by the
+"welcome aboard" start page, which is not an empty state, and that collision is
+exactly the sort of thing this phase exists to remove.
+
+**A crash caught on the way through**: sheets here do not inherit environment
+objects — which is why `CoverageView` was already being handed `store`
+explicitly. Adding an Import action to its empty state introduced a second
+dependency, and a missing `@EnvironmentObject` is a crash, not a blank view.
+Verified by opening the sheet against an emptied library, not by reading the
+code.
 
 ---
 

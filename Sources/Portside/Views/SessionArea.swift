@@ -8,13 +8,13 @@ struct SessionArea: View {
     var body: some View {
         Group {
             if sessions.sessions.isEmpty {
-                EmptyStateView()
+                WelcomeView()
             } else if let tab = sessions.selectedTab {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
                     if tab.isStartPage {
-                        EmptyStateView(replacingTab: tab)
+                        WelcomeView(replacingTab: tab)
                     } else {
                         TabContentView(tab: tab)
                     }
@@ -518,7 +518,7 @@ struct TabChip: View {
 /// and reused as a start-page tab's content (`replacingTab` set) when opened
 /// from the tab bar's + button — picking a host or a local shell there morphs
 /// that same tab in place instead of leaving it behind.
-struct EmptyStateView: View {
+struct WelcomeView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
     var replacingTab: Tab?

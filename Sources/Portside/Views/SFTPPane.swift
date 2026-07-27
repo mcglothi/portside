@@ -167,6 +167,13 @@ final class SFTPBrowserModel: ObservableObject {
         showHidden ? files : files.filter { !$0.name.hasPrefix(".") }
     }
 
+    /// The directory has contents, but the hidden-file filter is hiding all of
+    /// them — worth saying, because "Empty directory" over a folder full of
+    /// dotfiles sends people hunting for a transfer that actually worked.
+    var hasHiddenFilesOnly: Bool {
+        !files.isEmpty && visibleFiles.isEmpty
+    }
+
     func loadIfNeeded() async {
         guard !loaded else { return }
         loaded = true
@@ -882,10 +889,23 @@ struct SFTPPaneView: View {
         }
         .overlay {
             if model.visibleFiles.isEmpty && !model.isBusy && model.errorMessage == nil {
-                Text("Empty directory\nDrop files here to upload")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.tertiary)
-                    .font(.callout)
+                // A directory with only dotfiles in it is not empty, and saying
+                // so sends people hunting for a transfer that worked fine.
+                if model.hasHiddenFilesOnly {
+                    EmptyStateView(
+                        icon: "eye.slash",
+                        title: "Only hidden files here",
+                        detail: "This directory contains nothing but dotfiles. Turn on Show Hidden Files to see them.",
+                        compact: true
+                    )
+                } else {
+                    EmptyStateView(
+                        icon: "folder",
+                        title: "Empty directory",
+                        detail: "Drop files here to upload them to this host.",
+                        compact: true
+                    )
+                }
             }
         }
     }

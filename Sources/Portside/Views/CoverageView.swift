@@ -10,6 +10,7 @@ import SwiftUI
 /// the same either way.
 struct CoverageView: View {
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     @Environment(\.dismiss) private var dismiss
     @State private var expanded: Set<String> = []
 
@@ -48,19 +49,34 @@ struct CoverageView: View {
     }
 
     private var list: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                summary
-                if findings.isEmpty {
-                    allClear
-                } else {
-                    ForEach(findings) { finding in
-                        card(for: finding)
+        // An empty library and a fully-covered one both show "no findings", and
+        // they mean opposite things: nothing to survey versus nothing left to
+        // fix. Separated so the view never congratulates you on an empty list.
+        if store.entries.contains(where: { $0.kind == .host }) {
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        summary
+                        if findings.isEmpty {
+                            allClear
+                        } else {
+                            ForEach(findings) { finding in
+                                card(for: finding)
+                            }
+                        }
                     }
+                    .padding(10)
                 }
-            }
-            .padding(10)
+            )
         }
+        return AnyView(
+            EmptyStateView(
+                icon: "square.stack.3d.up.slash",
+                title: "No hosts to survey",
+                detail: "Coverage reports what Portside doesn't know about your fleet — environment tags, credential profiles, hosts you've never reached. Import a ~/.ssh/config or add a session to get started.",
+                action: EmptyStateView.Action(label: "Import…") { library.requestImport() }
+            )
+        )
     }
 
     private var summary: some View {

@@ -144,7 +144,9 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showingCoverage) {
-            CoverageView().environmentObject(store)
+            // `library` as well as `store`: the empty state offers Import…, and
+            // a missing @EnvironmentObject is a crash, not a blank view.
+            CoverageView().environmentObject(store).environmentObject(library)
         }
         .sheet(isPresented: $showingHistory) {
             HistoryView().environmentObject(store)
@@ -276,9 +278,12 @@ struct SidebarView: View {
             )
             .overlay {
                 if store.entries.isEmpty {
-                    ContentUnavailableView("No hosts yet",
-                        systemImage: "server.rack",
-                        description: Text("Add a session or import from ~/.ssh/config."))
+                    EmptyStateView(
+                        icon: "server.rack",
+                        title: "No hosts yet",
+                        detail: "Add a session, or import the hosts you already have in ~/.ssh/config.",
+                        action: EmptyStateView.Action(label: "Import…") { library.requestImport() }
+                    )
                 }
             }
         }
@@ -299,9 +304,12 @@ struct SidebarView: View {
         }
         .overlay {
             if store.macros.isEmpty {
-                ContentUnavailableView("No macros yet",
-                    systemImage: "bolt",
-                    description: Text("Macros send saved text to the active or broadcast terminals."))
+                EmptyStateView(
+                    icon: "bolt",
+                    title: "No macros yet",
+                    detail: "Macros send saved text to the active terminal, or to every broadcast target at once.",
+                    action: EmptyStateView.Action(label: "New Macro…") { editingMacro = Macro(name: "", text: "") }
+                )
             }
         }
     }
