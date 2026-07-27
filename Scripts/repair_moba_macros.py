@@ -22,6 +22,7 @@ than rewritten, because `echo SPACE` is a legitimate macro.
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,20 @@ from pathlib import Path
 
 LIBRARY = Path.home() / "Library/Application Support/Portside/portside.json"
 
-# Only the labels with an unambiguous text form. Arrows and F-keys were dropped
-# on import rather than inlined, so there is nothing to recover for those.
+# MobaXterm's own format escapes, for characters that collide with its
+# delimiters: `|` separates tokens, `:` separates fields, `=` splits name from
+# sequence, `;` starts a comment. French names — PTVIRG is *point-virgule*,
+# DBLDOT is *deux-points*. These are unambiguous: no macro types them by hand.
+FORMAT_ESCAPES = {
+    "__DBLQUO__": '"',
+    "__PTVIRG__": ";",
+    "__PIIPE__": "|",
+    "__EQQUAL__": "=",
+    "__DBLDOT__": ":",
+}
+
+# Key labels with an unambiguous text form. Arrows and F-keys were dropped on
+# import rather than inlined, so there is nothing to recover for those.
 NAMED_KEYS = {
     "SPACE": " ",
     "TAB": "\t",
@@ -38,7 +51,19 @@ NAMED_KEYS = {
     "ENTER": "\n",
     "ESCAPE": "\x1b",
     "ESC": "\x1b",
+    "PIPE": "|",
+    "COLON": ":",
 }
+
+CTRL = re.compile(r"Ctrl\+([A-Za-z])")
+
+# Labels seen in the wild that have no safe automatic text form. Reported after
+# a repair rather than rewritten: BACK is probably backspace, but "probably" is
+# not good enough to rewrite somebody's command with.
+RESIDUAL_LABELS = [
+    "BACKBACK", "BACKSPACE", "DELETE", "INSERT", "PGUP", "PGDN",
+    "HOME", "END", "ALTGR",
+]
 
 
 def portside_running():
@@ -51,20 +76,28 @@ def portside_running():
 
 def repair(text):
     """Returns (new_text, changed). Longest names first so ESCAPE beats ESC."""
-    out, changed = text, False
+    out = text
+    for token, literal in FORMAT_ESCAPES.items():
+        out = out.replace(token, literal)
     for name in sorted(NAMED_KEYS, key=len, reverse=True):
-        if name in out:
-            out = out.replace(name, NAMED_KEYS[name])
-            changed = True
-    return out, changed
+        out = out.replace(name, NAMED_KEYS[name])
+    out = CTRL.sub(lambda m: chr(ord(m.group(1).upper()) - 64), out)
+    return out, out != text
 
 
 def classify(text):
     """`damaged`, `ambiguous`, or `clean`.
 
-    A macro with a key name and no real whitespace is damaged: nobody types
-    `yumSPACEupdate` deliberately. One that has both is left alone.
+    A format escape is unambiguous on its own — nothing types `__DBLQUO__` by
+    hand — so its presence alone means damaged.
+
+    A bare key *name* is weaker evidence, because `echo SPACE is a word` is a
+    legitimate macro. Those only count as damaged when the text has no real
+    whitespace at all, which is the signature of every space having become a
+    word. Otherwise the macro is reported for a human to look at.
     """
+    if any(token in text for token in FORMAT_ESCAPES) or CTRL.search(text):
+        return "damaged"
     if not any(name in text for name in NAMED_KEYS):
         return "clean"
     return "ambiguous" if any(c.isspace() for c in text) else "damaged"
@@ -104,6 +137,19 @@ def main():
         print(f"  {name}")
         print(f"    before: {before!r}")
         print(f"    after:  {after!r}")
+
+    residual = []
+    for macro in macros:
+        found = [w for w in RESIDUAL_LABELS if w in macro.get("text", "")]
+        if found:
+            residual.append((macro.get("name", "?"), found, macro.get("text", "")))
+
+    if residual:
+        print("\nStill contain something that looks like a MobaXterm key label.")
+        print("Not guessed at — check these by hand:\n")
+        for name, found, text in residual:
+            print(f"  {name}  [{', '.join(found)}]")
+            print(f"    {text!r}")
 
     if ambiguous:
         print("\nLeft alone — these contain a key name *and* real spaces, so they may")

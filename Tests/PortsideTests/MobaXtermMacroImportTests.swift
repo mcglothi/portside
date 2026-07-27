@@ -101,3 +101,97 @@ final class MobaXtermMacroImportTests: XCTestCase {
         XCTAssertFalse(imported.isFavorite)
     }
 }
+
+/// MobaXterm escapes the characters that collide with its own file format.
+/// Found by reading a real 867-host library from Tim's work machine, where
+/// these were far more common than the `SPACE` that started the hunt:
+/// 58 double quotes, 22 semicolons, 20 pipes, 14 equals, 11 colons.
+final class MobaXtermEscapeTests: XCTestCase {
+
+    private func tuples(_ characters: [String]) -> String {
+        characters.map { "258:0:0:\($0)" }.joined(separator: "|")
+    }
+
+    private func macro(named name: String, sequence: String) -> Macro? {
+        MobaXtermImporter.parseMacros("[Macros]\n\(name)=\(sequence)").macros.first
+    }
+
+    func testFormatEscapesDecodeToTheirCharacters() {
+        XCTAssertEqual(MobaXtermImporter.decodeEscapes("__DBLQUO__"), "\"")
+        XCTAssertEqual(MobaXtermImporter.decodeEscapes("__PTVIRG__"), ";")
+        XCTAssertEqual(MobaXtermImporter.decodeEscapes("__PIIPE__"), "|")
+        XCTAssertEqual(MobaXtermImporter.decodeEscapes("__EQQUAL__"), "=")
+        XCTAssertEqual(MobaXtermImporter.decodeEscapes("__DBLDOT__"), ":")
+    }
+
+    /// Straight from the work library, which had it as
+    /// `package-cleanup --oldkernels --count__EQQUAL__2 __PIIPE____PIIPE__ …`
+    func testRealWorldPipeAndEqualsMacro() throws {
+        let keys = ["c", "o", "u", "n", "t", "__EQQUAL__", "2", "SPACE",
+                    "__PIIPE__", "__PIIPE__", "SPACE", "y", "u", "m"]
+        let imported = try XCTUnwrap(macro(named: "kernels", sequence: tuples(keys)))
+
+        XCTAssertEqual(imported.text, "count=2 || yum")
+    }
+
+    /// An escape stands for one character, so it has to be decoded before the
+    /// label is measured — `__DBLQUO__` is eleven characters long and would
+    /// otherwise be discarded as an unknown key name.
+    func testEscapesSurviveTheSingleCharacterCheck() throws {
+        let keys = ["e", "c", "h", "o", "SPACE", "__DBLQUO__", "h", "i", "__DBLQUO__"]
+        let imported = try XCTUnwrap(macro(named: "echo", sequence: tuples(keys)))
+
+        XCTAssertEqual(imported.text, "echo \"hi\"")
+    }
+
+    func testSemicolonAndColonEscapes() throws {
+        let keys = ["a", "__PTVIRG__", "SPACE", "b", "__DBLDOT__", "c"]
+        let imported = try XCTUnwrap(macro(named: "seq", sequence: tuples(keys)))
+
+        XCTAssertEqual(imported.text, "a; b:c")
+    }
+
+    /// The macro name sits left of the `=` the format uses to split the line,
+    /// so it carries escapes too.
+    func testEscapesInTheMacroName() throws {
+        let imported = try XCTUnwrap(
+            macro(named: "disk__DBLDOT__ check", sequence: tuples(["d", "f"]))
+        )
+
+        XCTAssertEqual(imported.name, "disk: check")
+    }
+
+    func testPipeKeyLabelBecomesAPipe() throws {
+        let imported = try XCTUnwrap(
+            macro(named: "count", sequence: tuples(["l", "s", "SPACE", "PIPE", "SPACE", "w", "c"]))
+        )
+
+        XCTAssertEqual(imported.text, "ls | wc")
+    }
+
+    func testCtrlLabelsBecomeControlCharacters() {
+        XCTAssertEqual(MobaXtermImporter.controlCharacter(for: "Ctrl+C"), "\u{03}")
+        XCTAssertEqual(MobaXtermImporter.controlCharacter(for: "Ctrl+D"), "\u{04}")
+        XCTAssertNil(MobaXtermImporter.controlCharacter(for: "Ctrl+"))
+        XCTAssertNil(MobaXtermImporter.controlCharacter(for: "SPACE"))
+    }
+
+    func testCtrlCInAMacroSequence() throws {
+        let imported = try XCTUnwrap(
+            macro(named: "interrupt", sequence: tuples(["t", "o", "p", "Ctrl+C"]))
+        )
+
+        XCTAssertEqual(imported.text, "top\u{03}")
+    }
+
+    /// An unknown `__NAME__` stands for *some* literal character, so dropping it
+    /// would silently change a command. Left visible so it gets reported —
+    /// which is exactly how these were found.
+    func testUnknownEscapesAreLeftVisibleRatherThanDropped() throws {
+        let imported = try XCTUnwrap(
+            macro(named: "odd", sequence: tuples(["a", "__NOPENOPE__", "b"]))
+        )
+
+        XCTAssertEqual(imported.text, "a__NOPENOPE__b")
+    }
+}
