@@ -239,12 +239,16 @@ exists to fill that gap without giving up native speed and macOS polish.
 ### Later
 
 - Per-profile font/theme choices (appearance is global today).
-- Font ligatures and inline image protocols (Sixel / iTerm2) are current
-  SwiftTerm limitations, tracked in the compatibility matrix rather than
-  promised here. (Shell integration / prompt markers were previously listed here as blocked
-  upstream. They aren't: Portside parses OSC 133 itself from the raw byte
-  stream, which is how command history works — SwiftTerm never needs to see
-  them.)
+- Font ligatures are a current SwiftTerm limitation, tracked in the
+  compatibility matrix rather than promised here. (Shell integration / prompt
+  markers were previously listed here as blocked upstream. They aren't:
+  Portside parses OSC 133 itself from the raw byte stream, which is how command
+  history works — SwiftTerm never needs to see them.)
+- Inline images were listed here too, and shouldn't have been: Sixel, iTerm2
+  (OSC 1337) and Kitty graphics all work on the pinned SwiftTerm. The matrix
+  had them down as unsupported because it was last measured against a
+  pre-1.0 SwiftTerm. Sixel does carry an upstream crash on certain images —
+  see [the compatibility matrix](docs/COMPATIBILITY.md) for the specifics.
 
 - Touch ID gating for saved credentials (Vaultwarden references later)
 - Named / pinned layout presets
