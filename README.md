@@ -219,6 +219,11 @@ exists to fill that gap without giving up native speed and macOS polish.
   back in" — hidden while actively searching, same as recents. Pin from a
   sidebar right-click (single host or a multi-selection), a hover star icon
   on each sidebar row, or a Favorite toggle in the session editor.
+- ✅ **App appearance** (light / dark / follow system), independent of the
+  terminal's color theme; **favourite macros** pinned to the MultiExec bar;
+  **browsable recently-closed tabs**; **⌘W closes the tab**; a **"never
+  connected"** coverage category; and inline images documented at last —
+  Sixel, iTerm2 and Kitty graphics all render.
 - ✅ **Changelog on update** — the Sparkle update prompt now shows a
   cumulative changelog covering everything since whatever version you're
   updating from, not just the latest release's own notes, since releases
@@ -226,13 +231,6 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ### Next up
 
-- App UI appearance (light / dark / follow system) — distinct from the
-  terminal's own color theme — plus a broader density, empty-state and
-  chrome pass. Planned for 0.17.
-- Browsable "recently closed tabs" — reopen any of the last N closed
-  tabs/layouts, not just the single most recent one (⇧⌘T today).
-- A "never connected" category in the coverage view, distinct from hosts that
-  have gone stale.
 - **SFTP: host-to-host file copy in Grid View** — drag a file from the one
   shared SFTP pane onto a *different* pane/tab (not its own file browser —
   there's only one shared pane today, tied to whichever pane is focused) to
