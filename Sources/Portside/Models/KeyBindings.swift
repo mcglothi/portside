@@ -141,13 +141,13 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case newLocalShell, quickConnect, find
     case zoomIn, zoomOut, actualSize
     case splitRight, splitDown, zoomPane, focusNextPane, focusPreviousPane, closePane
-    case nextTab, previousTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
+    case nextTab, previousTab, closeTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
 
     var id: String { rawValue }
 
     var category: String {
         switch self {
-        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .reopenClosedTab:
+        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .closeTab, .reopenClosedTab:
             return "Tabs"
         case .splitRight, .splitDown, .zoomPane, .focusNextPane, .focusPreviousPane, .closePane:
             return "Panes"
@@ -175,6 +175,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .closePane: return "Close Pane"
         case .nextTab: return "Show Next Tab"
         case .previousTab: return "Show Previous Tab"
+        case .closeTab: return "Close Tab"
         case .reopenClosedTab: return "Reopen Closed Tab"
         case .toggleMultiExec: return "Toggle MultiExec"
         case .toggleGridView: return "Toggle Grid View"
@@ -200,6 +201,11 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .closePane: return KeyBinding(key: .character("w"), modifiers: [.command, .shift])
         case .nextTab: return KeyBinding(key: .character("]"), modifiers: [.command, .shift])
         case .previousTab: return KeyBinding(key: .character("["), modifiers: [.command, .shift])
+        // Not ⌘W, which macOS gives to Close Window and which Portside has
+        // never taken. ⇧⌘W is already Close Pane, so this takes the remaining
+        // W. Remappable like everything else if you want the terminal-app
+        // convention where ⌘W closes the tab.
+        case .closeTab: return KeyBinding(key: .character("w"), modifiers: [.command, .option])
         case .reopenClosedTab: return KeyBinding(key: .character("t"), modifiers: [.command, .shift])
         case .toggleMultiExec: return KeyBinding(key: .character("m"), modifiers: [.command, .shift])
         case .toggleGridView: return KeyBinding(key: .character("g"), modifiers: [.command, .shift])

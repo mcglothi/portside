@@ -20,7 +20,8 @@ struct CoverageView: View {
             profiles: store.credentialProfiles,
             staleIDs: ConnectionHistory.staleEntryIDs(
                 store.connectionStats, staleAfterDays: store.history.staleAfterDays
-            )
+            ),
+            connectedIDs: ConnectionHistory.connectedEntryIDs(store.connectionStats)
         )
     }
 
@@ -196,6 +197,13 @@ struct CoverageView: View {
             }
         case .stale:
             Text("Nothing to fix here — this is a usage fact, not a gap. Shown so a big imported library can be pruned with evidence.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        case .neverConnected:
+            // Deliberately no bulk action. The obvious one would be "delete
+            // these", and an unvisited host is exactly as likely to be one you
+            // simply haven't needed yet as one that was never real.
+            Text("Nothing to fix here — open one to find out. Only connections Portside recorded count, so hosts you used before history was on will appear here too.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         case .noStoredCredentials:

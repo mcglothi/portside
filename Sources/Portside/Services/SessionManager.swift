@@ -1308,24 +1308,59 @@ final class SessionManager: ObservableObject {
     /// front) — not inside `close(_:)`'s per-leaf teardown — avoids recording
     /// a degenerate single-pane remnant when a multi-pane tab's leaves close
     /// one at a time as part of closing the whole tab.
-    private var closedTabHistory: [RestorePlan.TabPlan] = []
-    private static let closedTabHistoryLimit = 10
+    ///
+    /// See `ClosedTabRing` for why this is in-memory only.
+    @Published private(set) var closedTabRing = ClosedTabRing()
+
+    var closedTabs: [ClosedTab] { closedTabRing.entries }
 
     private func rememberForReopen(_ tab: Tab) {
         guard let root = tab.root, let plan = planNode(for: root) else { return }
-        closedTabHistory.append(RestorePlan.TabPlan(root: plan))
-        if closedTabHistory.count > Self.closedTabHistoryLimit {
-            closedTabHistory.removeFirst()
-        }
+        let tabPlan = RestorePlan.TabPlan(root: plan)
+        closedTabRing.record(ClosedTab(plan: tabPlan,
+                                       title: tab.customTitle ?? tab.activeLeaf?.title ?? "shell",
+                                       customTitle: tab.customTitle,
+                                       paneCount: tabPlan.root.leafCount,
+                                       closedAt: Date()))
     }
 
     /// Reopens the most recently closed tab (⇧⌘T), same as a browser's
     /// "reopen closed tab" — reuses the same restore-plan builder as launch
     /// restore and Duplicate Tab.
     func reopenLastClosedTab() {
-        guard let plan = closedTabHistory.popLast(), let tab = buildTab(plan) else { return }
+        guard let closed = closedTabRing.takeMostRecent() else { return }
+        restore(closed)
+    }
+
+    /// Reopens a specific closed tab chosen from the menu, rather than only the
+    /// most recent one.
+    func reopenClosedTab(id: ClosedTab.ID) {
+        guard let closed = closedTabRing.take(id: id) else { return }
+        restore(closed)
+    }
+
+    private func restore(_ closed: ClosedTab) {
+        guard let tab = buildTab(closed.plan) else { return }
+        tab.customTitle = closed.customTitle
         tabs.append(tab)
         selectedTabID = tab.id
+    }
+
+    /// Forgets every closed tab without reopening any (File ▸ Recently Closed ▸
+    /// Clear). The ring is a record of what you had open, so it needs a way to
+    /// be dropped on purpose, same as the connection log.
+    func clearClosedTabs() {
+        closedTabRing.clear()
+    }
+
+    /// Closes the current tab (File ▸ Close Tab).
+    ///
+    /// Until this existed, closing a whole tab was reachable only from the tab
+    /// strip's × button — so "Reopen Closed Tab" could undo something you had
+    /// no keyboard way to do. ⌘W is Close Window and stays that way.
+    func closeSelectedTab() {
+        guard let tab = selectedTab else { return }
+        closeTab(tab)
     }
 
     /// Closes every tab except the given one (tab menu ▸ Close Others).

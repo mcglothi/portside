@@ -19,6 +19,7 @@ enum InventoryCoverage {
         case noEnvironment
         case noCredentialProfile
         case noStoredCredentials
+        case neverConnected
         case stale
 
         var id: String { rawValue }
@@ -28,6 +29,7 @@ enum InventoryCoverage {
             case .noEnvironment: return "No environment tag"
             case .noCredentialProfile: return "No credential profile"
             case .noStoredCredentials: return "No stored credentials"
+            case .neverConnected: return "Never connected"
             case .stale: return "Not connected recently"
             }
         }
@@ -37,6 +39,7 @@ enum InventoryCoverage {
             case .noEnvironment: return "tag"
             case .noCredentialProfile: return "person.badge.key"
             case .noStoredCredentials: return "key"
+            case .neverConnected: return "questionmark.circle"
             case .stale: return "clock.arrow.circlepath"
             }
         }
@@ -51,6 +54,8 @@ enum InventoryCoverage {
                 return "Not using a shared profile, so a password or key rotation won't reach these hosts automatically — they'd each need editing."
             case .noStoredCredentials:
                 return "No key, saved password, or profile is configured. Perfectly normal if these authenticate through ssh-agent or a ~/.ssh/config rule."
+            case .neverConnected:
+                return "Portside has no record of ever reaching these. Usually an import nobody has verified yet — a wrong hostname or a host that no longer exists looks exactly like one you simply haven't needed."
             case .stale:
                 return "Connected to a long time ago. Often just infrastructure you don't touch often — worth a look when pruning a big imported library."
             }
@@ -71,12 +76,14 @@ enum InventoryCoverage {
         entries: [SessionEntry],
         defaults: ConnectionDefaults,
         profiles: [CredentialProfile],
-        staleIDs: Set<UUID> = []
+        staleIDs: Set<UUID> = [],
+        connectedIDs: Set<UUID>? = nil
     ) -> [Finding] {
         let candidates = entries.filter { $0.kind == .host }
         return Gap.allCases.compactMap { gap in
             let matched = candidates
-                .filter { matches(gap, entry: $0, defaults: defaults, profiles: profiles, staleIDs: staleIDs) }
+                .filter { matches(gap, entry: $0, defaults: defaults, profiles: profiles,
+                                  staleIDs: staleIDs, connectedIDs: connectedIDs) }
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return matched.isEmpty ? nil : Finding(gap: gap, entries: matched)
         }
@@ -87,11 +94,19 @@ enum InventoryCoverage {
         entry: SessionEntry,
         defaults: ConnectionDefaults,
         profiles: [CredentialProfile],
-        staleIDs: Set<UUID> = []
+        staleIDs: Set<UUID> = [],
+        connectedIDs: Set<UUID>? = nil
     ) -> Bool {
         switch gap {
         case .stale:
             return staleIDs.contains(entry.id)
+
+        case .neverConnected:
+            // No history at all means no basis to judge -- recording may be
+            // off, or the library may be minutes old. Reporting every host as
+            // unvisited in that state is noise, not a finding.
+            guard let connectedIDs, !connectedIDs.isEmpty else { return false }
+            return !connectedIDs.contains(entry.id)
         case .noEnvironment:
             return entry.environment == .none
 

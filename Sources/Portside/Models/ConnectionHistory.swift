@@ -123,6 +123,17 @@ enum ConnectionHistory {
         return Set(stats.filter { $0.lastConnected < cutoff }.map(\.entryID))
     }
 
+    /// Hosts Portside has ever recorded a confirmed connection to.
+    ///
+    /// `nil` when there is no history at all, which is not the same as "nothing
+    /// has been connected to": recording may be off, or this may be a library
+    /// imported five minutes ago. The coverage view uses the distinction to
+    /// stay quiet rather than declare the whole fleet unvisited.
+    static func connectedEntryIDs(_ stats: [ConnectionStat]) -> Set<UUID>? {
+        guard !stats.isEmpty else { return nil }
+        return Set(stats.map(\.entryID))
+    }
+
     /// Trims the log to `limit`, dropping oldest first.
     static func trimmed(_ log: [ConnectionLogEntry], to limit: Int) -> [ConnectionLogEntry] {
         guard limit > 0 else { return [] }

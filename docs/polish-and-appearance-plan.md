@@ -154,26 +154,57 @@ measuring nothing.
 Both were cut from 0.16 and named in the README, so they are promises already
 made.
 
-### Browsable recently-closed tabs
+### Browsable recently-closed tabs ✅ Done
 
-Reopen any of the last N closed tabs, not just the single most recent (⇧⌘T
-today). The restore planner already rebuilds a `PaneNode` tree from a
-`WorkspaceSnapshot`, so a closed tab is a snapshot to retain rather than
-anything new to model — the work is a bounded ring of snapshots and a menu to
-pick from, not a new persistence format.
+Reopen any of the last N closed tabs, not just the single most recent. The ring
+already existed and already held ten — only the UI was single-step, so this was
+mostly a menu.
 
-Decide: does the ring survive app restart? Session restore already persists a
-workspace, so the machinery exists, but a closed-tab history that outlives a
-quit is a different privacy proposition than one that doesn't — it is a record
-of what you had open. Default it to in-memory unless there's a reason not to.
+**Decided with Tim: in-memory only.** The ring is a record of what
+infrastructure you had open, which is a different proposition from the session
+restore that outlives a quit by design. Quitting clears it, and File ▸ Recently
+Closed ▸ Clear drops it on demand, the same courtesy the connection log gets.
 
-### A "never connected" coverage category
+Extracted to a `ClosedTabRing` value type so eviction and take-out rules test
+without a `SessionManager` or a spawned terminal. Reopening removes the entry —
+a tab that is open again is not a tab you can reopen, and leaving it in means
+every pick spawns another copy.
 
-Distinct from stale. Today a host nobody has ever opened and a host untouched
-for 90+ days land in the same bucket, and they mean opposite things: one is an
-import that was never verified, the other is drift. The coverage view already
-separates *reported* from *scored* axes, so this slots in as a reported axis
-without putting 100% out of reach.
+**This uncovered a real gap: there was no way to close a tab from the keyboard
+or the menu bar at all.** Closing a whole tab was reachable only from the tab
+strip's × button, so ⇧⌘T could undo something you had no keyboard way to do.
+Added File ▸ Close Tab, bound to ⌥⌘W — *not* ⌘W, which is Close Window and has
+never belonged to Portside, and not ⇧⌘W, which is already Close Pane. It is
+remappable like every other shortcut if the terminal-app convention (⌘W closes
+the tab) is what you want.
+
+One SwiftUI wrinkle worth remembering: **`.disabled` is ignored on a `Menu`
+inside a `CommandGroup`.** The submenu opens whatever you do, so the empty state
+is a disabled "No Recently Closed Tabs" placeholder inside it rather than a
+greyed-out parent. Verified by enumerating the live menu, not by reading the
+code.
+
+### A "never connected" coverage category ✅ Done
+
+Distinct from stale. A host nobody has ever opened and a host untouched for 90+
+days mean opposite things: one is an import that was never verified, the other
+is drift. `ConnectionHistory.staleEntryIDs` already said as much in a comment —
+"a host with no history at all is *not* stale — it's unknown, which the coverage
+view reports separately" — except that it didn't yet. Now it does.
+
+Reported, not scored, so 100% stays reachable for a fleet that is fully
+described but not fully visited.
+
+The judgement call worth keeping: **no history at all is not evidence that
+nothing has been connected to.** Recording may be off, or the library may be
+minutes old. `connectedEntryIDs` returns `nil` in that case and the axis stays
+silent, rather than declaring an entire imported fleet unvisited. The detail
+text also says outright that only recorded connections count, so hosts used
+before history was enabled will show up here.
+
+No bulk action, deliberately. The obvious one would be "delete these", and an
+unvisited host is exactly as likely to be one you have not needed yet as one
+that was never real.
 
 ---
 

@@ -113,8 +113,33 @@ struct PortsideApp: App {
                     .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }
                     .keyboardShortcut(shortcut(.quickConnect))
+                Button("Close Tab") { sessions.closeSelectedTab() }
+                    .keyboardShortcut(shortcut(.closeTab))
+                    .disabled(sessions.selectedTab == nil)
                 Button("Reopen Closed Tab") { sessions.reopenLastClosedTab() }
                     .keyboardShortcut(shortcut(.reopenClosedTab))
+                    .disabled(sessions.closedTabs.isEmpty)
+                // ⇧⌘T still walks back one at a time; this is for reaching
+                // past the most recent one without reopening everything after
+                // it first. Most-recent first, which is the reverse of how the
+                // ring is stored.
+                //
+                // The empty case is a disabled placeholder rather than a
+                // disabled menu: SwiftUI ignores `.disabled` on a `Menu` inside
+                // a command group, so the submenu opens regardless and needs
+                // something honest inside it.
+                Menu("Recently Closed") {
+                    if sessions.closedTabs.isEmpty {
+                        Button("No Recently Closed Tabs") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(sessions.closedTabRing.mostRecentFirst) { closed in
+                            Button(closed.menuLabel) { sessions.reopenClosedTab(id: closed.id) }
+                        }
+                        Divider()
+                        Button("Clear Recently Closed") { sessions.clearClosedTabs() }
+                    }
+                }
                 Divider()
                 Button("Import…") { library.requestImport() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
