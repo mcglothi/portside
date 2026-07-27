@@ -66,7 +66,7 @@ struct HistoryView: View {
             Spacer()
             Button("Done") { dismiss() }
         }
-        .padding(12)
+        .padding(Metrics.sheetChrome)
     }
 
     // MARK: - Commands

@@ -21,18 +21,14 @@ struct CredentialProfilesView: View {
     var body: some View {
         VStack(spacing: 0) {
             if store.credentialProfiles.isEmpty {
-                VStack(spacing: 6) {
-                    Spacer()
-                    Text("No Credential Profiles")
-                        .font(.headline)
-                    Text("Create one to apply a shared username, key, or password to a batch of hosts — and rotate it everywhere at once.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 320)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyStateView(
+                    icon: "person.badge.key",
+                    title: "No credential profiles",
+                    // No action here: the footer's Add Profile… button is
+                    // already on screen a few points below, and two identical
+                    // buttons that close together read as a mistake.
+                    detail: "Create one to apply a shared username, key, or password to a batch of hosts — and rotate it everywhere at once."
+                )
             } else {
                 List {
                     ForEach(store.credentialProfiles) { profile in
@@ -41,12 +37,7 @@ struct CredentialProfilesView: View {
                                 HStack(spacing: 6) {
                                     Text(profile.name)
                                     if store.defaultProfileID == profile.id {
-                                        Text("Default")
-                                            .font(.caption2)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 1)
-                                            .background(Color.accentColor, in: Capsule())
-                                            .foregroundStyle(.white)
+                                        CapsuleBadge(text: "Default", style: .accent)
                                     }
                                 }
                                 Text(subtitle(for: profile))
@@ -75,7 +66,7 @@ struct CredentialProfilesView: View {
                 Spacer()
                 Button("Add Profile…") { editingProfile = CredentialProfile(name: "") }
             }
-            .padding(10)
+            .padding(Metrics.sheetContent)
         }
         .frame(minWidth: 460, idealWidth: 480, minHeight: 360)
         .sheet(item: $editingProfile) { profile in

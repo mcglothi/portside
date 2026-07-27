@@ -26,17 +26,18 @@ struct LogSearchView: View {
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(10)
+            .padding(Metrics.sheetChrome)
             Divider()
 
             if results.isEmpty {
-                ContentUnavailableView(
-                    searched && !isSearching ? "No matches" : "Search your logs",
-                    systemImage: "doc.text.magnifyingglass",
-                    description: Text(searched && !isSearching
-                        ? "Nothing matched “\(query)”."
-                        : "Find a command or output across every session log, including compressed archives."))
-                    .frame(maxHeight: .infinity)
+                EmptyStateView(
+                    icon: "doc.text.magnifyingglass",
+                    title: searched && !isSearching ? "No matches" : "Search your logs",
+                    detail: searched && !isSearching
+                        ? "Nothing matched “\(query)”. Logs are kept per session — check Settings ▸ Recording if you expected more history."
+                        : "Find a command or output across every session log, including compressed archives."
+                )
+                .frame(maxHeight: .infinity)
             } else {
                 List(results) { match in
                     resultRow(match)

@@ -21,15 +21,15 @@ struct PortForwardingView: View {
                     Label("New Tunnel", systemImage: "plus")
                 }
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
 
             Divider()
 
             if store.forwards.isEmpty {
-                ContentUnavailableView(
-                    "No tunnels yet",
-                    systemImage: "arrow.left.arrow.right",
-                    description: Text("Forward a local port through any host in your library — ssh -L, -R, and SOCKS proxies.")
+                EmptyStateView(
+                    icon: "arrow.left.arrow.right",
+                    title: "No tunnels yet",
+                    detail: "Forward a local port through any host in your library — ssh -L, -R, and SOCKS proxies."
                 )
                 .frame(maxHeight: .infinity)
             } else {
@@ -57,7 +57,7 @@ struct PortForwardingView: View {
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
         }
         .frame(width: 560, height: 420)
         .sheet(item: $editingForward) { forward in
@@ -114,12 +114,7 @@ private struct ForwardRow: View {
                     Text(forward.displayName)
                         .fontWeight(.medium)
                         .lineLimit(1)
-                    Text(forward.kind.label)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.quaternary, in: Capsule())
-                        .foregroundStyle(.secondary)
+                    CapsuleBadge(text: forward.kind.label)
                     if forward.autoStart {
                         Image(systemName: "play.circle")
                             .font(.caption)

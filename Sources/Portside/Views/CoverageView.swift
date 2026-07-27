@@ -41,7 +41,7 @@ struct CoverageView: View {
                 Spacer()
                 Button("Done") { dismiss() }
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
             Divider()
             list
         }
@@ -55,7 +55,7 @@ struct CoverageView: View {
         if store.entries.contains(where: { $0.kind == .host }) {
             return AnyView(
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: Metrics.cardSpacing) {
                         summary
                         if findings.isEmpty {
                             allClear
@@ -65,7 +65,7 @@ struct CoverageView: View {
                             }
                         }
                     }
-                    .padding(10)
+                    .padding(Metrics.sheetContent)
                 }
             )
         }
@@ -169,7 +169,7 @@ struct CoverageView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(Metrics.cardPadding)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 

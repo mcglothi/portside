@@ -213,21 +213,59 @@ that was never real.
 In roughly descending order of how often you'd notice:
 
 - **Empty states** ✅ Done — see below.
-- **Density and spacing consistency** across the newer views, which were built
-  independently and don't quite agree. *Not started.*
-- **Sidebar and tab-strip chrome.** *Not started.*
-- **Iconography consistency.** *Not started.*
+- **Density and spacing consistency** ✅ Done — `Metrics`.
+- **Chrome** ✅ Done — one `CapsuleBadge` instead of three.
+- **Iconography** ✅ Done — one warning symbol instead of two.
 
 This is the part with no hard acceptance test, so it is also the part most
-likely to expand. Timebox it and cut from the bottom of the list.
+likely to expand. It was kept to *removing duplicates that already existed*
+rather than introducing a design system the app has not asked for.
+
+### Density and spacing ✅ Done
+
+The sheet-style views were each built independently and each picked its own
+numbers: 10pt header padding in some, 12 in others, content insets that did not
+match the chrome above them. Individually invisible; together they are why the
+app looked assembled rather than designed.
+
+`Metrics` holds the agreed values. Deliberately five constants and not a design
+system — the goal was to stop re-picking numbers, not to build a framework.
+
+### Chrome ✅ Done
+
+`CapsuleBadge` already existed for host tags, and the credential-profile list
+and port-forwarding list had each hand-rolled their own capsule beside it, at
+6pt and 5pt horizontal padding respectively. Same element, three
+implementations, none agreeing.
+
+Now one component with three styles, matching the three jobs a badge does here:
+label a *kind* (tinted, the host tags), mark the *chosen* one (accent), or state
+a neutral attribute. Uppercasing belongs to the tinted style alone — it suits
+`PROD` and looks shouty on "Default".
+
+One thing to know if you touch it: the background must be `AnyShapeStyle`, not
+`some View`. `.background(_:in:)` fills a shape with a *style*, and a
+`@ViewBuilder` there yields a view, which does not compile.
+
+### Iconography ✅ Done
+
+Warnings were split between `exclamationmark.triangle` and its `.fill` form for
+the same meaning. Unified on `.fill`, which was already the majority.
+
+Left alone deliberately: the checkmark family. `checkmark.circle.fill` marks a
+live status (connected, succeeded) and `checkmark.circle` marks a static
+attribute ("Installed") — that reads as a real distinction rather than drift,
+and flattening it would lose meaning to gain tidiness.
 
 ### Empty states ✅ Done
 
-Four views could show nothing, and each had invented its own way of saying so:
-the sidebar used `ContentUnavailableView`, the history browser hand-rolled
-icon/title/detail, the coverage view had a bare line of caption text, and the
-file browser had two lines jammed into one `Text`. They read as different apps,
-and the thin ones read as a bug rather than a state.
+**Eight** views could show nothing, and each had invented its own way of saying
+so: the sidebar and three others used `ContentUnavailableView`, the history
+browser and the credential-profile list hand-rolled icon/title/detail, the
+coverage view had a bare line of caption text, and the file browser had two
+lines jammed into one `Text`. They read as different apps, and the thin ones
+read as a bug rather than a state. (The count grew from four as the sweep went
+on — the later ones were only found by opening the app and looking.)
 
 All four now go through one `EmptyStateView`, which **wraps
 `ContentUnavailableView`** rather than replacing it — full-size states stay

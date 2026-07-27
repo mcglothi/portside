@@ -33,7 +33,7 @@ struct ContainerPickerView: View {
                 .buttonStyle(.borderless)
                 .help("Refresh")
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
 
             Divider()
 
@@ -51,7 +51,7 @@ struct ContainerPickerView: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(12)
+            .padding(Metrics.sheetChrome)
         }
         .frame(width: 460, height: 360)
         .task { await load() }
@@ -69,12 +69,12 @@ struct ContainerPickerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .loaded(let items) where items.isEmpty:
-            ContentUnavailableView(
-                isKubernetes ? "No running pods" : "No running containers",
-                systemImage: entry.icon,
-                description: Text(isKubernetes
-                    ? "Nothing running in this namespace/context."
-                    : "Nothing running on this host.")
+            EmptyStateView(
+                icon: entry.icon,
+                title: isKubernetes ? "No running pods" : "No running containers",
+                detail: isKubernetes
+                    ? "Nothing is running in this namespace and context."
+                    : "Nothing is running on this host."
             )
 
         case .loaded(let items):
@@ -104,7 +104,7 @@ struct ContainerPickerView: View {
 
         case .failed(let message):
             VStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
+                Image(systemName: "exclamationmark.triangle.fill")
                     .font(.title)
                     .foregroundStyle(.orange)
                 Text("Couldn't list \(isKubernetes ? "pods" : "containers")")

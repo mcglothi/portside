@@ -120,7 +120,7 @@ struct ThemeGalleryView: View {
             .padding(16)
         } else if let error = previewError {
             VStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle")
+                Image(systemName: "exclamationmark.triangle.fill")
                 Text(error).font(.caption)
             }
             .foregroundStyle(.secondary)
