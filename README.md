@@ -89,7 +89,8 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Inline images** — `imgcat` a screenshot, a Grafana export, or a plot from a
   remote host and look at it where you are, instead of copying it back first.
   Sixel, iTerm2 (OSC 1337) and Kitty graphics all render; the
-  [compatibility matrix](docs/COMPATIBILITY.md) has the details.
+  [compatibility matrix](docs/COMPATIBILITY.md) has the details. Try it without
+  installing anything: `cat docs/demo/portside-logo.six`.
 - **Mosh roaming** — opt any SSH host into mosh for sessions that survive sleep
   and network changes. Portside respects your SSH alias, key, port, and saved
   password during bootstrap, and falls back to SSH when mosh is unavailable.
