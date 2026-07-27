@@ -89,6 +89,15 @@ struct TabContentView: View {
 
     private var alert: Color { Color(nsColor: store.appearance.alert) }
 
+    /// Favourites when there are any, otherwise every macro.
+    ///
+    /// The fallback matters: pinning nothing must not empty the bar for people
+    /// who never favourite anything, and it keeps the feature discoverable —
+    /// you see the bar, then find you can shorten it.
+    private var barMacros: [Macro] {
+        store.favoriteMacros.isEmpty ? store.macros : store.favoriteMacros
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if tab.broadcastArmed {
@@ -116,11 +125,17 @@ struct TabContentView: View {
 
             if tab.broadcastArmed {
                 Divider()
-                if !store.macros.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
+                if !barMacros.isEmpty {
+                    // Indicators shown on purpose. The bar always scrolled, but
+                    // hiding the scroller left no sign that anything was off the
+                    // right-hand edge — with a long macro list it read as a
+                    // truncated bar rather than a scrollable one.
+                    ScrollView(.horizontal) {
                         HStack(spacing: 6) {
-                            Text("Macros:").font(.caption).foregroundStyle(.secondary)
-                            ForEach(store.macros) { macro in
+                            Text(store.favoriteMacros.isEmpty ? "Macros:" : "Favorites:")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ForEach(barMacros) { macro in
                                 Button(macro.name) { sessions.run(macro) }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)

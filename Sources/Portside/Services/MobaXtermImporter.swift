@@ -99,6 +99,24 @@ enum MobaXtermImporter {
 
     // MARK: - Macros
 
+    /// MobaXterm records each keystroke as `258:<code>:<locale>:<label>`. For a
+    /// printable key the label *is* the character; for everything else it is a
+    /// name. Appending the label blindly turned `yum update -y` into
+    /// `yumSPACEupdateSPACE-y`, which is why only macros containing a space (or
+    /// another named key) were affected. Reported from a real import by Tim,
+    /// 2026-07-27.
+    ///
+    /// A macro that genuinely types the word SPACE is unambiguous: it arrives as
+    /// five separate single-character tokens, not one named token.
+    private static let namedKeys: [String: String] = [
+        "SPACE": " ",
+        "TAB": "\t",
+        "RETURN": "\n",
+        "ENTER": "\n",
+        "ESC": "\u{1b}",
+        "ESCAPE": "\u{1b}",
+    ]
+
     static func parseMacros(_ content: String) -> Result {
         var result = Result()
         var inMacros = false
@@ -125,9 +143,21 @@ enum MobaXtermImporter {
                 }
                 let parts = token.components(separatedBy: ":")
                 guard parts.count >= 4 else { continue }
-                let char = parts.dropFirst(3).joined(separator: ":")
-                if char.hasPrefix("SLEEPEQUAL") { continue }
-                text.append(char)
+                let label = parts.dropFirst(3).joined(separator: ":")
+                if label.hasPrefix("SLEEPEQUAL") { continue }
+
+                if let literal = namedKeys[label.uppercased()] {
+                    text.append(literal)
+                    endedWithReturn = literal == "\n"
+                    continue
+                }
+                // Anything else longer than one character is a key name we do
+                // not have a text form for — arrows, F-keys, HOME. Appending it
+                // is what produced `yumSPACEupdateSPACE-y`, so it is dropped
+                // instead: a missing keystroke is recoverable by eye, a word
+                // spliced into the middle of a command is not.
+                guard label.count == 1 else { continue }
+                text.append(label)
                 endedWithReturn = false
             }
             if endedWithReturn, text.hasSuffix("\n") {

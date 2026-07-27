@@ -572,6 +572,7 @@ struct MacroRow: View {
     let macro: Macro
     let run: (Macro) -> Void
     let edit: (Macro) -> Void
+    @State private var hovering = false
 
     var body: some View {
         Button {
@@ -582,14 +583,34 @@ struct MacroRow: View {
                     .foregroundStyle(.secondary)
                 Text(macro.name)
                     .lineLimit(1)
+                Spacer(minLength: 4)
+                // Same affordance the host rows use: always shown once set,
+                // offered on hover before that.
+                if macro.isFavorite || hovering {
+                    Button {
+                        store.setFavorite(!macro.isFavorite, macro: macro)
+                    } label: {
+                        Image(systemName: macro.isFavorite ? "star.fill" : "star")
+                            .font(.caption)
+                            .foregroundStyle(macro.isFavorite ? .yellow : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(macro.isFavorite
+                          ? "Remove from the MultiExec bar"
+                          : "Pin to the MultiExec bar")
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .help(macro.text)
         .contextMenu {
             Button("Run") { run(macro) }
             Button("Edit…") { edit(macro) }
+            Button(macro.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                store.setFavorite(!macro.isFavorite, macro: macro)
+            }
             Divider()
             Button("Delete", role: .destructive) { store.delete(macro) }
         }

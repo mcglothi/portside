@@ -469,6 +469,10 @@ struct MacroEditorView: View {
                 .frame(minHeight: 120)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
             Toggle("Press Return after sending", isOn: $draft.sendReturn)
+            Toggle("Pin to the MultiExec bar", isOn: $draft.isFavorite)
+            Text("The bar shows pinned macros when you have any, so a long library doesn't push the ones you use off the edge.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack {
                 if !isNew {
                     Button("Delete", role: .destructive) {
