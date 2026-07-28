@@ -61,7 +61,15 @@ if [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
 fi
 
 # 3. HEAD actually pushed, so the tag resolves to the source that was built.
-git fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
+#
+# A failed fetch used to be swallowed (`|| true`), which meant the very next
+# check could pass by comparing against a *stale* cached origin/$DEFAULT_BRANCH
+# from a previous fetch — exactly the "tag points at different code than what
+# was built" failure mode this gate exists to catch, just moved one step
+# earlier. A fetch failure gets no benefit of the doubt.
+if ! git fetch --quiet origin "$DEFAULT_BRANCH"; then
+    gate_fail "git fetch origin $DEFAULT_BRANCH failed — check network/auth before releasing"
+fi
 LOCAL_HEAD="$(git rev-parse HEAD)"
 REMOTE_HEAD="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo none)"
 if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
@@ -159,15 +167,42 @@ echo "==> Signing + generating appcast"
 # Keep the DMG out of generate_appcast: Sparkle consumes the ZIP enclosure.
 mv "$DMG" "build/updates/Portside-$VERSION.dmg"
 
+echo "==> Writing artifact checksums"
+CHECKSUMS="build/updates/Portside-$VERSION.SHA256SUMS.txt"
+(cd build/updates && shasum -a 256 "Portside-$VERSION.zip" "Portside-$VERSION.dmg") > "$CHECKSUMS"
+
 echo "==> Publishing GitHub release v$VERSION"
+# --target pins the new tag to the exact commit gate #3 verified and this
+# script built — not whatever origin/$DEFAULT_BRANCH happens to point at by
+# the time this runs, which (unlike LOCAL_HEAD) could have moved during the
+# build/notarization wait above. This is what actually closes the race the
+# fetch check above only detects; without it, tag creation still trusted the
+# branch tip at publish time.
 gh release create "v$VERSION" \
     "build/updates/Portside-$VERSION.zip" \
     "build/updates/Portside-$VERSION.dmg" \
     "build/updates/appcast.xml" \
     "build/updates/Portside-$VERSION.md" \
+    "$CHECKSUMS" \
     --repo "$REPO" \
     --title "Portside $VERSION" \
-    --notes "$NOTES"
+    --notes "$NOTES" \
+    --target "$LOCAL_HEAD"
+
+# Belt-and-suspenders: read the tag back from GitHub and confirm it actually
+# landed on the built commit. --target above should make this unconditionally
+# true; this exists to catch it loudly if it somehow isn't, rather than
+# leaving a mismatched tag to be discovered later by a user's bug report.
+echo "==> Verifying the published tag resolves to the built commit"
+git fetch --quiet origin "refs/tags/v$VERSION:refs/tags/v$VERSION-verify"
+PUBLISHED_SHA="$(git rev-parse "v$VERSION-verify^{commit}")"
+git tag -d "v$VERSION-verify" >/dev/null
+if [ "$PUBLISHED_SHA" != "$LOCAL_HEAD" ]; then
+    echo "error: published tag v$VERSION resolves to $PUBLISHED_SHA on GitHub," >&2
+    echo "       not the built commit $LOCAL_HEAD. The release is already live —" >&2
+    echo "       investigate and fix the tag (or yank the release) immediately." >&2
+    exit 1
+fi
 
 echo "==> Done. Installed apps will see v$VERSION on their next update check."
 echo "    Reinstall locally with: cp -R build/Portside.app /Applications/"
