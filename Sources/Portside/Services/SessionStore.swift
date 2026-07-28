@@ -119,16 +119,25 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// Removes the entry and its saved Keychain password together. Deletion
+    /// used to leave the credential behind for context-menu and bulk paths —
+    /// only the editor's own Delete button happened to clean it up, as a
+    /// separate call the view made before this one. An orphaned credential
+    /// then sits in the Keychain indefinitely, under a UUID no session
+    /// references anymore.
     func delete(_ entry: SessionEntry) {
         entries.removeAll { $0.id == entry.id }
+        CredentialStore.deletePassword(for: entry.id)
         save()
     }
 
-    /// Deletes every entry whose id is in `ids`, saving once. No-op (and no
-    /// save) when nothing matches, so a stray empty selection can't churn disk.
+    /// Deletes every entry whose id is in `ids` (and each one's Keychain
+    /// password), saving once. No-op (and no save) when nothing matches, so a
+    /// stray empty selection can't churn disk.
     func delete(ids: Set<UUID>) {
         guard entries.contains(where: { ids.contains($0.id) }) else { return }
         entries.removeAll { ids.contains($0.id) }
+        for id in ids { CredentialStore.deletePassword(for: id) }
         save()
     }
 
@@ -251,8 +260,18 @@ final class SessionStore: ObservableObject {
         credentialProfiles = [profile]
         defaultProfileID = profile.id
         if let legacyPassword {
-            CredentialStore.setProfilePassword(legacyPassword, for: profile.id)
-            CredentialStore.deleteDefaultPassword()
+            // Only remove the old copy once the new one is confirmed on disk
+            // (write success, then a read-back) — this used to delete
+            // unconditionally, so a failed Keychain write (locked keychain, a
+            // stale ACL) silently lost the password rather than leaving it
+            // somewhere the user could still find it.
+            let wrote = CredentialStore.setProfilePassword(legacyPassword, for: profile.id)
+            let confirmed = wrote && CredentialStore.profilePassword(for: profile.id) == legacyPassword
+            if confirmed {
+                CredentialStore.deleteDefaultPassword()
+            } else {
+                NSLog("Portside: legacy default password migration to profile \(profile.id) did not verify — leaving the old Keychain entry in place")
+            }
         }
         save()
     }

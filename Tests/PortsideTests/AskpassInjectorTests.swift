@@ -71,6 +71,35 @@ final class AskpassInjectorTests: XCTestCase {
         XCTAssertEqual(result.output, "123456\n")
     }
 
+    /// A crash or force-quit skips both `cleanup` and the 30s expiry timer,
+    /// leaving a 0600 password file sitting in a `portside-askpass-*`
+    /// directory until the OS reclaims temp space on its own schedule.
+    /// `purgeStaleDirectories` (called at launch) is what actually clears it.
+    func testPurgeRemovesStaleAskpassDirectories() throws {
+        let temp = FileManager.default.temporaryDirectory
+        let stale = temp.appendingPathComponent("portside-askpass-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try "leftover-secret".write(
+            to: stale.appendingPathComponent("pw-leftover"), atomically: true, encoding: .utf8
+        )
+
+        AskpassInjector.purgeStaleDirectories()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path),
+                       "a stale askpass directory should be removed at launch")
+    }
+
+    func testPurgeLeavesUnrelatedDirectoriesAlone() throws {
+        let temp = FileManager.default.temporaryDirectory
+        let unrelated = temp.appendingPathComponent("some-other-app-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: unrelated) }
+
+        AskpassInjector.purgeStaleDirectories()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
     /// Prepends a fake `osascript` to PATH so dialog fallbacks are testable
     /// (and tests never pop real dialogs).
     private func envWithFakeOsascript(_ pairs: [String], returning answer: String) throws -> [String] {

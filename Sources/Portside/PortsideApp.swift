@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         RemoteFileEditor.purgeStaleCopies()
+        AskpassInjector.purgeStaleDirectories()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

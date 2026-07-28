@@ -395,7 +395,10 @@ struct SessionEditorView: View {
             HStack {
                 if !isNew {
                     Button("Delete", role: .destructive) {
-                        CredentialStore.deletePassword(for: draft.id)
+                        // Credential cleanup lives in SessionStore.delete now,
+                        // reached via onComplete(.delete) — so every deletion
+                        // path (this button, context menu, bulk) gets it, not
+                        // just this one.
                         onComplete(.delete)
                         dismiss()
                     }

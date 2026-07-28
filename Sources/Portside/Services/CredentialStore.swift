@@ -148,11 +148,28 @@ enum AskpassInjector {
 
     private static func makePrivateDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("portside-askpass-\(UUID().uuidString)")
+            .appendingPathComponent(directoryPrefix + UUID().uuidString)
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
         return dir
+    }
+
+    static let directoryPrefix = "portside-askpass-"
+
+    /// Removes any `portside-askpass-*` directory left over from a previous
+    /// run — normally `cleanup` (or the 30-second expiry) removes these, but
+    /// a crash or force-quit skips both, leaving a password sitting in a
+    /// 0600 file until the OS eventually reclaims temp space on its own
+    /// schedule. Call at launch, mirroring `RemoteFileEditor.purgeStaleCopies`.
+    nonisolated static func purgeStaleDirectories() {
+        let fm = FileManager.default
+        let temp = fm.temporaryDirectory
+        guard let contents = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)
+        else { return }
+        for url in contents where url.lastPathComponent.hasPrefix(directoryPrefix) {
+            try? fm.removeItem(at: url)
+        }
     }
 
     private static func installHelper(in dir: URL) throws -> URL {
