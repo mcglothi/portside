@@ -107,6 +107,12 @@ struct RemoteEdit: Identifiable {
     var lastActivity = Date()
     /// nil = whatever the system default is for this file type.
     var appURL: URL?
+    /// The remote file's size/mtime/mode as last confirmed — at checkout, and
+    /// refreshed after each successful upload. A save compares the *current*
+    /// remote state against this before writing, so a change made elsewhere
+    /// in between (another admin, another tool) is caught instead of quietly
+    /// overwritten.
+    var checkoutSnapshot: RemoteFile?
     /// Size from the directory listing, so a transfer can show real progress
     /// (batch-mode `sftp -q` reports none) and a mis-click on a huge file can
     /// be caught before any bytes move.
@@ -175,8 +181,8 @@ final class RemoteFileEditor: ObservableObject {
     /// Re-opening a file that's already checked out just brings the existing
     /// copy forward instead of racing two watchers over two temp files.
     func open(
-        name: String, remotePath: String, on entry: SessionEntry,
-        using app: URL? = nil, size: Int = 0
+        file: RemoteFile, remotePath: String, on entry: SessionEntry,
+        using app: URL? = nil
     ) {
         let chosen = app ?? preferredEditor ?? EditorApps.safeDefaultEditor()
         if let existing = edits.first(where: { $0.entryID == entry.id && $0.remotePath == remotePath }) {
@@ -188,10 +194,11 @@ final class RemoteFileEditor: ObservableObject {
         let id = UUID()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent(Self.tempPrefix + id.uuidString)
-        let localURL = dir.appendingPathComponent(name)
+        let localURL = dir.appendingPathComponent(file.name)
         edits.append(RemoteEdit(
-            id: id, entry: entry, remotePath: remotePath, name: name,
-            localURL: localURL, appURL: chosen, totalBytes: size
+            id: id, entry: entry, remotePath: remotePath, name: file.name,
+            localURL: localURL, appURL: chosen, checkoutSnapshot: file,
+            totalBytes: file.size
         ))
 
         tasks[id] = Task { await self.checkout(id: id, directory: dir) }
@@ -297,17 +304,40 @@ final class RemoteFileEditor: ObservableObject {
 
     private func upload(_ id: UUID, digest: Data) async {
         guard let edit = edits.first(where: { $0.id == id }) else { return }
+        let client = SFTPClient(entry: edit.entry)
         do {
-            try await SFTPClient(entry: edit.entry)
-                .upload(localURL: edit.localURL, toDirectory: edit.remoteDirectory)
+            // Refuse rather than clobber: if the file changed on the host
+            // since it was checked out (another admin, another tool, our own
+            // earlier save landing under a stale snapshot), overwriting it
+            // silently is exactly the data loss this exists to prevent.
+            if let expected = edit.checkoutSnapshot {
+                let current = try await client.snapshot(of: edit.remotePath)
+                guard let current, current.size == expected.size, current.dateText == expected.dateText else {
+                    update(id) {
+                        $0.status = .failed(
+                            "\(edit.name) changed on the host since it was opened — reopen it to see the current version before saving again."
+                        )
+                    }
+                    return
+                }
+            }
+            try await client.uploadReplacing(
+                localURL: edit.localURL, remotePath: edit.remotePath,
+                preservingModeFrom: edit.checkoutSnapshot
+            )
             // Only now is this content known to be on the host. Committing the
             // digest earlier would make a failed upload look synced, so saving
             // the same content again wouldn't retry.
             digests[id] = digest
+            // Re-read what's actually on the host now rather than guessing —
+            // otherwise the *next* save's conflict check would compare against
+            // this save's own now-stale pre-upload snapshot and always fail.
+            let updatedSnapshot = try? await client.snapshot(of: edit.remotePath)
             update(id) {
                 $0.status = .watching
                 $0.uploadCount += 1
                 $0.lastUploaded = Date()
+                if let updatedSnapshot { $0.checkoutSnapshot = updatedSnapshot }
             }
         } catch {
             if Task.isCancelled || error is CancellationError { return }

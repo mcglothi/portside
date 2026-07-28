@@ -391,6 +391,44 @@ final class RemoteFileEditorTests: XCTestCase {
         return dir
     }
 
+    // MARK: - Atomic/conflict-aware remote writes
+
+    /// `chmod` needs an octal mode; `ls -la`'s permission string is what the
+    /// checkout snapshot has on hand. Setuid/sticky bits aren't modelled —
+    /// this is a best-effort restore, not a full round-trip.
+    func testOctalModeParsesOrdinaryPermissionStrings() {
+        XCTAssertEqual(SFTPClient.octalMode(fromPermissionString: "-rw-r--r--"), 0o644)
+        XCTAssertEqual(SFTPClient.octalMode(fromPermissionString: "-rwxr-xr-x"), 0o755)
+        XCTAssertEqual(SFTPClient.octalMode(fromPermissionString: "-rw-------"), 0o600)
+        XCTAssertEqual(SFTPClient.octalMode(fromPermissionString: "drwxr-xr-x"), 0o755)
+    }
+
+    func testOctalModeRejectsMalformedStrings() {
+        XCTAssertNil(SFTPClient.octalMode(fromPermissionString: ""))
+        XCTAssertNil(SFTPClient.octalMode(fromPermissionString: "-rwx"))
+    }
+
+    /// The collision guard for drag-in uploads: a name already on the host
+    /// must never be silently replaced by `put`; anything new is unaffected.
+    func testPartitionSeparatesCollidingNamesFromNewOnes() {
+        let existing: Set<String> = ["notes.txt", "config.yml"]
+        let urls = [
+            URL(fileURLWithPath: "/local/notes.txt"),
+            URL(fileURLWithPath: "/local/fresh.txt"),
+            URL(fileURLWithPath: "/local/config.yml"),
+        ]
+        let (toUpload, colliding) = SFTPBrowserModel.partition(urls, existingNames: existing)
+        XCTAssertEqual(toUpload.map(\.lastPathComponent), ["fresh.txt"])
+        XCTAssertEqual(colliding.map(\.lastPathComponent), ["notes.txt", "config.yml"])
+    }
+
+    func testPartitionWithNoCollisionsUploadsEverything() {
+        let urls = [URL(fileURLWithPath: "/local/a.txt"), URL(fileURLWithPath: "/local/b.txt")]
+        let (toUpload, colliding) = SFTPBrowserModel.partition(urls, existingNames: [])
+        XCTAssertEqual(toUpload.count, 2)
+        XCTAssertTrue(colliding.isEmpty)
+    }
+
     // MARK: - Live round trip
 
     /// The whole feature end to end against a real host, using the same

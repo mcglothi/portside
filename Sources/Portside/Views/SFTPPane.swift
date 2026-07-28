@@ -280,6 +280,11 @@ final class SFTPBrowserModel: ObservableObject {
         await withBusy { try await self.load(self.path) }
     }
 
+    /// Drag-in upload. Never silently overwrites a same-named remote file —
+    /// a name collision used to go straight to `put`, replacing whatever was
+    /// there with no confirmation and no atomicity. Colliding names are
+    /// skipped and reported; everything else uploads normally, since a
+    /// genuinely new remote name has nothing to lose by writing directly.
     func upload(_ urls: [URL]) async {
         let id = TransferCenter.shared.begin(
             entryID: entry.id, remotePath: "", label: "Uploading…",
@@ -290,18 +295,36 @@ final class SFTPBrowserModel: ObservableObject {
             // A drop before the first listing lands leaves `path` empty, which
             // would send the file to sftp's default dir and list the wrong one.
             let target = self.path.isEmpty ? try await self.client.pwd() : self.path
-            for (index, url) in urls.enumerated() {
+            let existingNames = Set(self.files.map(\.name))
+            let (toUpload, colliding) = Self.partition(urls, existingNames: existingNames)
+            for (index, url) in toUpload.enumerated() {
                 // No byte-level progress going out: `sftp put` is silent in
                 // batch mode and the remote side can't be polled the way a
                 // partially-written local file can. Per-file is honest.
-                TransferCenter.shared.relabel(id, urls.count == 1
+                TransferCenter.shared.relabel(id, toUpload.count == 1
                     ? "Uploading \(url.lastPathComponent)"
-                    : "Uploading \(url.lastPathComponent) (\(index + 1) of \(urls.count))")
+                    : "Uploading \(url.lastPathComponent) (\(index + 1) of \(toUpload.count))")
                 try Task.checkCancellation()
                 try await self.client.upload(localURL: url, toDirectory: target)
             }
             try await self.load(target)
+            if !colliding.isEmpty {
+                let names = colliding.map(\.lastPathComponent).joined(separator: ", ")
+                throw SFTPClientError.failed(
+                    "Already on the host, so not overwritten: \(names). Delete or rename the "
+                    + "remote file first, then drop it again to replace it."
+                )
+            }
         }
+    }
+
+    /// Splits a drag-in drop into names that are safe to upload directly and
+    /// names that already exist remotely and must not be silently replaced.
+    nonisolated static func partition(
+        _ urls: [URL], existingNames: Set<String>
+    ) -> (toUpload: [URL], colliding: [URL]) {
+        (urls.filter { !existingNames.contains($0.lastPathComponent) },
+         urls.filter { existingNames.contains($0.lastPathComponent) })
     }
 
     func makeDirectory(named name: String) async {
@@ -329,11 +352,8 @@ final class SFTPBrowserModel: ObservableObject {
 
     /// Checks the file out to a local temp copy, opens it in its default app,
     /// and re-uploads it whenever it's saved. See `RemoteFileEditor`.
-    func edit(_ file: RemoteFile, using app: URL? = nil, size: Int? = nil) {
-        RemoteFileEditor.shared.open(
-            name: file.name, remotePath: join(file.name), on: entry,
-            using: app, size: size ?? file.size
-        )
+    func edit(_ file: RemoteFile, using app: URL? = nil) {
+        RemoteFileEditor.shared.open(file: file, remotePath: join(file.name), on: entry, using: app)
     }
 
     func downloadToDownloads(_ file: RemoteFile) async {
@@ -543,7 +563,7 @@ struct SFTPPaneView: View {
         ) {
             Button("Edit") {
                 if let pending = confirmingEdit {
-                    model.edit(pending.file, using: pending.app, size: pending.file.size)
+                    model.edit(pending.file, using: pending.app)
                 }
                 confirmingEdit = nil
             }

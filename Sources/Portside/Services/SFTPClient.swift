@@ -83,6 +83,71 @@ struct SFTPClient {
         ])
     }
 
+    /// Uploads and swaps the result into place atomically: `put` under a
+    /// hidden temp name in the same directory, then `rename` over the real
+    /// name. OpenSSH's `sftp` client uses the `posix-rename@openssh.com`
+    /// extension for `rename` automatically when the server offers it (true
+    /// of OpenSSH-to-OpenSSH, the overwhelming case here), which is what
+    /// makes overwriting an existing file this way possible at all — plain
+    /// SFTP `rename` fails if the destination exists.
+    ///
+    /// Unlike plain `upload`, this does not preserve the original file's mode
+    /// for free (the temp file is created fresh), so `preservingModeFrom`
+    /// re-applies it via `chmod` once the swap lands. A `rename` failure
+    /// (an SFTP server without the extension, or a genuine permissions
+    /// problem) aborts the batch before anything touches the real file —
+    /// the temp file is then best-effort removed rather than left behind.
+    func uploadReplacing(
+        localURL: URL, remotePath: String, preservingModeFrom original: RemoteFile?
+    ) async throws {
+        let directory = Self.directory(of: remotePath)
+        let finalName = (remotePath as NSString).lastPathComponent
+        let tempName = ".portside-upload-\(UUID().uuidString)"
+        do {
+            var batch = [
+                "cd \(quote(directory))",
+                "put \(quote(localURL.path)) \(quote(tempName))",
+                "rename \(quote(tempName)) \(quote(finalName))",
+            ]
+            if let original, let mode = Self.octalMode(fromPermissionString: original.permissions) {
+                batch.append("chmod \(String(mode, radix: 8)) \(quote(finalName))")
+            }
+            _ = try await run(batch: batch)
+        } catch {
+            _ = try? await run(batch: ["cd \(quote(directory))", "rm \(quote(tempName))"])
+            throw error
+        }
+    }
+
+    /// The current remote state of one file, for comparing against what was
+    /// recorded at checkout — nil if it's gone missing entirely.
+    func snapshot(of remotePath: String) async throws -> RemoteFile? {
+        let name = (remotePath as NSString).lastPathComponent
+        let entries = try await list(Self.directory(of: remotePath))
+        return entries.first { $0.name == name }
+    }
+
+    private static func directory(of remotePath: String) -> String {
+        let dir = (remotePath as NSString).deletingLastPathComponent
+        return dir.isEmpty ? "/" : dir
+    }
+
+    /// Parses an `ls -la`-style permission string (`-rw-r--r--`) into the
+    /// octal mode `chmod` expects. Setuid/setgid/sticky bits aren't modelled
+    /// (their column reads as non-`-` either way, so they fold into the
+    /// nearest execute bit) — this is a best-effort restore for ordinary
+    /// config files, not a full permissions round-trip.
+    static func octalMode(fromPermissionString perms: String) -> Int? {
+        let bits = Array(perms.dropFirst())
+        guard bits.count == 9 else { return nil }
+        let weights = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001]
+        var mode = 0
+        for (index, char) in bits.enumerated() where char != "-" {
+            mode |= weights[index]
+        }
+        return mode
+    }
+
     func mkdir(_ path: String) async throws {
         _ = try await run(batch: ["mkdir \(quote(path))"])
     }
