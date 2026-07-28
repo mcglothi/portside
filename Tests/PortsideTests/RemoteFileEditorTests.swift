@@ -350,6 +350,47 @@ final class RemoteFileEditorTests: XCTestCase {
         }
     }
 
+    // MARK: - Transactional downloads
+
+    /// The bug: `sftp get` wrote straight to the final destination, so a
+    /// cancelled or failed download that landed on an *existing* file could
+    /// leave it deleted or truncated. `finalizeDownload` only ever touches
+    /// `target` after the staging file is fully written and verified good.
+    @MainActor
+    func testFinalizeDownloadReplacesAnExistingFile() throws {
+        let dir = try tempDirectory()
+        let target = dir.appendingPathComponent("notes.txt")
+        try "original".write(to: target, atomically: true, encoding: .utf8)
+        let staging = dir.appendingPathComponent(".staging")
+        try "new content".write(to: staging, atomically: true, encoding: .utf8)
+
+        try SFTPBrowserModel.finalizeDownload(staging: staging, target: target)
+
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "new content")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path),
+                       "the staging file should be consumed by the move")
+    }
+
+    @MainActor
+    func testFinalizeDownloadCreatesANewFileWhenNoneExisted() throws {
+        let dir = try tempDirectory()
+        let target = dir.appendingPathComponent("new-file.txt")
+        let staging = dir.appendingPathComponent(".staging")
+        try "content".write(to: staging, atomically: true, encoding: .utf8)
+
+        try SFTPBrowserModel.finalizeDownload(staging: staging, target: target)
+
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "content")
+    }
+
+    private func tempDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-download-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
     // MARK: - Live round trip
 
     /// The whole feature end to end against a real host, using the same

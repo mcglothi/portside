@@ -347,21 +347,29 @@ final class SFTPBrowserModel: ObservableObject {
             target = downloads.appendingPathComponent(suffixed)
             counter += 1
         }
-        await download(file, to: target, removePartialOnCancel: true)
+        await download(file, to: target)
     }
 
     /// Download to a location the user picks. The save panel already handles
     /// "replace existing?", so unlike `downloadToDownloads` this writes exactly
-    /// where it's told rather than uniquing the name.
+    /// where it's told rather than uniquing the name — but the transfer itself
+    /// still lands via a staging file, same as every other download path.
     func save(_ file: RemoteFile, to target: URL) async {
-        await download(file, to: target, removePartialOnCancel: true)
+        await download(file, to: target)
     }
 
     /// Downloads with live progress. `sftp -q` prints none, but the listing
     /// already gave us the size, so watching the partial file grow yields a
     /// real percentage — the same trick the edit checkout uses.
-    private func download(_ file: RemoteFile, to target: URL, removePartialOnCancel: Bool) async {
+    ///
+    /// Lands via a staging file next to `target`, moved into place only once
+    /// the transfer succeeds: `sftp get` used to write straight to `target`,
+    /// so cancelling mid-transfer deleted whatever was already there, and any
+    /// other failure left a truncated file behind wearing the real name.
+    private func download(_ file: RemoteFile, to target: URL) async {
         let remotePath = join(file.name)
+        let staging = target.deletingLastPathComponent()
+            .appendingPathComponent(".portside-download-\(UUID().uuidString)")
         let id = TransferCenter.shared.begin(
             entryID: entry.id, remotePath: remotePath,
             label: "Downloading \(file.name)", total: file.size,
@@ -372,7 +380,7 @@ final class SFTPBrowserModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard !Task.isCancelled else { return }
                 let size = (try? FileManager.default
-                    .attributesOfItem(atPath: target.path)[.size] as? Int) ?? nil
+                    .attributesOfItem(atPath: staging.path)[.size] as? Int) ?? nil
                 if let size { TransferCenter.shared.update(id, transferred: size) }
             }
         }
@@ -383,16 +391,27 @@ final class SFTPBrowserModel: ObservableObject {
 
         await withBusy {
             do {
-                try await self.client.download(remotePath: self.join(file.name), to: target)
+                try await self.client.download(remotePath: self.join(file.name), to: staging)
+                try Self.finalizeDownload(staging: staging, target: target)
             } catch {
-                // Don't leave a truncated file sitting where the user asked for
-                // a real one — a half-written download that looks complete is
-                // worse than no download.
-                if removePartialOnCancel, Task.isCancelled || error is CancellationError {
-                    try? FileManager.default.removeItem(at: target)
-                }
+                // The original (or a previous partial) at `target` is never
+                // touched by a failed transfer — only the never-visible
+                // staging file needs cleaning up.
+                try? FileManager.default.removeItem(at: staging)
                 throw error
             }
+        }
+    }
+
+    /// Atomically moves a completed staging download into place. Staging and
+    /// target share a parent directory, so this is a same-volume rename, not
+    /// a copy — instant regardless of file size, and never leaves `target`
+    /// half-written even if the app is killed mid-swap.
+    static func finalizeDownload(staging: URL, target: URL) throws {
+        if FileManager.default.fileExists(atPath: target.path) {
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: staging)
+        } else {
+            try FileManager.default.moveItem(at: staging, to: target)
         }
     }
 
