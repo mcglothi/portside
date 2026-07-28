@@ -15,6 +15,25 @@ enum TunnelStatus: Equatable {
     }
 }
 
+/// Accumulates bytes handed to it from a `FileHandle.readabilityHandler`,
+/// which fires on a background queue outside the caller's control.
+final class PipeDrain: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    var collected: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+}
+
 /// Runs saved port forwards as dedicated `ssh -N` processes and tracks their
 /// health. Tunnels reuse an existing ControlMaster socket when the user
 /// already has a terminal open to the host (no re-auth), but never *become*
@@ -93,14 +112,38 @@ final class TunnelManager: ObservableObject {
         process.arguments = args
         process.environment = environment
         let errPipe = Pipe()
+        let outPipe = Pipe()
         process.standardError = errPipe
-        process.standardOutput = Pipe()
+        process.standardOutput = outPipe
+
+        // Neither pipe was drained until the process exited. `ssh -N` writes
+        // little, but enough banner/diagnostic output (a chatty ProxyCommand,
+        // a verbose motd relayed some servers do) fills the OS pipe buffer,
+        // blocks the child on write(), and since nothing was reading, it
+        // never terminates — a tunnel that silently can't ever be torn down.
+        // Draining continuously as bytes arrive, same as ContainerLister's
+        // process runner, means the buffer can never fill in the first place.
+        let errDrain = PipeDrain()
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty { handle.readabilityHandler = nil } else { errDrain.append(chunk) }
+        }
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty { handle.readabilityHandler = nil }
+            // stdout content itself is never used — only draining it matters.
+        }
 
         let id = forward.id
         process.terminationHandler = { [weak self] proc in
             cleanup?()
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(data: errData, encoding: .utf8) ?? ""
+            // Stop the handlers before a final synchronous drain: the process
+            // has already exited, so this can't block, and it catches any
+            // last bytes that landed after the last handler callback.
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errDrain.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+            let stderr = String(data: errDrain.collected, encoding: .utf8) ?? ""
             DispatchQueue.main.async {
                 self?.finish(id: id, status: proc.terminationStatus, stderr: stderr)
             }
