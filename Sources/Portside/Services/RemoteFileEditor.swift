@@ -178,9 +178,9 @@ final class RemoteFileEditor: ObservableObject {
         name: String, remotePath: String, on entry: SessionEntry,
         using app: URL? = nil, size: Int = 0
     ) {
-        let chosen = app ?? preferredEditor
+        let chosen = app ?? preferredEditor ?? EditorApps.safeDefaultEditor()
         if let existing = edits.first(where: { $0.entryID == entry.id && $0.remotePath == remotePath }) {
-            _ = EditorApps.open(existing.localURL, with: app ?? existing.appURL)
+            _ = EditorApps.open(existing.localURL, with: app ?? existing.appURL ?? EditorApps.safeDefaultEditor())
             touch(existing.id)
             return
         }
@@ -248,6 +248,7 @@ final class RemoteFileEditor: ObservableObject {
             )
             try await SFTPClient(entry: edit.entry)
                 .download(remotePath: edit.remotePath, to: edit.localURL)
+            Self.hardenCheckout(edit.localURL)
         } catch {
             // A cancelled transfer isn't a failure to report — Stop already
             // removed the row. Just make sure the partial file goes with it,
@@ -345,6 +346,28 @@ final class RemoteFileEditor: ObservableObject {
             guard let size, let index = edits.firstIndex(where: { $0.id == id }) else { continue }
             edits[index].transferredBytes = size
         }
+    }
+
+    /// Neutralises a fresh checkout before it's handed to any app.
+    ///
+    /// `sftp get` preserves the remote file's mode, so a checked-out script
+    /// can arrive executable; stripping that bit means opening it as text
+    /// can't become running it. Quarantine mirrors what Safari/Mail stamp on
+    /// their own downloads — network-sourced content, subject to Gatekeeper
+    /// and the "are you sure" prompt if anything ever does try to execute it.
+    nonisolated static func hardenCheckout(_ url: URL) {
+        if let perms = try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: perms & ~0o111], ofItemAtPath: url.path
+            )
+        }
+        var mutableURL = url
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            "LSQuarantineType": "LSQuarantineTypeOtherDownload",
+            "LSQuarantineAgentName": "Portside",
+        ]
+        try? mutableURL.setResourceValues(values)
     }
 
     private static func digest(of url: URL) -> Data? {

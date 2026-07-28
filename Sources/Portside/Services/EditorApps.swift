@@ -39,6 +39,19 @@ enum EditorApps {
         NSWorkspace.shared.urlsForApplications(toOpen: .plainText)
     }
 
+    /// What "Edit" opens a remote file in when no preferred editor is set.
+    ///
+    /// Falling through to `NSWorkspace.shared.open` (the system default
+    /// handler) means the file's *own* type decides what runs it — a `.command`
+    /// script downloaded over SFTP would be handed straight to Terminal. Since
+    /// "Edit" only ever means "show me this file as text", the default has to
+    /// be an actual text editor, never LaunchServices' generic dispatch.
+    static func safeDefaultEditor() -> URL? {
+        let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        if FileManager.default.fileExists(atPath: textEdit.path) { return textEdit }
+        return plainTextEditors().first
+    }
+
     static func displayName(of appURL: URL) -> String {
         FileManager.default.displayName(atPath: appURL.path)
             .replacingOccurrences(of: ".app", with: "")

@@ -315,6 +315,41 @@ final class RemoteFileEditorTests: XCTestCase {
         XCTAssertEqual(center.transfers(for: b).map(\.label), ["B"])
     }
 
+    // MARK: - Checkout hardening
+
+    /// `sftp get` preserves the remote mode, so a checked-out script can
+    /// arrive executable — hardenCheckout must strip that so opening it as
+    /// text can never become running it.
+    func testHardenCheckoutStripsExecutableBits() throws {
+        let url = try makeFile(contents: "#!/bin/sh\necho pwned\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+
+        RemoteFileEditor.hardenCheckout(url)
+
+        let perms = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(perms.map { $0 & 0o111 }, 0, "executable bits survived hardening")
+        XCTAssertEqual(perms.map { $0 & 0o600 }, 0o600, "owner read/write should be preserved")
+    }
+
+    func testHardenCheckoutQuarantinesTheFile() throws {
+        let url = try makeFile(contents: "just text")
+        RemoteFileEditor.hardenCheckout(url)
+
+        let values = try url.resourceValues(forKeys: [.quarantinePropertiesKey])
+        XCTAssertNotNil(values.quarantineProperties, "checked-out files should carry quarantine metadata")
+    }
+
+    func testSafeDefaultEditorIsAnActualTextEditor() {
+        // The regression this guards: falling back to nil here means
+        // NSWorkspace's system-default handler decides what opens the file —
+        // Terminal for a .command script, Installer for a .pkg, etc.
+        let editor = EditorApps.safeDefaultEditor()
+        XCTAssertNotNil(editor, "there must always be a safe fallback editor")
+        if let editor {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: editor.path))
+        }
+    }
+
     // MARK: - Live round trip
 
     /// The whole feature end to end against a real host, using the same
