@@ -36,3 +36,21 @@ enum ShellQuoting {
         parts.map(quote).joined(separator: " ")
     }
 }
+
+extension String {
+    /// Strips ASCII control characters (including escape) other than tab,
+    /// so an imported field can't smuggle terminal escape sequences or
+    /// otherwise-invisible bytes into a command that gets typed into a shell.
+    var strippingControlCharacters: String {
+        String(unicodeScalars.filter { scalar in
+            scalar == "\t" || !(scalar.value < 0x20 || scalar.value == 0x7f)
+        })
+    }
+
+    /// True when a value that will land in a positional argument slot could
+    /// instead be parsed as a flag by the tool it's handed to — e.g. an
+    /// imported container/pod name of `--privileged` or `-oProxyCommand=...`.
+    var looksLikeShellOption: Bool {
+        hasPrefix("-")
+    }
+}

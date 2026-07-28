@@ -60,15 +60,19 @@ struct ContainerTarget: Codable, Hashable {
     var user = ""          // optional -u
 
     /// `docker exec -it [-u user] <name> <shell>`; nil until a name is set.
+    /// Quoted at this boundary with `ShellQuoting`: this string is later typed
+    /// into a live shell (`SessionManager.postConnect`), and every field here
+    /// can come from an imported, untrusted library.
     var execCommand: String? {
-        let container = name.trimmingCharacters(in: .whitespaces)
-        guard !container.isEmpty else { return nil }
+        let container = name.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        guard !container.isEmpty, !container.looksLikeShellOption else { return nil }
         var parts = [engine.rawValue, "exec", "-it"]
-        let u = user.trimmingCharacters(in: .whitespaces)
+        let u = user.trimmingCharacters(in: .whitespaces).strippingControlCharacters
         if !u.isEmpty { parts += ["-u", u] }
         parts.append(container)
-        parts.append(shell.isEmpty ? "sh" : shell)
-        return parts.joined(separator: " ")
+        let sh = shell.strippingControlCharacters
+        parts.append(sh.isEmpty ? "sh" : sh)
+        return ShellQuoting.command(parts)
     }
 }
 
@@ -81,20 +85,26 @@ struct KubernetesTarget: Codable, Hashable {
     var container = ""     // optional -c for multi-container pods
     var shell = "sh"
 
-    /// `kubectl [--context c] [-n ns] exec -it <pod> [-c container] -- <shell>`.
+    /// `kubectl [--context=c] [--namespace=ns] exec -it <pod> [--container=c] -- <shell>`.
+    /// Quoted at this boundary with `ShellQuoting`, same as
+    /// `ContainerTarget.execCommand` and `ContainerLister.enumerationArguments`
+    /// — `--flag=value` rather than `--flag value` so a value beginning with a
+    /// dash can't be read by kubectl as another flag, and `pod` is checked
+    /// separately since it lands in a positional slot no `=` form protects.
     var execCommand: String? {
-        let pod = pod.trimmingCharacters(in: .whitespaces)
-        guard !pod.isEmpty else { return nil }
+        let pod = pod.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        guard !pod.isEmpty, !pod.looksLikeShellOption else { return nil }
         var parts = ["kubectl"]
-        let ctx = context.trimmingCharacters(in: .whitespaces)
-        if !ctx.isEmpty { parts += ["--context", ctx] }
-        let ns = namespace.trimmingCharacters(in: .whitespaces)
-        if !ns.isEmpty { parts += ["-n", ns] }
+        let ctx = context.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        if !ctx.isEmpty { parts.append("--context=\(ctx)") }
+        let ns = namespace.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        if !ns.isEmpty { parts.append("--namespace=\(ns)") }
         parts += ["exec", "-it", pod]
-        let c = container.trimmingCharacters(in: .whitespaces)
-        if !c.isEmpty { parts += ["-c", c] }
-        parts += ["--", shell.isEmpty ? "sh" : shell]
-        return parts.joined(separator: " ")
+        let c = container.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        if !c.isEmpty { parts.append("--container=\(c)") }
+        let sh = shell.strippingControlCharacters
+        parts += ["--", sh.isEmpty ? "sh" : sh]
+        return ShellQuoting.command(parts)
     }
 }
 
@@ -280,13 +290,16 @@ struct SessionEntry: Identifiable, Hashable {
         var args: [String] = []
         var sshCommand = ["ssh"]
         if let path = identityFile, !path.isEmpty {
-            sshCommand += ["-i", "'\((path as NSString).expandingTildeInPath)'"]
+            sshCommand += ["-i", ShellQuoting.quote((path as NSString).expandingTildeInPath)]
         }
         let usingAlias = !(sshAlias?.isEmpty ?? true)
         if !usingAlias, let port {
             sshCommand += ["-p", String(port)]
         }
         if sshCommand.count > 1 {
+            // mosh word-splits --ssh's value itself (shellwords), so the
+            // pieces above are pre-quoted rather than passed through
+            // ShellQuoting.command, which would double-quote "ssh"/"-i"/"-p".
             args.append("--ssh=\(sshCommand.joined(separator: " "))")
         }
         if usingAlias {
