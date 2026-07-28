@@ -90,6 +90,40 @@ enum LogManager {
         return SessionLogger(fileURL: url, title: title, subtitle: subtitle)
     }
 
+    // MARK: - Ownership
+
+    /// Matches exactly the filenames `makeLogger` generates —
+    /// `<hostKey>_yyyy-MM-dd_HH-mm-ss[-n].log`, optionally already
+    /// gzip-compressed. The transcript folder is user-chosen in Settings and
+    /// can be an *existing* directory (Documents, an existing log tree, a
+    /// whole home folder); maintenance and search must never mutate or read
+    /// a file just because it happens to end in `.log` — only ones Portside
+    /// itself is confident it wrote.
+    static func isOwnedLogFilename(_ name: String) -> Bool {
+        let pattern = #"^.+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?\.log(\.gz)?$"#
+        return name.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Every log Portside owns under `base` — exactly the two-level shape
+    /// `hostDirectory(for:settings:)` creates, `<base>/<hostKey>/<file>`, and
+    /// nothing deeper. This walks two explicit directory listings rather
+    /// than a recursive enumerator, so a subfolder the user happens to keep
+    /// inside their chosen base (another app's logs, a git checkout) is
+    /// never descended into at all, let alone touched.
+    private static func ownedLogFiles(under base: URL) -> [URL] {
+        let fm = FileManager.default
+        let hostDirs = ((try? fm.contentsOfDirectory(
+            at: base, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        )) ?? []).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+
+        return hostDirs.flatMap { dir -> [URL] in
+            let files = (try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            )) ?? []
+            return files.filter { isOwnedLogFilename($0.lastPathComponent) }
+        }
+    }
+
     // MARK: - Maintenance (compression)
 
     /// gzips logs older than the configured age. Safe to call on launch.
@@ -98,9 +132,7 @@ enum LogManager {
         let base = settings.resolvedDirectory
         let cutoff = Date().addingTimeInterval(-Double(settings.compressAfterDays) * 86_400)
         DispatchQueue.global(qos: .background).async {
-            guard let enumerator = FileManager.default.enumerator(
-                at: base, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-            for case let url as URL in enumerator where url.pathExtension == "log" {
+            for url in ownedLogFiles(under: base) where url.pathExtension == "log" {
                 let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
                 guard let mdate, mdate < cutoff else { continue }
                 let p = Process()
@@ -114,20 +146,15 @@ enum LogManager {
 
     // MARK: - Search
 
-    /// Searches every `.log` (and `.log.gz`) under the base dir for `query`
+    /// Searches every log Portside owns (`.log` and `.log.gz`) for `query`
     /// (case-insensitive substring), returning matches with a little context.
     static func search(_ query: String, settings: LoggingSettings, limit: Int = 500) -> [LogMatch] {
         let needle = query.lowercased()
         guard !needle.isEmpty else { return [] }
-        let base = settings.resolvedDirectory
-        guard let enumerator = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil)
-        else { return [] }
 
         var matches: [LogMatch] = []
-        for case let url as URL in enumerator {
-            let ext = url.pathExtension
-            let isGz = ext == "gz" && url.deletingPathExtension().pathExtension == "log"
-            guard ext == "log" || isGz else { continue }
+        for url in ownedLogFiles(under: settings.resolvedDirectory) {
+            let isGz = url.pathExtension == "gz"
             guard let text = contents(of: url, gzipped: isGz) else { continue }
 
             let host = url.deletingLastPathComponent().lastPathComponent
@@ -148,17 +175,46 @@ enum LogManager {
         return matches
     }
 
+    /// Per-file cap on what search reads into memory — plain or decompressed.
+    /// A real Portside transcript rarely approaches this; it exists so a
+    /// corrupted or adversarial `.log.gz` (a decompression bomb: kilobytes on
+    /// disk, gigabytes decompressed) can't be used to exhaust memory just by
+    /// sitting in the transcript folder and getting searched.
+    private static let maxSearchBytes = 100 * 1024 * 1024
+
     private static func contents(of url: URL, gzipped: Bool) -> String? {
-        if !gzipped { return try? String(contentsOf: url, encoding: .utf8) }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
-        p.arguments = ["-dc", url.path]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(data: data, encoding: .utf8)
+        let data: Data
+        if !gzipped {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            data = handle.readData(ofLength: maxSearchBytes)
+        } else {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
+            p.arguments = ["-dc", url.path]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            do { try p.run() } catch { return nil }
+            var collected = Data()
+            let handle = pipe.fileHandleForReading
+            while collected.count < maxSearchBytes {
+                let chunk = handle.readData(ofLength: 1_048_576)
+                if chunk.isEmpty { break }
+                collected.append(chunk)
+            }
+            // Stop feeding gzip more input to decompress once the cap is hit —
+            // otherwise a bomb keeps running to completion in the background
+            // even though its output is already being discarded.
+            if collected.count >= maxSearchBytes { p.terminate() }
+            handle.closeFile()
+            p.waitUntilExit()
+            data = collected
+        }
+        // A capped read can stop mid UTF-8 character; drop the ragged tail
+        // rather than failing to decode the whole (mostly valid) capture.
+        var bytes = [UInt8](data)
+        while !bytes.isEmpty, String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+        return String(bytes: bytes, encoding: .utf8)
     }
 
     /// Extracts the time from a "──[ 2026-07-09 10:05:30 ... ]──" marker line.
