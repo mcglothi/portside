@@ -24,9 +24,24 @@ enum SFTPClientError: LocalizedError {
 /// establishes the master connection; sftp operations reuse its socket, so
 /// file browsing inherits agent, certs, and ProxyJump with no re-auth.
 enum SSHControl {
-    static let controlDir = "/tmp/portside-ssh"
+    /// Keyed by uid rather than a bare shared name: on a multi-user machine
+    /// `/tmp` is world-writable, so a fixed path for every account invited
+    /// another local user to race directory creation or plant something at
+    /// it first. `%C`'s hashed suffix keeps the full ControlPath comfortably
+    /// under AF_UNIX's ~104-108 byte socket path limit, which is also why
+    /// this stays under `/tmp` rather than a deeper per-user cache directory.
+    static let controlDir: String = resolveControlDir()
 
     static var options: [String] {
+        guard verifiedOwnDirectory(controlDir) else {
+            // Something already at this path isn't provably ours (wrong
+            // owner, wrong mode, or not even a directory) — degrade to an
+            // unmultiplexed connection rather than hand OpenSSH a socket
+            // path we can't vouch for. A plain ssh/sftp call still works;
+            // it just re-authenticates instead of piggybacking.
+            NSLog("Portside: %@ failed its ownership/permission check; ControlMaster disabled", controlDir)
+            return []
+        }
         try? FileManager.default.createDirectory(
             atPath: controlDir,
             withIntermediateDirectories: true,
@@ -47,6 +62,27 @@ enum SSHControl {
             "-o", "ControlMaster=no",
             "-o", "ControlPath=\(controlDir)/%C",
         ]
+    }
+
+    private static func resolveControlDir() -> String {
+        let base = "/tmp/portside-ssh-\(getuid())"
+        if verifiedOwnDirectory(base) { return base }
+        // Already claimed by something we can't trust — fall back to a
+        // path unique to this process rather than share a compromised one.
+        return "/tmp/portside-ssh-\(getuid())-\(ProcessInfo.processInfo.globallyUniqueString)"
+    }
+
+    /// True when `path` either doesn't exist yet (safe to create) or already
+    /// exists as a real directory — not a symlink — owned by this user, with
+    /// no group/other access. `lstat` (not `stat`) so a symlink is judged by
+    /// what it *is*, not what it points at.
+    static func verifiedOwnDirectory(_ path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return true }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        guard info.st_uid == getuid() else { return false }
+        guard (info.st_mode & 0o777) == 0o700 else { return false }
+        return true
     }
 }
 
