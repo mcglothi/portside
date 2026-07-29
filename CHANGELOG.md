@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.18.1
+
+- Fixed: **a command typed after Invert Selection could go to one host instead of the group.** Excluding a pane never stopped it receiving your keystrokes — only the *mirror* to its peers — so if a bulk action excluded the pane that happened to hold focus, the caret stayed in what was now a private session and the next command ran on that single host. Invert Selection made this easy to hit: exclude two of six, invert, and the pane you were typing in was suddenly the excluded one. Focus now moves to the first pane still broadcasting whenever an exclusion takes the broadcast out from under it, whether from a bulk action or ⌥⌘M. Deliberately typing into an excluded pane still works — click into it first; what's gone is landing there without asking.
+
 ## 0.18.0
 
 - **Temporarily drop a host out of a MultiExec broadcast, then put it back** — MobaXterm's per-host checkbox. Run a command against everything but two boxes, then put them back, without disarming. Every pane has always had an include toggle while MultiExec is armed, but it was a floating chip that covered the terminal's top line, labelled with a host title the pane's own prompt already showed. It's now a status bar under each pane reading **Broadcasting** or **Excluded**, clickable across its full width. The armed banner counts included panes and carries one-click **Include All**, **Exclude All** and **Invert Selection** buttons, each greyed out when it would do nothing. Everything has a key: **⌥⌘M** toggles the focused pane, **⌥⌘A** / **⌥⌘E** / **⌥⌘I** run the three bulk actions, and ⇧⌘M still disarms — all rebindable in Settings ▸ Shortcuts, and all mirrored under View ▸ MultiExec Panes. Protected hosts still only join through their confirmation: no bulk action can sweep one in.
