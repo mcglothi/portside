@@ -41,6 +41,26 @@ The DMG is the recommended direct download: open it and drag Portside to the
 Applications alias in the Finder window. The ZIP remains the update artifact
 for Sparkle and the Homebrew cask.
 
+## Homebrew
+
+The cask lives in a separate repo (`mcglothi/homebrew-tap`, `Casks/portside.rb`),
+so none of the release gates cover it. `Scripts/release.sh` bumps it as its last
+step, after the GitHub release is live: it downloads the *published* zip, checks
+that hash against the one just built, rewrites the cask's `version` and `sha256`,
+pushes, then reads the file back from GitHub to confirm the change landed.
+
+That download is deliberate. If GitHub ever served something other than what was
+uploaded, a cask built from the local zip would carry a checksum `brew` could
+never match, and the first symptom would be a baffling checksum error for a user
+rather than a loud failure at release time.
+
+- `PORTSIDE_SKIP_TAP_BUMP=1` — leave the tap alone.
+- `PORTSIDE_TAP_DRY_RUN=1` — do everything except the push, printing the diff.
+- `PORTSIDE_TAP_REPO=owner/repo` — bump a different tap.
+
+A failure here does not invalidate the release; it leaves Homebrew users on the
+previous version, and the script prints the values needed to finish by hand.
+
 ## Notes
 
 - **Hardened runtime:** Portside spawns `ssh`/`sftp`/a login shell and uses the

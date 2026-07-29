@@ -204,6 +204,100 @@ if [ "$PUBLISHED_SHA" != "$LOCAL_HEAD" ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Homebrew tap bump.
+#
+# The cask lives in a separate repo, so none of the gates above cover it — and
+# printing the version/sha as a closing hint, which is what this used to do,
+# left pushing them to memory. It was forgotten: the tap served 0.17.1 while
+# Sparkle users were two releases ahead, so `brew upgrade` was quietly the
+# stalest way to get Portside.
+#
+# Runs last, because the cask has to point at an asset that already exists. A
+# failure here does not invalidate the release — it just leaves Homebrew users
+# on the previous version — so it reports the values needed to finish by hand.
+#
+#   PORTSIDE_SKIP_TAP_BUMP=1  don't touch the tap
+#   PORTSIDE_TAP_DRY_RUN=1    do everything except push
+# ---------------------------------------------------------------------------
+TAP_REPO="${PORTSIDE_TAP_REPO:-mcglothi/homebrew-tap}"
+TAP_CASK="Casks/portside.rb"
+TAP_DIR=""
+PUBLISHED_ZIP=""
+cleanup_tap() { [ -n "$TAP_DIR" ] && rm -rf "$TAP_DIR"; [ -n "$PUBLISHED_ZIP" ] && rm -f "$PUBLISHED_ZIP"; return 0; }
+trap cleanup_tap EXIT
+
+tap_fail() {
+    echo "error: $1" >&2
+    echo "       The v$VERSION release itself is live and unaffected. Homebrew users stay" >&2
+    echo "       on the previous version until the cask is bumped by hand:" >&2
+    echo "         $TAP_REPO  $TAP_CASK" >&2
+    echo "         version \"$VERSION\"" >&2
+    echo "         sha256 \"${PUBLISHED_SHA256:-<sha256 of the published zip>}\"" >&2
+    exit 1
+}
+
+if [ -n "${PORTSIDE_SKIP_TAP_BUMP:-}" ]; then
+    echo "==> Skipping Homebrew tap bump (PORTSIDE_SKIP_TAP_BUMP set)"
+else
+    echo "==> Bumping the Homebrew tap ($TAP_REPO)"
+
+    # Hash the asset as GitHub is serving it, not the local file. They should be
+    # identical; if they ever aren't, a cask built from the local zip would
+    # carry a checksum `brew` can never match, and that surfaces as a baffling
+    # checksum error for a user instead of a loud failure here. Downloading it
+    # doubles as proof the upload survived intact.
+    PUBLISHED_ZIP="$(mktemp -t portside-published)"
+    if ! curl -fsSL -o "$PUBLISHED_ZIP" \
+        "https://github.com/$REPO/releases/download/v$VERSION/Portside-$VERSION.zip"; then
+        tap_fail "could not download the published zip to verify its checksum"
+    fi
+    PUBLISHED_SHA256="$(shasum -a 256 "$PUBLISHED_ZIP" | cut -d' ' -f1)"
+    LOCAL_SHA256="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
+    if [ "$PUBLISHED_SHA256" != "$LOCAL_SHA256" ]; then
+        echo "       local:     $LOCAL_SHA256" >&2
+        echo "       published: $PUBLISHED_SHA256" >&2
+        tap_fail "the published zip is not the one just built — do not point the cask at it"
+    fi
+
+    TAP_DIR="$(mktemp -d -t portside-tap)"
+    if ! git clone --quiet --depth 1 "git@github.com:$TAP_REPO.git" "$TAP_DIR"; then
+        tap_fail "could not clone $TAP_REPO"
+    fi
+    [ -f "$TAP_DIR/$TAP_CASK" ] || tap_fail "$TAP_CASK not found in $TAP_REPO"
+
+    # Anchored so only the cask's own two stanzas move; `url` interpolates
+    # #{version} and must not be rewritten.
+    sed -i.bak \
+        -e "s|^  version \".*\"$|  version \"$VERSION\"|" \
+        -e "s|^  sha256 \".*\"$|  sha256 \"$PUBLISHED_SHA256\"|" \
+        "$TAP_DIR/$TAP_CASK"
+    rm -f "$TAP_DIR/$TAP_CASK.bak"
+
+    grep -q "^  version \"$VERSION\"$" "$TAP_DIR/$TAP_CASK" \
+        || tap_fail "the version stanza in $TAP_CASK did not take the edit"
+    grep -q "^  sha256 \"$PUBLISHED_SHA256\"$" "$TAP_DIR/$TAP_CASK" \
+        || tap_fail "the sha256 stanza in $TAP_CASK did not take the edit"
+
+    if git -C "$TAP_DIR" diff --quiet; then
+        echo "    Cask already at $VERSION — nothing to push"
+    elif [ -n "${PORTSIDE_TAP_DRY_RUN:-}" ]; then
+        echo "    DRY RUN — would push:"
+        git -C "$TAP_DIR" --no-pager diff
+    else
+        git -C "$TAP_DIR" add "$TAP_CASK"
+        git -C "$TAP_DIR" commit --quiet -m "portside $VERSION"
+        git -C "$TAP_DIR" push --quiet origin HEAD || tap_fail "could not push to $TAP_REPO"
+
+        # Read it back: a push that lands on the wrong branch, or a tap with
+        # branch protection that accepted nothing, both look like success above.
+        REMOTE_VERSION="$(gh api "repos/$TAP_REPO/contents/$TAP_CASK" --jq '.content' \
+            | base64 -d | sed -n 's|^  version "\(.*\)"$|\1|p')"
+        [ "$REMOTE_VERSION" = "$VERSION" ] \
+            || tap_fail "$TAP_REPO still serves version '$REMOTE_VERSION' after the push"
+        echo "    Tap now serves $VERSION"
+    fi
+fi
+
 echo "==> Done. Installed apps will see v$VERSION on their next update check."
 echo "    Reinstall locally with: cp -R build/Portside.app /Applications/"
-echo "    Homebrew cask bump:     version \"$VERSION\" / sha256 \"$(shasum -a 256 "$ZIP" | cut -d' ' -f1)\""
