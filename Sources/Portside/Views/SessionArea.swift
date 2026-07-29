@@ -89,6 +89,29 @@ struct TabContentView: View {
 
     private var alert: Color { Color(nsColor: store.appearance.alert) }
 
+    private var toggleShortcut: String { symbol(for: .togglePaneInMultiExec) }
+
+    private func symbol(for action: ShortcutAction) -> String {
+        store.keyBindings.binding(for: action).displaySymbol
+    }
+
+    /// A banner button with its key printed beside the name. These are used
+    /// mid-broadcast, between one command and the next, where a hint you have
+    /// to hover for doesn't help — the point is to stop reaching for the mouse.
+    /// Reads the live binding, so a remap in Settings shows up here.
+    private func bannerButton(_ title: String,
+                              key: ShortcutAction,
+                              run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            HStack(spacing: 5) {
+                Text(title)
+                Text(symbol(for: key))
+                    .font(.caption)
+                    .opacity(0.6)
+            }
+        }
+    }
+
     /// Favourites when there are any, otherwise every macro.
     ///
     /// The fallback matters: pinning nothing must not empty the bar for people
@@ -101,12 +124,38 @@ struct TabContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if tab.broadcastArmed {
+                let counts = sessions.multiExecInclusionCounts
                 HStack(spacing: 8) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                    Text("MultiExec is ON — keystrokes go to every included pane in this tab")
-                        .fontWeight(.semibold)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("MultiExec is ON — keystrokes go to \(counts.included) of \(counts.total) panes in this tab")
+                            .fontWeight(.semibold)
+                        // The reminder: excluding a pane is the least
+                        // discoverable half of MultiExec, and the chips read as
+                        // labels until you know they're clickable.
+                        Text("\(toggleShortcut) excludes the focused pane; click a pane's chip to toggle it")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Button("Disarm") { sessions.setBroadcastArmed(false) }
+                    // Every bulk action is its own button rather than items in a
+                    // menu: they're used mid-broadcast, between one command and
+                    // the next, where expanding a menu to reach them is a step
+                    // too many. Disabled rather than hidden so the row doesn't
+                    // reflow under the pointer as panes come and go.
+                    ForEach(MultiExecBulkAction.allCases, id: \.self) { action in
+                        bannerButton(action.label, key: action.shortcutAction) {
+                            sessions.applyBulkInclusion(action)
+                        }
+                        .disabled(!sessions.wouldChangeAnything(action))
+                        .help(action.help)
+                    }
+                    // ⇧⌘M rather than a key of its own: Toggle MultiExec is
+                    // what turns the broadcast off, and this button is that.
+                    bannerButton("Disarm", key: .toggleMultiExec) {
+                        sessions.setBroadcastArmed(false)
+                    }
+                    .help("Turn MultiExec off for this tab")
                 }
                 .padding(8)
                 .background(alert.opacity(0.25))

@@ -3,6 +3,11 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.18.0
+
+- **Temporarily drop a host out of a MultiExec broadcast, then put it back** — MobaXterm's per-host checkbox. Run a command against everything but two boxes, then put them back, without disarming. Every pane has always had an include toggle while MultiExec is armed, but it was a floating chip that covered the terminal's top line, labelled with a host title the pane's own prompt already showed. It's now a status bar under each pane reading **Broadcasting** or **Excluded**, clickable across its full width. The armed banner counts included panes and carries one-click **Include All**, **Exclude All** and **Invert Selection** buttons, each greyed out when it would do nothing. Everything has a key: **⌥⌘M** toggles the focused pane, **⌥⌘A** / **⌥⌘E** / **⌥⌘I** run the three bulk actions, and ⇧⌘M still disarms — all rebindable in Settings ▸ Shortcuts, and all mirrored under View ▸ MultiExec Panes. Protected hosts still only join through their confirmation: no bulk action can sweep one in.
+- Fixed: **⇧⌘M could not arm MultiExec from several single-host tabs** — the exact case it gathers into Grid View for. The menu item was disabled unless the *current tab* already had 2+ panes, a condition the toolbar button didn't share, so the keyboard shortcut was dead where the toolbar toggle worked.
+
 ## 0.17.2
 
 Security and data-integrity patch, from a full codebase review — nothing here was exploited in the wild, but several of these were reachable just by importing a crafted library or browsing an SFTP directory.

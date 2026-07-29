@@ -107,9 +107,13 @@ exists to fill that gap without giving up native speed and macOS polish.
   library; empty query lists recent hosts so it doubles as fast reconnect.
 - **MultiExec** — tile every session in a grid and type into all of them at
   once. Arming it is one step: with several separate tabs open it gathers
-  them into Grid View automatically instead of requiring that first. Per-
-  terminal include toggles, a broadcast command bar for deliberate one-shot
-  commands, and a loud orange banner so you always know when you're armed.
+  them into Grid View automatically instead of requiring that first. A
+  broadcast command bar for deliberate one-shot commands, and a loud orange
+  banner so you always know when you're armed and how many panes are live.
+  Every pane carries a **Broadcasting / Excluded** status bar so you can drop
+  a host out for one command and put it back (⌥⌘M), with **Include All**
+  (⌥⌘A), **Exclude All** (⌥⌘E) and **Invert Selection** (⌥⌘I) one click or
+  one key away in the banner.
 - **Environment badges & protected hosts** — tag sessions prod / staging /
   dev / personal for color-coded badges in the sidebar and tabs. Protected
   hosts stay **out of MultiExec by default** and require explicit
@@ -164,7 +168,9 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Every shortcut remappable** — Settings → Shortcuts lists every keyboard
   shortcut with a click-to-record rebind, conflict detection, and per-row or
   one-click reset to defaults. New default shortcuts: Reopen Closed Tab,
-  Toggle MultiExec, Toggle Grid View, and Clear Buffer.
+  Toggle MultiExec, Toggle Grid View, Clear Buffer, and the MultiExec pane
+  controls (Toggle Pane ⌥⌘M, Include All ⌥⌘A, Exclude All ⌥⌘E, Invert
+  Selection ⌥⌘I).
 - **Cursor styling** — block, underline, or bar, with independent blink,
   in Settings → Appearance with a live preview.
 - **Copy/paste from a right-click** — a context menu in every terminal,

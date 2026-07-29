@@ -1062,6 +1062,75 @@ final class SessionManager: ObservableObject {
         setGridView(!isGridView)
     }
 
+    // MARK: - Per-pane MultiExec membership
+
+    /// Set while a protected host is waiting on the "include it anyway?"
+    /// confirmation, so the dialog can be presented over that specific pane
+    /// whether the toggle came from the pane's chip or from ⌥⌘M.
+    @Published var pendingProtectedInclusionID: UUID?
+
+    /// Flips one pane in or out of the broadcast. Excluding is immediate;
+    /// including a protected host raises the confirmation instead — the caller
+    /// commits it via `confirmProtectedInclusion`.
+    ///
+    /// This is the "run this one command everywhere but those two boxes" move:
+    /// drop the panes, run the command, put them back — without disarming.
+    func setIncludedInMultiExec(_ session: TerminalSession, included: Bool) {
+        if included, session.isProtected {
+            pendingProtectedInclusionID = session.id
+        } else {
+            session.includedInMultiExec = included
+        }
+    }
+
+    func toggleIncludedInMultiExec(_ session: TerminalSession) {
+        setIncludedInMultiExec(session, included: !session.includedInMultiExec)
+    }
+
+    /// ⌥⌘M: toggles the focused pane. No-op unless the tab is armed — outside
+    /// MultiExec there is nothing to be included in, and silently flipping
+    /// invisible state would surprise you the next time you armed it.
+    func toggleActivePaneInMultiExec() {
+        guard let tab = selectedTab, tab.broadcastArmed, let session = tab.activeLeaf else { return }
+        toggleIncludedInMultiExec(session)
+    }
+
+    /// Commits the pending protected-host inclusion the confirmation was raised for.
+    func confirmProtectedInclusion() {
+        guard let id = pendingProtectedInclusionID,
+              let session = selectedTab?.leaves.first(where: { $0.id == id }) else { return }
+        session.includedInMultiExec = true
+        pendingProtectedInclusionID = nil
+    }
+
+    /// Include All / Exclude All / Invert across the armed tab's panes.
+    func applyBulkInclusion(_ action: MultiExecBulkAction) {
+        guard let tab = selectedTab else { return }
+        for session in tab.leaves {
+            session.includedInMultiExec = action.applied(included: session.includedInMultiExec,
+                                                         isProtected: session.isProtected)
+        }
+    }
+
+    /// Included / total pane counts for the armed tab's banner.
+    var multiExecInclusionCounts: (included: Int, total: Int) {
+        let leaves = selectedTab?.leaves ?? []
+        return (leaves.filter(\.includedInMultiExec).count, leaves.count)
+    }
+
+    /// Whether a bulk action would actually change anything, so the banner and
+    /// menu can grey out the ones that wouldn't.
+    ///
+    /// Include All is not simply `included < total`: it deliberately skips
+    /// protected hosts, so on a tab holding one that test leaves the button
+    /// live and inert. Asking the action itself keeps the two rules in step.
+    func wouldChangeAnything(_ action: MultiExecBulkAction) -> Bool {
+        (selectedTab?.leaves ?? []).contains { session in
+            action.applied(included: session.includedInMultiExec,
+                           isProtected: session.isProtected) != session.includedInMultiExec
+        }
+    }
+
     // MARK: - Tab navigation
 
     /// Selects the next tab, wrapping around (⌘⇧]).
@@ -1466,9 +1535,14 @@ final class SessionManager: ObservableObject {
         session.prefersMetal = terminalSettings.useMetalRenderer
         // Persist the workspace when this session's MultiExec membership is
         // toggled (the checkbox sets the property directly on the session).
+        // Republish too: the armed banner's "N of M included" count reads
+        // across leaves, which no single @ObservedObject would refresh.
         membershipObservers[session.id] = session.$includedInMultiExec
             .dropFirst()
-            .sink { [weak self] _ in self?.notifyWorkspaceChanged() }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                self?.notifyWorkspaceChanged()
+            }
     }
 
     private func add(_ session: TerminalSession) {

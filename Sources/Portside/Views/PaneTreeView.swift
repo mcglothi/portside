@@ -67,9 +67,10 @@ struct PaneNodeView: View {
 /// included/excluded styling that used to live on the MultiExec grid tiles.
 struct PaneLeafView: View {
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var sessions: SessionManager
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
-    @State private var confirmingInclude = false
+    @State private var hovering = false
 
     private var armed: Bool { tab.broadcastArmed }
     private var included: Bool { session.includedInMultiExec }
@@ -77,11 +78,17 @@ struct PaneLeafView: View {
     private var alert: Color { Color(nsColor: store.appearance.alert) }
 
     var body: some View {
-        TerminalPane(session: session)
-            .opacity(armed && !included ? 0.55 : 1)
-            .overlay(alignment: .topLeading) {
-                if armed { includeChip.padding(6) }
+        VStack(spacing: 0) {
+            TerminalPane(session: session)
+                .opacity(armed && !included ? 0.55 : 1)
+            // A real bar rather than a floating chip: the old overlay sat on
+            // top of the terminal's first line, hiding output on every pane
+            // for the whole time MultiExec was armed.
+            if armed {
+                Divider()
+                includeBar
             }
+        }
             .overlay {
                 let ring = ringColor
                 if ring != nil {
@@ -92,13 +99,26 @@ struct PaneLeafView: View {
             }
             .confirmationDialog(
                 "\"\(session.title)\" is a protected host. Include it in the MultiExec broadcast?",
-                isPresented: $confirmingInclude
+                isPresented: confirmingInclude
             ) {
                 Button("Include Protected Host", role: .destructive) {
-                    session.includedInMultiExec = true
+                    sessions.confirmProtectedInclusion()
                 }
                 Button("Cancel", role: .cancel) {}
             }
+    }
+
+    /// Presented over the pane the manager raised the guard for — so ⌥⌘M on a
+    /// protected host gets the same dialog, anchored the same way, as its chip.
+    private var confirmingInclude: Binding<Bool> {
+        Binding(
+            get: { sessions.pendingProtectedInclusionID == session.id },
+            set: { shown in
+                if !shown, sessions.pendingProtectedInclusionID == session.id {
+                    sessions.pendingProtectedInclusionID = nil
+                }
+            }
+        )
     }
 
     /// Accent ring on the active pane; otherwise the alert-colored ring on an
@@ -109,30 +129,60 @@ struct PaneLeafView: View {
         return nil
     }
 
-    private var includeChip: some View {
-        HStack(spacing: 4) {
+    /// The per-pane include toggle, as a status bar under its terminal.
+    ///
+    /// No host title: the pane's own prompt already says which box this is, and
+    /// repeating it crowded out the one thing the bar exists to report. The
+    /// whole strip is the click target, which is a far bigger one than the
+    /// floating chip it replaced.
+    private var includeBar: some View {
+        HStack(spacing: 6) {
             Image(systemName: included ? "checkmark.square.fill" : "square")
+                .font(.system(size: 13))
                 .foregroundStyle(included ? alert : .secondary)
             if session.isProtected {
-                Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            Text(session.title).lineLimit(1)
+            Text(included ? "Broadcasting" : "Excluded")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(included ? .primary : .secondary)
+            Spacer(minLength: 0)
         }
-        .font(.caption)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.quaternary))
-        .contentShape(Capsule())
-        .onTapGesture(perform: toggleInclude)
-        .help("Include this pane in the MultiExec broadcast")
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? alert.opacity(0.22) : Color.secondary.opacity(0.10))
+        .contentShape(Rectangle())
+        .onTapGesture { sessions.toggleIncludedInMultiExec(session) }
+        .onHover { hovering = $0 }
+        .overlay(ArrowCursorArea().allowsHitTesting(false))
+        .help("\(included ? "Exclude" : "Include") this pane — \(toggleShortcut) toggles the focused pane")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(session.title), \(included ? "included in" : "excluded from") MultiExec")
     }
 
-    private func toggleInclude() {
-        if !included, session.isProtected {
-            confirmingInclude = true
-        } else {
-            session.includedInMultiExec.toggle()
-        }
+    private var toggleShortcut: String {
+        store.keyBindings.binding(for: .togglePaneInMultiExec).displaySymbol
     }
+}
+
+/// Restores the arrow cursor over a control layered on top of a terminal.
+///
+/// SwiftTerm claims its whole bounds with `addCursorRect(bounds, cursor: .iBeam)`,
+/// and a SwiftUI-drawn overlay is painted into the hosting view rather than
+/// getting an `NSView` of its own — so there is nothing to out-rank that claim
+/// and the I-beam stays put over the chip. A real (non-hit-testing) view with
+/// its own cursor rect, added above the terminal, is what wins.
+private struct ArrowCursorArea: NSViewRepresentable {
+    final class CursorView: NSView {
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+        /// Geometry-based, so the cursor rect still applies; clicks continue
+        /// through to the SwiftUI tap gesture underneath.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> CursorView { CursorView() }
+    func updateNSView(_ view: CursorView, context: Context) { view.window?.invalidateCursorRects(for: view) }
 }
