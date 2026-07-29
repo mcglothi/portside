@@ -36,9 +36,9 @@ aren't supported. If that matters to you, please open an issue.
 
 *Real terminal tabs over the OpenSSH you already have configured — keys, agent, and `ProxyJump` chains included.*
 
-![MultiExec broadcasting the same command to two hosts at once, with a safety banner and per-terminal include toggles](docs/screenshots/multiexec.png)
+![MultiExec broadcasting uptime to four of six panes; the two nonprod panes are excluded and dimmed, each pane carries a Broadcasting or Excluded status bar, and the banner offers Include All, Exclude All and Invert Selection](docs/screenshots/multiexec.png)
 
-*MultiExec broadcasts your keystrokes to every included session — with a loud banner and per-terminal opt-in so you always know what's armed.*
+*MultiExec broadcasts your keystrokes to every included pane — with a loud banner counting what's live. Drop a host out for a single command and put it back (⌥⌘M, or the status bar under any pane) without disarming.*
 
 ![The SFTP file browser riding the same SSH session as the terminal, listing a remote directory](docs/screenshots/sftp.png)
 
