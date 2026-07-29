@@ -1,9 +1,9 @@
 # Cask for the personal tap (github.com/mcglothi/homebrew-tap, Casks/portside.rb).
 # Users install with:  brew install mcglothi/tap/portside
 #
-# On each release, update `version` and `sha256`:
-#   shasum -a 256 build/updates/Portside-<version>.zip
-# (Or automate the bump in Scripts/release.sh once the tap exists.)
+# Reference copy only — the tap is the source of truth. Scripts/release.sh now
+# bumps the tap's cask automatically on every release (PORTSIDE_SKIP_TAP_BUMP=1
+# opts out), so the version/sha256 below are NOT kept current. Read the tap.
 cask "portside" do
   version "0.5.0"
   sha256 "REPLACE_WITH_RELEASE_ZIP_SHA256"
