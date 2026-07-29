@@ -86,6 +86,44 @@ final class MultiExecInclusionTests: XCTestCase {
         }
     }
 
+    // MARK: - Focus after a bulk action
+
+    /// The reported bug: Invert Selection excluded the focused pane, focus
+    /// stayed put, and the next command went to that one host instead of the
+    /// group — `mirrorUserInput` won't mirror *from* an excluded pane, but
+    /// SwiftTerm still writes to its own pty.
+    func testFocusMovesOffAPaneABulkActionExcluded() {
+        let a = UUID(), b = UUID(), c = UUID()
+        let afterInvert = [(id: a, included: false), (id: b, included: true), (id: c, included: false)]
+        XCTAssertEqual(MultiExecFocus.refocused(from: a, panes: afterInvert), b,
+                       "focus must land on the first pane still in the broadcast")
+    }
+
+    func testFocusStaysWhenTheFocusedPaneIsStillIncluded() {
+        let a = UUID(), b = UUID()
+        XCTAssertNil(MultiExecFocus.refocused(from: a, panes: [(a, true), (b, false)]),
+                     "nothing to fix — don't yank the caret out of a pane that's still broadcasting")
+    }
+
+    /// Exclude All has nowhere better to put focus, and its 0-of-N banner is
+    /// its own warning. Moving focus anyway would be arbitrary.
+    func testFocusStaysWhenNothingIsIncluded() {
+        let a = UUID(), b = UUID()
+        XCTAssertNil(MultiExecFocus.refocused(from: a, panes: [(a, false), (b, false)]))
+    }
+
+    func testFocusPicksTheFirstIncludedPaneInOrder() {
+        let a = UUID(), b = UUID(), c = UUID()
+        XCTAssertEqual(MultiExecFocus.refocused(from: a, panes: [(a, false), (b, true), (c, true)]), b)
+    }
+
+    func testNoFocusChangeWithoutAFocusedPaneOrAStaleID() {
+        let a = UUID()
+        XCTAssertNil(MultiExecFocus.refocused(from: nil, panes: [(a, true)]))
+        XCTAssertNil(MultiExecFocus.refocused(from: UUID(), panes: [(a, true)]),
+                     "a focus id that isn't in this tab must not silently retarget")
+    }
+
     /// Mirrors `SessionManager.wouldChangeAnything` over plain pairs.
     private func changesAnything(_ action: MultiExecBulkAction,
                                  _ panes: [(included: Bool, isProtected: Bool)]) -> Bool {

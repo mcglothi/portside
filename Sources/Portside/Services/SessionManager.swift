@@ -1080,6 +1080,7 @@ final class SessionManager: ObservableObject {
             pendingProtectedInclusionID = session.id
         } else {
             session.includedInMultiExec = included
+            if !included { moveFocusOffExcludedPane() }
         }
     }
 
@@ -1104,12 +1105,36 @@ final class SessionManager: ObservableObject {
     }
 
     /// Include All / Exclude All / Invert across the armed tab's panes.
+    ///
+    /// Moves focus off a pane the action just excluded. Without this, Invert
+    /// Selection could take the broadcast out from under the caret: you keep
+    /// typing expecting the group and every keystroke goes to that one host,
+    /// because `mirrorUserInput` won't mirror *from* an excluded pane.
     func applyBulkInclusion(_ action: MultiExecBulkAction) {
         guard let tab = selectedTab else { return }
         for session in tab.leaves {
             session.includedInMultiExec = action.applied(included: session.includedInMultiExec,
                                                          isProtected: session.isProtected)
         }
+        moveFocusOffExcludedPane()
+    }
+
+    /// Moves focus onto the first broadcasting pane when the focused one has
+    /// just been excluded, so the next thing typed reaches the group.
+    ///
+    /// Only ever runs on an *exclusion* — including a pane makes it a
+    /// broadcast target, so staying put is already right. Typing into an
+    /// excluded pane deliberately (click into it first) still works and is
+    /// still useful; what this prevents is landing there without asking.
+    private func moveFocusOffExcludedPane() {
+        guard let tab = selectedTab, tab.broadcastArmed else { return }
+        let panes = tab.leaves.map { (id: $0.id, included: $0.includedInMultiExec) }
+        guard let refocused = MultiExecFocus.refocused(from: tab.activePaneID, panes: panes) else { return }
+        focusPane(refocused)
+        // The ring alone isn't enough: `focusPane` sets `activePaneID`, but the
+        // keystrokes follow the AppKit first responder, which is the whole
+        // point here. Same pairing pane navigation uses.
+        tab.leaves.first { $0.id == refocused }?.focus()
     }
 
     /// Included / total pane counts for the armed tab's banner.

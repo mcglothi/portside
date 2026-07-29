@@ -6,6 +6,30 @@ import Foundation
 /// on `SessionManager` so the protected-host rule is testable without spawning
 /// terminal sessions — every `TerminalSession` init starts a real process, port,
 /// or fd.
+/// Where focus should land after a bulk action changes pane membership.
+///
+/// Typing into an excluded pane still reaches that pane — deliberate, and worth
+/// keeping: it's how you run a one-off on the host you just took out. The
+/// hazard is having it happen *without asking*. A bulk action can pull the
+/// broadcast out from under the focused pane, and nothing about the caret says
+/// so, so the next command silently hits one host instead of the group.
+enum MultiExecFocus {
+    /// The pane that should take focus, or nil to leave it where it is.
+    ///
+    /// Nil when the focused pane is still in the broadcast (nothing to fix) and
+    /// when nothing is included at all (Exclude All has nowhere better to go,
+    /// and a 0-of-N banner is its own warning).
+    static func refocused(from focused: UUID?,
+                          panes: [(id: UUID, included: Bool)]) -> UUID? {
+        guard let focused,
+              let current = panes.first(where: { $0.id == focused }),
+              !current.included,
+              let firstIncluded = panes.first(where: \.included)
+        else { return nil }
+        return firstIncluded.id
+    }
+}
+
 enum MultiExecBulkAction: CaseIterable {
     case includeAll, excludeAll, invert
 
