@@ -141,6 +141,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case newLocalShell, quickConnect, find
     case zoomIn, zoomOut, actualSize
     case splitRight, splitDown, zoomPane, focusNextPane, focusPreviousPane, closePane
+    case togglePaneInMultiExec, includeAllPanes, excludeAllPanes, invertPaneSelection
     case nextTab, previousTab, closeTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
 
     var id: String { rawValue }
@@ -149,7 +150,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .newLocalShell, .quickConnect, .nextTab, .previousTab, .closeTab, .reopenClosedTab:
             return "Tabs"
-        case .splitRight, .splitDown, .zoomPane, .focusNextPane, .focusPreviousPane, .closePane:
+        case .splitRight, .splitDown, .zoomPane, .focusNextPane, .focusPreviousPane, .closePane,
+             .togglePaneInMultiExec, .includeAllPanes, .excludeAllPanes, .invertPaneSelection:
             return "Panes"
         case .find, .zoomIn, .zoomOut, .actualSize, .toggleMultiExec, .toggleGridView, .clearBuffer:
             return "Terminal"
@@ -173,6 +175,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .focusNextPane: return "Focus Next Pane"
         case .focusPreviousPane: return "Focus Previous Pane"
         case .closePane: return "Close Pane"
+        case .togglePaneInMultiExec: return "Toggle Pane in MultiExec"
+        // Same names the banner buttons and the View ▸ MultiExec Panes items
+        // use, so looking up "Invert Selection" finds one entry, not two.
+        case .includeAllPanes: return MultiExecBulkAction.includeAll.label
+        case .excludeAllPanes: return MultiExecBulkAction.excludeAll.label
+        case .invertPaneSelection: return MultiExecBulkAction.invert.label
         case .nextTab: return "Show Next Tab"
         case .previousTab: return "Show Previous Tab"
         case .closeTab: return "Close Tab"
@@ -199,6 +207,14 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .focusNextPane: return KeyBinding(key: .special(.rightArrow), modifiers: [.command, .option])
         case .focusPreviousPane: return KeyBinding(key: .special(.leftArrow), modifiers: [.command, .option])
         case .closePane: return KeyBinding(key: .character("w"), modifiers: [.command, .shift])
+        // ⌥⌘ is already the pane-scoped family (⌥⌘←/→ move focus), and M is
+        // MultiExec's letter — so ⌥⌘M reads as "MultiExec, just this pane"
+        // next to ⇧⌘M's "MultiExec, the whole tab".
+        case .togglePaneInMultiExec: return KeyBinding(key: .character("m"), modifiers: [.command, .option])
+        // The rest of the ⌥⌘ pane family, mnemonic on the action's first letter.
+        case .includeAllPanes: return KeyBinding(key: .character("a"), modifiers: [.command, .option])
+        case .excludeAllPanes: return KeyBinding(key: .character("e"), modifiers: [.command, .option])
+        case .invertPaneSelection: return KeyBinding(key: .character("i"), modifiers: [.command, .option])
         case .nextTab: return KeyBinding(key: .character("]"), modifiers: [.command, .shift])
         case .previousTab: return KeyBinding(key: .character("["), modifiers: [.command, .shift])
         // The terminal-app convention: ⌘W closes the tab, as in Terminal.app

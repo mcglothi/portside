@@ -169,7 +169,19 @@ struct PortsideApp: App {
                     .disabled(sessions.selected == nil)
                 Button("Toggle MultiExec") { sessions.toggleMultiExec() }
                     .keyboardShortcut(shortcut(.toggleMultiExec))
-                    .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2)
+                    // Must match the toolbar toggle's condition: arming also
+                    // works from several single-pane tabs, which it gathers
+                    // into Grid View first. Testing only `leaves.count` left
+                    // ⇧⌘M dead in exactly that case.
+                    .disabled((sessions.selectedTab?.leaves.count ?? 0) < 2 && sessions.tabs.count < 2)
+                Menu("MultiExec Panes") {
+                    ForEach(MultiExecBulkAction.allCases, id: \.self) { action in
+                        Button(action.label) { sessions.applyBulkInclusion(action) }
+                            .keyboardShortcut(shortcut(action.shortcutAction))
+                            .disabled(!sessions.wouldChangeAnything(action))
+                    }
+                }
+                .disabled(!(sessions.selectedTab?.broadcastArmed ?? false))
                 Button("Toggle Grid View") { sessions.toggleGridView() }
                     .keyboardShortcut(shortcut(.toggleGridView))
                     .disabled(!sessions.canGridView)
@@ -195,6 +207,10 @@ struct PortsideApp: App {
                     .keyboardShortcut(shortcut(.focusNextPane))
                 Button("Focus Previous Pane") { sessions.focusAdjacentPane(next: false) }
                     .keyboardShortcut(shortcut(.focusPreviousPane))
+                Divider()
+                Button("Toggle Pane in MultiExec") { sessions.toggleActivePaneInMultiExec() }
+                    .keyboardShortcut(shortcut(.togglePaneInMultiExec))
+                    .disabled(!(sessions.selectedTab?.broadcastArmed ?? false))
                 Divider()
                 Button("Close Pane") { sessions.closeActivePane() }
                     .keyboardShortcut(shortcut(.closePane))
