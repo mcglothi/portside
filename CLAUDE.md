@@ -48,6 +48,45 @@ This project is indexed by GitNexus as **portside** (4013 symbols, 15757 relatio
 <!-- gitnexus:end -->
 
 <!-- portside:start -->
+## Cutting a release
+
+Setup and rationale live in `docs/DISTRIBUTION.md`. This is the operating
+summary, including the two values that are otherwise a guessing game:
+
+```sh
+PORTSIDE_SIGN_IDENTITY="Developer ID Application: Tim McGlothin (75QD9837N8)" \
+PORTSIDE_NOTARY_PROFILE=portside-notary \
+Scripts/release.sh <version> "release notes"
+```
+
+Takes roughly five minutes, nearly all of it waiting on Apple's notary service.
+Run it backgrounded rather than blocking on it.
+
+`Scripts/release.sh` gates itself and fails loudly rather than shipping
+something wrong, so the work is satisfying the gates *before* starting:
+
+1. **Merge to `main` and push first.** The build compiles the working tree, but
+   the tag points at whatever `origin/main` points at. Gate 3 refuses when those
+   disagree — this is the check that exists because v0.14.0 shipped a correct
+   binary under a tag pointing at the *previous* release's source.
+2. **Add a `## <version>` section to `CHANGELOG.md`.** Release notes are
+   extracted from it, and the gate greps for that exact heading.
+3. **Clean tree, on `main`, version not already tagged.**
+
+Both v0.17.2 stalls were the absence of this section: the notary profile name
+had to be rediscovered mid-release, and HEAD hadn't been pushed. Neither is a
+judgement call — they are the two variables above and step 1.
+
+`PORTSIDE_ALLOW_UNSAFE_RELEASE=1` waives every gate and says so loudly. It is
+not a shortcut past a gate you haven't read.
+
+**Don't hand-edit the Homebrew cask.** Since 0.18.1 `release.sh` bumps
+`mcglothi/homebrew-tap` itself as its final step, hashing the *published* zip
+and reading the cask back to confirm. Before that it only *printed* the values,
+which is exactly how the tap silently drifted two releases behind. Note that
+`docs/homebrew/portside.rb` in this repo is a reference copy pinned at 0.5.0
+with a placeholder sha — deliberately not the source of truth.
+
 ## When GitNexus earns its keep here — and when it doesn't
 
 The block above is GitNexus's own default guidance. Running impact analysis
