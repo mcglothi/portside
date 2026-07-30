@@ -278,6 +278,11 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// to keep the SFTP pane following `cd` in the terminal.
     @Published var currentDirectory: String?
 
+    /// Why a file dropped on this pane could not be copied here. Surfaced on
+    /// the pane itself rather than in the file browser, because the drop
+    /// target is what the user was looking at.
+    @Published var relayError: String?
+
     private var _sftp: SFTPBrowserModel?
     /// Lazy per-session file browser; only for plain SSH hosts (not local
     /// shells or container/pod sessions).

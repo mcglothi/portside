@@ -83,6 +83,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <true/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
+    <!-- Carried on an intra-app drag so a pane can tell a remote file being
+         dragged from the SFTP browser apart from an ordinary file promise,
+         and run a host-to-host copy instead of a download. Declared here so
+         the type is registered rather than dynamically assigned, which is
+         what lets the drop target match it. -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>net.timmcg.portside.remote-file</string>
+            <key>UTTypeDescription</key>
+            <string>Portside Remote File</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict/>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

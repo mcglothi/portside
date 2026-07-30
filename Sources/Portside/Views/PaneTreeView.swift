@@ -71,6 +71,8 @@ struct PaneLeafView: View {
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
     @State private var hovering = false
+    /// A remote file is hovering over this pane and could land here.
+    @State private var dropTargeted = false
 
     private var armed: Bool { tab.broadcastArmed }
     private var included: Bool { session.includedInMultiExec }
@@ -97,6 +99,32 @@ struct PaneLeafView: View {
                         .allowsHitTesting(false)
                 }
             }
+            // Host-to-host copy: a file dragged from the SFTP pane lands in
+            // whatever directory *this* pane's shell is sitting in.
+            .dropDestination(for: RemoteFileDragPayload.self) { payloads, _ in
+                acceptRelayDrop(payloads)
+            } isTargeted: { targeted in
+                dropTargeted = targeted
+            }
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                        .background(Color.accentColor.opacity(0.08))
+                        .allowsHitTesting(false)
+                }
+            }
+            .alert(
+                "Could not copy here",
+                isPresented: Binding(
+                    get: { session.relayError != nil },
+                    set: { if !$0 { session.relayError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { session.relayError = nil }
+            } message: {
+                Text(session.relayError ?? "")
+            }
             .confirmationDialog(
                 "\"\(session.title)\" is a protected host. Include it in the MultiExec broadcast?",
                 isPresented: confirmingInclude
@@ -106,6 +134,29 @@ struct PaneLeafView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+    }
+
+    /// Takes a remote file dropped on this pane and starts the relay.
+    ///
+    /// The source entry is resolved from the store at drop time rather than
+    /// trusted from the pasteboard, so a drag that started before a host was
+    /// edited or deleted cannot act on stale connection details.
+    private func acceptRelayDrop(_ payloads: [RemoteFileDragPayload]) -> Bool {
+        guard let payload = payloads.first,
+              let sourceEntry = store.entry(id: payload.entryID)
+        else { return false }
+        guard let destinationEntry = session.entry else {
+            session.relayError =
+                "This pane has no host to copy to — host-to-host copy needs a plain SSH session."
+            return false
+        }
+        RemoteRelayCoordinator.start(
+            payload: payload,
+            sourceEntry: sourceEntry,
+            destinationSession: session,
+            destinationEntry: destinationEntry
+        )
+        return true
     }
 
     /// Presented over the pane the manager raised the guard for — so ⌥⌘M on a

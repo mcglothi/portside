@@ -95,6 +95,34 @@ final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
     }
 }
 
+extension NSPasteboard.PasteboardType {
+    static let portsideRemoteFile =
+        NSPasteboard.PasteboardType(UTType.portsideRemoteFile.identifier)
+}
+
+/// A file promise that also advertises the remote file's identity.
+///
+/// Finder and every other external target keep seeing an ordinary promise and
+/// behave exactly as before. A Portside pane instead reads the extra type and
+/// runs a host-to-host relay, which the promise alone could never express —
+/// it can only write bytes to a local URL, so a pane accepting it would have
+/// meant downloading to a temp file first and re-uploading, with no chance to
+/// refuse the drop before the transfer started.
+final class RemoteFilePromiseProvider: NSFilePromiseProvider {
+    /// JSON-encoded `RemoteFileDragPayload`, or nil to behave as a plain promise.
+    var payload: Data?
+
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        guard payload != nil else { return super.writableTypes(for: pasteboard) }
+        return super.writableTypes(for: pasteboard) + [.portsideRemoteFile]
+    }
+
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        if type == .portsideRemoteFile { return payload }
+        return super.pasteboardPropertyList(forType: type)
+    }
+}
+
 /// A transparent AppKit layer over a file row that owns **all** of its mouse
 /// handling: click to select, double-click to activate, and drag to start a
 /// file promise.
@@ -207,7 +235,13 @@ struct RemoteFileDragSource: NSViewRepresentable {
                 entry: spec.entry, remotePath: spec.remotePath, name: spec.name, size: size
             )
             Self.activeDelegates.append(delegate)
-            let provider = NSFilePromiseProvider(fileType: type.identifier, delegate: delegate)
+            let provider = RemoteFilePromiseProvider(fileType: type.identifier, delegate: delegate)
+            provider.payload = try? JSONEncoder().encode(
+                RemoteFileDragPayload(
+                    entryID: spec.entry.id, remotePath: spec.remotePath,
+                    name: spec.name, size: size
+                )
+            )
             let item = NSDraggingItem(pasteboardWriter: provider)
 
             let icon = NSWorkspace.shared.icon(for: type)
