@@ -319,6 +319,13 @@ What's left for phase 3 is the split itself — until `workspace`, `recents`,
 `connectionStats`, appearance and terminal settings stop travelling with the
 portable data, "put the library in Dropbox" also syncs your open tabs.
 
+## Relationship to 1.0
+
+Phase 4 (shared git inventory) is wanted **before** 1.0 — see
+`docs/road-to-1.0.md`, which keeps scope and readiness gates apart on purpose.
+Landing it doesn't satisfy any gate; the gates are about evidence, not
+features.
+
 ## Explicitly deferred
 
 - Merging shared and personal trees into one namespace.
