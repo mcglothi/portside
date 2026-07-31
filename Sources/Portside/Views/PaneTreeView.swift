@@ -39,7 +39,7 @@ struct PaneNodeView: View {
             // makeNSView keeps showing the previous session.
             PaneLeafView(session: session, tab: tab)
                 .id(session.id)
-        case .split(_, let orientation, let children, _):
+        case .split(_, let orientation, let children):
             container(orientation, children)
         }
     }

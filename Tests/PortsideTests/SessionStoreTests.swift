@@ -763,4 +763,256 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(store.defaultProfileID)
         XCTAssertEqual(store.entries.count, 1)
     }
+
+    // MARK: - Import dedup
+
+    func testImportExportDedupesWithinTheIncomingBatch() {
+        // The key set used to be snapshotted against the library only, so a
+        // file listing the same host twice imported it twice.
+        let store = makeStore([])
+        let dupe = host("web")
+
+        let added = store.importExport(entries: [dupe, dupe], folders: [], macros: [])
+
+        XCTAssertEqual(added.sessions, 1)
+        XCTAssertEqual(store.entries.filter { $0.name == "web" }.count, 1)
+    }
+
+    func testAddImportedDedupesWithinTheIncomingBatch() {
+        let store = makeStore([])
+        let dupe = host("web")
+
+        let added = store.addImported(entries: [dupe, dupe], macros: [])
+
+        XCTAssertEqual(added.sessions, 1)
+        XCTAssertEqual(store.entries.filter { $0.name == "web" }.count, 1)
+    }
+
+    func testImportDedupesMacrosWithinTheIncomingBatch() {
+        let store = makeStore([])
+        let macro = Macro(name: "restart", text: "systemctl restart nginx")
+
+        let added = store.importExport(entries: [], folders: [], macros: [macro, macro])
+
+        XCTAssertEqual(added.macros, 1)
+        XCTAssertEqual(store.macros.filter { $0.name == "restart" }.count, 1)
+    }
+
+    func testSameNameInADifferentFolderIsNotADuplicate() {
+        let store = makeStore([])
+        let a = host("web", folder: "prod")
+        let b = host("web", folder: "staging")
+
+        let added = store.importExport(entries: [a, b], folders: [], macros: [])
+
+        XCTAssertEqual(added.sessions, 2, "folder is part of the identity")
+    }
+
+    /// The invariant that matters isn't "the UUID survived" — it's "the entry
+    /// can still authenticate". `CredentialResolver` gates every source behind
+    /// `savePassword`, so a retained profile id with the flag off is a pointer
+    /// to a credential that can never be used.
+    private func resolvedSource(_ entry: SessionEntry, hasProfilePassword: Bool) -> CredentialResolver.Source {
+        CredentialResolver.source(
+            savePassword: entry.savePassword,
+            hasAssignedProfilePassword: entry.credentialProfileID != nil && hasProfilePassword,
+            hasHostPassword: false,        // import always assigns a fresh id
+            hasDefaultProfilePassword: false,
+            hasLegacyDefault: false
+        )
+    }
+
+    func testARetainedProfileIsActuallyUsableNotJustRetained() {
+        let store = makeStore([])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser")
+        store.upsert(profile)
+        var entry = host("web")
+        entry.credentialProfileID = profile.id
+        entry.savePassword = true
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        let imported = store.entries.first!
+        XCTAssertEqual(resolvedSource(imported, hasProfilePassword: true), .assignedProfile,
+                       "a profile that resolves locally must still authenticate after import")
+    }
+
+    func testAnUnresolvableProfileLeavesTheEntryUnableToAuthenticate() {
+        let store = makeStore([])
+        var entry = host("web")
+        entry.credentialProfileID = UUID()
+        entry.savePassword = true
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        let imported = store.entries.first!
+        XCTAssertNil(imported.credentialProfileID)
+        XCTAssertFalse(imported.savePassword)
+        XCTAssertEqual(resolvedSource(imported, hasProfilePassword: true), .none,
+                       "a dangling profile must not fall through to this machine's credentials")
+    }
+
+    func testImportNormalisesAHandEditedInconsistentEntry() {
+        // "Profile assigned, saved passwords off" can only come from a
+        // hand-edited library — applyCredentialProfile and the editor's
+        // profile binding both set the flag on assignment, and the editor
+        // hides the toggle while a profile is assigned. Carrying it through
+        // would leave the editor saying "password is set by the Ops profile"
+        // for an entry that resolves to nothing.
+        let store = makeStore([])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser")
+        store.upsert(profile)
+        var entry = host("web")
+        entry.credentialProfileID = profile.id
+        entry.savePassword = false
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        let imported = store.entries.first!
+        XCTAssertEqual(imported.credentialProfileID, profile.id)
+        XCTAssertTrue(imported.savePassword, "an assigned profile must be a usable one")
+        XCTAssertEqual(resolvedSource(imported, hasProfilePassword: true), .assignedProfile)
+    }
+
+    func testImportWithoutAProfileCannotInheritLocalCredentials() {
+        let store = makeStore([])
+        var entry = host("web")
+        entry.savePassword = true      // was a host-specific password elsewhere
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        // The host password was keyed by the old id, which import discards.
+        XCTAssertFalse(store.entries.first!.savePassword)
+    }
+
+    func testImportKeyDoesNotCollideAcrossFolderAndNameBoundaries() {
+        // Folder and name are free text. A joined-string key made "a|b" + "c"
+        // and "a" + "b|c" the same session, silently dropping one.
+        let store = makeStore([])
+        let first = SessionEntry(name: "c", folder: "a|b", hostname: "h.example.com")
+        let second = SessionEntry(name: "b|c", folder: "a", hostname: "h.example.com")
+
+        let added = store.importExport(entries: [first, second], folders: [], macros: [])
+
+        XCTAssertEqual(added.sessions, 2, "these are distinct sessions")
+    }
+
+    func testImportClearsACredentialProfileIDThatDoesNotResolveHere() {
+        // Profiles don't travel in an export, so an id from another machine
+        // would otherwise dangle — silently meaning "no credential" while the
+        // entry still claims a profile.
+        let store = makeStore([])
+        var entry = host("web")
+        entry.credentialProfileID = UUID()   // never existed in this library
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        XCTAssertNil(store.entries.first?.credentialProfileID)
+    }
+
+    func testImportKeepsACredentialProfileIDThatStillResolves() {
+        // Restoring your own backup on the same machine: the ids do match, and
+        // clearing them would quietly strip every host's credential.
+        let store = makeStore([])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser")
+        store.upsert(profile)
+        var entry = host("web")
+        entry.credentialProfileID = profile.id
+
+        store.importExport(entries: [entry], folders: [], macros: [])
+
+        XCTAssertEqual(store.entries.first?.credentialProfileID, profile.id)
+    }
+
+    // MARK: - History write coalescing
+
+    func testDebouncedHistoryWritesAreCoalescedUntilFlushed() throws {
+        let store = SessionStore(fileURL: tempURL, coalescesHistoryWrites: true)
+        enableCommands(store)
+        let historyURL = tempURL.deletingPathExtension().appendingPathExtension("history.json")
+        try? FileManager.default.removeItem(at: historyURL)
+
+        store.recordCommand(CommandEvent(command: "uptime", startedAt: Date()))
+        store.recordCommand(CommandEvent(command: "df -h", startedAt: Date()))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: historyURL.path),
+                       "a burst of commands must not rewrite the file per command")
+
+        store.flushHistory()
+
+        let written = try String(contentsOf: historyURL, encoding: .utf8)
+        XCTAssertTrue(written.contains("uptime"))
+        XCTAssertTrue(written.contains("df -h"), "the whole burst lands on flush")
+    }
+
+    /// Polls for the history file rather than sleeping a fixed duration, so
+    /// the test spins the main run loop the timer needs and doesn't hard-code
+    /// how fast the machine is.
+    private func waitForHistoryFile(_ url: URL, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: url.path) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func testTheCoalescedWriteFiresOnItsOwnWithoutAnExplicitFlush() throws {
+        // The production path: nothing calls flushHistory(), so the timer has
+        // to actually land the write.
+        let store = SessionStore(fileURL: tempURL, coalescesHistoryWrites: true)
+        enableCommands(store)
+        let historyURL = tempURL.deletingPathExtension().appendingPathExtension("history.json")
+        try? FileManager.default.removeItem(at: historyURL)
+
+        store.recordCommand(CommandEvent(command: "uptime", startedAt: Date()))
+
+        XCTAssertTrue(waitForHistoryFile(historyURL, timeout: 5),
+                      "the coalescing window must eventually write by itself")
+        let written = try String(contentsOf: historyURL, encoding: .utf8)
+        XCTAssertTrue(written.contains("uptime"))
+    }
+
+    func testSustainedActivityCannotPostponeTheWriteIndefinitely() throws {
+        // A trailing-edge debounce rearms on every event, so a stream spaced
+        // closer than the window never writes at all — the failure mode is
+        // worst exactly when there's most to lose. The window is fixed: it
+        // opens on the first event and fires regardless of what follows.
+        let store = SessionStore(fileURL: tempURL, coalescesHistoryWrites: true)
+        enableCommands(store)
+        let historyURL = tempURL.deletingPathExtension().appendingPathExtension("history.json")
+        try? FileManager.default.removeItem(at: historyURL)
+
+        // Events every ~100ms for ~3s — far longer than the 750ms window, and
+        // never idle long enough for a trailing-edge timer to expire.
+        let deadline = Date().addingTimeInterval(3.0)
+        var landedDuringStream = false
+        var count = 0
+        while Date() < deadline {
+            store.recordCommand(CommandEvent(command: "cmd-\(count)", startedAt: Date()))
+            count += 1
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            if FileManager.default.fileExists(atPath: historyURL.path) {
+                landedDuringStream = true
+                break
+            }
+        }
+
+        XCTAssertTrue(landedDuringStream,
+                      "a write must land while events are still arriving, not only once they stop")
+    }
+
+    func testClearingHistoryDropsAPendingWriteRatherThanLettingItLand() throws {
+        // A coalesced write still holding pre-clear data must not be allowed
+        // to fire afterwards and resurrect what was just deleted.
+        let store = SessionStore(fileURL: tempURL, coalescesHistoryWrites: true)
+        enableCommands(store)
+        store.recordCommand(CommandEvent(command: "secret-command", startedAt: Date()))
+
+        store.clearHistory()
+
+        let historyURL = tempURL.deletingPathExtension().appendingPathExtension("history.json")
+        let written = try String(contentsOf: historyURL, encoding: .utf8)
+        XCTAssertFalse(written.contains("secret-command"))
+    }
 }

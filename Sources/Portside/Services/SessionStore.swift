@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Portside's own session/macro library, persisted as JSON in Application
@@ -6,6 +7,8 @@ import Foundation
 final class SessionStore: ObservableObject {
     @Published private(set) var entries: [SessionEntry] = []
     @Published private(set) var macros: [Macro] = []
+    /// Saved host groups — a named layout that reopens as one tab.
+    @Published private(set) var groups: [SessionGroup] = []
     @Published private(set) var forwards: [PortForward] = []
     /// Most-recent-first connection history for the welcome screen.
     @Published private(set) var recents: [RecentConnection] = []
@@ -38,6 +41,7 @@ final class SessionStore: ObservableObject {
     private struct Document: Codable {
         var entries: [SessionEntry]
         var macros: [Macro]
+        var groups: LenientArray<SessionGroup>?
         var forwards: [PortForward]?
         var recents: [RecentConnection]?
         var explicitFolders: [String]?
@@ -78,6 +82,38 @@ final class SessionStore: ObservableObject {
     /// is rewritten once loading has finished, never during.
     private var needsLegacyHistoryCleanup = false
 
+    /// State that belongs to *this Mac*, not to the infrastructure the library
+    /// describes.
+    ///
+    /// The library is the thing worth backing up, sharing and putting in a
+    /// synced folder. These fields would actively misbehave there: a second Mac
+    /// restoring the first one's open tabs, a laptop adopting a desktop's font
+    /// size and Metal setting, a log directory that doesn't exist on the other
+    /// machine. Third file for a third lifetime, on the same reasoning that
+    /// moved history out — churn-heavy, machine-shaped, nobody's idea of
+    /// shareable.
+    ///
+    /// Every field optional and defaulted: this file is *disposable*. Losing it
+    /// costs you a window layout and a font size, so a decode failure falls
+    /// back to defaults rather than blocking anything, which is the opposite of
+    /// how the library is treated.
+    private struct LocalDocument: Codable {
+        var workspace: WorkspaceSnapshot?
+        var appearance: TerminalAppearance?
+        var customThemes: [TerminalTheme]?
+        var terminal: TerminalSettings?
+        var logging: LoggingSettings?
+        var recents: [RecentConnection]?
+    }
+
+    private var localFileURL: URL {
+        fileURL.deletingPathExtension().appendingPathExtension("local.json")
+    }
+
+    /// Set when local state was migrated out of the library mid-load; the
+    /// library is rewritten once loading has finished, never during.
+    private var needsLegacyLocalCleanup = false
+
     private struct HistoryDocument: Codable {
         var connectionStats: [ConnectionStat]?
         var connectionLog: [ConnectionLogEntry]?
@@ -87,19 +123,72 @@ final class SessionStore: ObservableObject {
     /// file and disable seeding so they start from an empty, isolated library.
     private let seedsFromSSHConfig: Bool
 
+    /// Runs the app against a throwaway library instead of the real one.
+    ///
+    /// A build started with `swift run` otherwise shares everything with the
+    /// installed app: the same hosts, the same saved workspace, the same
+    /// history. That makes driving a dev build a small risk to real data every
+    /// time, and it means every launch stops to ask whether to restore the
+    /// session you left open in the *other* copy.
+    ///
+    ///     PORTSIDE_LIBRARY_DIR=/tmp/portside-test swift run
+    ///
+    /// Seeding from `~/.ssh/config` is deliberately off in this mode. An
+    /// isolated library is for testing, and quietly filling it with the
+    /// developer's real infrastructure defeats most of the point — including
+    /// keeping real hostnames out of screenshots.
+    static let libraryDirectoryOverrideKey = "PORTSIDE_LIBRARY_DIR"
+
     init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        fileURL = appSupport.appendingPathComponent("Portside/portside.json")
-        seedsFromSSHConfig = true
+        let override = ProcessInfo.processInfo.environment[Self.libraryDirectoryOverrideKey]
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+        if let override {
+            NSLog("Portside: using library at \(override.path) (\(Self.libraryDirectoryOverrideKey))")
+        }
+        let directory = override
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Portside")
+        fileURL = directory.appendingPathComponent("portside.json")
+        seedsFromSSHConfig = (override == nil)
+        coalescesHistoryWrites = true
         load()
+        observeTermination()
     }
 
     /// Test seam: an isolated library backed by `fileURL`, never touching the
     /// user's real library or ~/.ssh/config.
-    init(fileURL: URL, seedsFromSSHConfig: Bool = false) {
+    ///
+    /// History writes are synchronous here by default. The coalescing window
+    /// needs a main run loop to fire, which most tests don't spin, so
+    /// coalescing by default would turn every history assertion into a timing
+    /// race. Tests covering the window itself opt in — some driving it with
+    /// `flushHistory()`, some spinning the run loop to prove the timer lands
+    /// a write on its own.
+    init(fileURL: URL, seedsFromSSHConfig: Bool = false, coalescesHistoryWrites: Bool = false) {
         self.fileURL = fileURL
         self.seedsFromSSHConfig = seedsFromSSHConfig
+        self.coalescesHistoryWrites = coalescesHistoryWrites
         load()
+        observeTermination()
+    }
+
+    /// History writes are coalesced, so quitting has to settle the outstanding
+    /// one — otherwise the last few seconds of commands before a quit are the
+    /// ones that reliably go missing.
+    private func observeTermination() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.flushHistory()
+        }
+    }
+
+    private var terminationObserver: NSObjectProtocol?
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
     }
 
     /// Union of folders implied by sessions and standalone folders.
@@ -304,6 +393,47 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    // MARK: - Groups
+
+    func upsert(_ group: SessionGroup) {
+        var copy = group
+        copy.updatedAt = Date()
+        if let i = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[i] = copy
+        } else {
+            groups.append(copy)
+        }
+        save()
+    }
+
+    func delete(_ group: SessionGroup) {
+        groups.removeAll { $0.id == group.id }
+        save()
+    }
+
+    func group(id: UUID) -> SessionGroup? { groups.first { $0.id == id } }
+
+    /// Replaces a group's saved arrangement, leaving its name and folder alone.
+    ///
+    /// Called when a group's tab closes, so the group remembers what you left
+    /// rather than what you first saved — decided as silent-with-undo rather
+    /// than an explicit "Update Group" step, to be lived with for a while. No
+    /// group, no write: closing an ordinary tab must not invent one.
+    func updateLayout(groupID: UUID, layout: WorkspaceSnapshot.TabSnapshot, wasGridView: Bool) {
+        guard let i = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        guard groups[i].layout != layout || groups[i].wasGridView != wasGridView else { return }
+        groups[i].layout = layout
+        groups[i].wasGridView = wasGridView
+        groups[i].updatedAt = Date()
+        save()
+    }
+
+    /// Groups whose folder is `folder`, name-sorted for the sidebar.
+    func groups(inFolder folder: String) -> [SessionGroup] {
+        groups.filter { $0.folder == folder }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     func delete(_ macro: Macro) {
         macros.removeAll { $0.id == macro.id }
         save()
@@ -358,7 +488,7 @@ final class SessionStore: ObservableObject {
         if history.keepFullLog {
             connectionLog.append(ConnectionLogEntry(entryID: entry.id, at: now, outcome: outcome))
             connectionLog = ConnectionHistory.trimmed(connectionLog, to: history.logLimit)
-            saveHistory()
+            scheduleHistorySave()
         }
         guard outcome == .connected else { return }
         recordConnection(entry)
@@ -379,8 +509,8 @@ final class SessionStore: ObservableObject {
         connectionStats = ConnectionHistory.recording(
             entryID: entry.id, at: now, into: connectionStats
         )
-        saveHistory()
-        save()   // recents still live in the library
+        scheduleHistorySave()
+        saveLocal()   // recents are this Mac's jump-back-in list
     }
 
     func updateHistorySettings(_ settings: HistorySettings) {
@@ -396,7 +526,7 @@ final class SessionStore: ObservableObject {
         let stoppedCommands = wasKeepingCommands && !settings.keepCommandHistory
         if stoppedCommands { commandHistory = [] }
         if stoppedLog { connectionLog = [] }
-        if stoppedLog || stoppedCommands { saveHistory() }
+        if stoppedLog || stoppedCommands { flushHistory() }
         save()
     }
 
@@ -408,8 +538,8 @@ final class SessionStore: ObservableObject {
         connectionLog = []
         commandHistory = []
         recents = []
-        saveHistory()
-        save()
+        flushHistory()
+        saveLocal()
     }
 
     /// Records a command the shell reported. Honours the same protected-host
@@ -418,6 +548,67 @@ final class SessionStore: ObservableObject {
     /// Reads the history file, falling back to whatever the library still
     /// carries from before history moved out — then writes the sidecar and
     /// leaves the library to drop the old keys on its next save.
+    /// Reads the local sidecar, falling back to whatever the library still
+    /// carries from before local state moved out.
+    ///
+    /// Deliberately gentler than the library's load. An unreadable local file
+    /// is preserved and then ignored: it holds a window layout and a font
+    /// size, so refusing to start — or refusing to save — over it would cost
+    /// far more than it protects. The library gets quarantined; this gets a
+    /// shrug and a log line.
+    private func loadLocal(migratingFrom doc: Document?) {
+        if let data = try? Data(contentsOf: localFileURL) {
+            do {
+                let local = try JSONDecoder().decode(LocalDocument.self, from: data)
+                workspace = local.workspace ?? WorkspaceSnapshot()
+                appearance = local.appearance ?? .default
+                customThemes = local.customThemes ?? []
+                terminal = local.terminal ?? TerminalSettings()
+                logging = local.logging ?? LoggingSettings()
+                recents = local.recents ?? []
+                return
+            } catch {
+                let backup = localFileURL.deletingPathExtension()
+                    .appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                try? data.write(to: backup, options: .atomic)
+                NSLog("Portside: local state at \(localFileURL.path) could not be read — preserved at \(backup.path)")
+            }
+        }
+        // No sidecar (or an unreadable one): take what the library has. On a
+        // first upgrade that is the real state; on a fresh library it is
+        // defaults, which is also right.
+        workspace = doc?.workspace ?? WorkspaceSnapshot()
+        appearance = doc?.appearance ?? .default
+        customThemes = doc?.customThemes ?? []
+        terminal = doc?.terminal ?? TerminalSettings()
+        logging = doc?.logging ?? LoggingSettings()
+        recents = doc?.recents ?? []
+
+        let hadLegacyLocal = doc?.workspace != nil || doc?.appearance != nil
+            || doc?.customThemes != nil || doc?.terminal != nil
+            || doc?.logging != nil || doc?.recents != nil
+        if hadLegacyLocal {
+            // Sidecar first, library second. If anything fails between them the
+            // library still holds the originals, so the worst case is that the
+            // migration runs again — never that the state is gone from both.
+            saveLocal()
+            needsLegacyLocalCleanup = true
+        }
+    }
+
+    private func saveLocal() {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(LocalDocument(
+                workspace: workspace, appearance: appearance, customThemes: customThemes,
+                terminal: terminal, logging: logging, recents: recents
+            )).write(to: localFileURL, options: .atomic)
+        } catch {
+            NSLog("Portside: could not save local state — \(error)")
+        }
+    }
+
     private func loadHistory(migratingFrom doc: Document) {
         if let data = try? Data(contentsOf: historyFileURL) {
             do {
@@ -448,7 +639,7 @@ final class SessionStore: ObservableObject {
         seedStatsFromRecentsIfNeeded()
         let hadLegacyHistory = !(connectionStats.isEmpty && connectionLog.isEmpty && commandHistory.isEmpty)
         if hadLegacyHistory {
-            saveHistory()
+            flushHistory()
             // Deliberately NOT save() here. This runs part-way through load(),
             // before workspace/keyBindings/credentialProfiles/defaultProfileID
             // have been read out of the document -- saving now would write
@@ -474,10 +665,63 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func saveHistory() {
+    /// How long a burst of history events is allowed to accumulate before the
+    /// file is rewritten.
+    ///
+    /// Every write re-encodes the whole document — stats, log, and up to
+    /// `commandLimit` (5,000) command events — then atomically replaces the
+    /// file. That was happening once *per recorded command*, so a MultiExec
+    /// grid with shell integration on turned one broadcast into one full
+    /// rewrite per included pane.
+    private static let historySaveWindow: TimeInterval = 0.75
+    private var pendingHistorySave: DispatchWorkItem?
+    private let coalescesHistoryWrites: Bool
+
+    /// Coalesces high-churn history writes (commands, connections).
+    ///
+    /// A fixed window, deliberately not a trailing-edge debounce. Cancelling
+    /// and rearming on every event reads as "write once the burst stops", but
+    /// a stream of events spaced closer than the window postpones the write
+    /// indefinitely — precisely under sustained activity, which is when
+    /// unwritten history is worth the most. The first event opens the window
+    /// and later ones join it, so the write lands a bounded
+    /// `historySaveWindow` after the first unsaved event no matter how long
+    /// the stream runs. It encodes live state when it fires, so joining the
+    /// window costs nothing.
+    ///
+    /// The bound is therefore real: killing the app loses at most this much
+    /// history, and every ordinary exit path flushes.
+    private func scheduleHistorySave() {
+        guard coalescesHistoryWrites else { return writeHistory() }
+        guard pendingHistorySave == nil else { return }   // window already open
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingHistorySave = nil
+            self.writeHistory()
+        }
+        pendingHistorySave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.historySaveWindow, execute: work)
+    }
+
+    /// Writes now, dropping any coalesced write still in flight.
+    ///
+    /// Used by the paths where the *point* is durability — clearing history,
+    /// and opting out of the log or command capture. A pending save holding
+    /// pre-clear data must not be allowed to land afterwards and resurrect it.
+    func flushHistory() {
+        pendingHistorySave?.cancel()
+        pendingHistorySave = nil
+        writeHistory()
+    }
+
+    private func writeHistory() {
         do {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // Not pretty-printed: this file is machine-written on every
+            // command and read back by the app, and the indentation was a
+            // large multiple on the bytes rewritten each time. `sortedKeys`
+            // stays — stable key order keeps diffs and backups sane.
+            encoder.outputFormatting = [.sortedKeys]
             try encoder.encode(HistoryDocument(
                 connectionStats: connectionStats,
                 connectionLog: connectionLog,
@@ -498,7 +742,7 @@ final class SessionStore: ObservableObject {
         if commandHistory.count > history.commandLimit {
             commandHistory.removeFirst(commandHistory.count - history.commandLimit)
         }
-        saveHistory()
+        scheduleHistorySave()
     }
 
     func commands(forEntry entryID: UUID? = nil, limit: Int = 500) -> [CommandEvent] {
@@ -535,7 +779,7 @@ final class SessionStore: ObservableObject {
 
     func updateAppearance(_ appearance: TerminalAppearance) {
         self.appearance = appearance
-        save()
+        saveLocal()
     }
 
     /// Adds (or replaces by name) an imported theme and returns the stored
@@ -549,7 +793,7 @@ final class SessionStore: ObservableObject {
         }
         customThemes.removeAll { $0.name == theme.name }
         customThemes.append(theme)
-        save()
+        saveLocal()
         return theme
     }
 
@@ -560,12 +804,12 @@ final class SessionStore: ObservableObject {
 
     func updateLogging(_ logging: LoggingSettings) {
         self.logging = logging
-        save()
+        saveLocal()
     }
 
     func updateTerminal(_ terminal: TerminalSettings) {
         self.terminal = terminal
-        save()
+        saveLocal()
     }
 
     func updateKeyBindings(_ keyBindings: KeyBindings) {
@@ -575,10 +819,15 @@ final class SessionStore: ObservableObject {
 
     /// Records the open session layout for restore-on-launch. No-op when the
     /// snapshot is unchanged so churning tabs don't rewrite disk needlessly.
+    ///
+    /// Writes the local sidecar, not the library. This is the change the split
+    /// exists for: every tab opened, closed, split or selected used to rewrite
+    /// the entire host library — every host, folder, macro, group and profile —
+    /// to record which tabs were open.
     func saveWorkspace(_ snapshot: WorkspaceSnapshot) {
         guard snapshot != workspace else { return }
         workspace = snapshot
-        save()
+        saveLocal()
     }
 
     /// All sessions in a folder and its subfolders, resolved and sorted by name.
@@ -704,13 +953,25 @@ final class SessionStore: ObservableObject {
         return new.count
     }
 
-    /// Merges a Portside export. Entries get fresh ids and no saved-password
-    /// flag (Keychain secrets never travel in an export), standalone folders
+    /// Merges a Portside export. Entries get fresh ids, standalone folders
     /// merge by path, and macros dedupe by name. Returns what was added.
+    ///
+    /// Credential profile definitions are merged *first*, deliberately: the
+    /// per-entry credential policy decides what an imported host may
+    /// authenticate with by asking whether its profile resolves locally, so a
+    /// profile arriving in the same file has to already be present by the time
+    /// the entries are walked. Merging them afterwards would clear every
+    /// reference and then restore the profiles they pointed at — the exact
+    /// failure this phase exists to fix.
     @discardableResult
     func importExport(entries importedEntries: [SessionEntry],
                       folders importedFolders: [String],
-                      macros importedMacros: [Macro]) -> (sessions: Int, macros: Int) {
+                      macros importedMacros: [Macro],
+                      credentialProfiles importedProfiles: [CredentialProfile] = [])
+        -> (sessions: Int, macros: Int, profiles: Int)
+    {
+        let (addedProfiles, profileRemapping) = mergeImportedProfiles(importedProfiles)
+
         for folder in importedFolders {
             let clean = normalize(folder)
             if !clean.isEmpty, !explicitFolders.contains(clean) {
@@ -718,20 +979,27 @@ final class SessionStore: ObservableObject {
             }
         }
 
-        let existingKeys = Set(entries.map { "\($0.folder)|\($0.name)|\($0.hostname)" })
+        // The key set grows as the batch is consumed. Snapshotting it only
+        // against the *existing* library deduped imports against what was
+        // already here but not against themselves, so a file listing the same
+        // host twice added it twice.
+        var knownKeys = Set(entries.map { importKey(for: $0) })
         var addedSessions = 0
         for var entry in importedEntries {
-            let key = "\(entry.folder)|\(entry.name)|\(entry.hostname)"
-            if existingKeys.contains(key) { continue }
+            guard knownKeys.insert(importKey(for: entry)).inserted else { continue }
             entry.id = UUID()
-            entry.savePassword = false
+            if let old = entry.credentialProfileID, let new = profileRemapping[old] {
+                entry.credentialProfileID = new
+            }
+            applyImportedCredentialPolicy(to: &entry)
             entries.append(entry)
             addedSessions += 1
         }
 
-        let existingMacroNames = Set(macros.map(\.name))
+        var knownMacroNames = Set(macros.map(\.name))
         var addedMacros = 0
-        for macro in importedMacros where !existingMacroNames.contains(macro.name) {
+        for macro in importedMacros {
+            guard knownMacroNames.insert(macro.name).inserted else { continue }
             var copy = macro
             copy.id = UUID()
             macros.append(copy)
@@ -739,22 +1007,107 @@ final class SessionStore: ObservableObject {
         }
 
         save()
-        return (addedSessions, addedMacros)
+        return (addedSessions, addedMacros, addedProfiles)
     }
 
-    /// Adds imported entries, skipping exact duplicates (name + host + folder).
+    /// Merges incoming profile definitions, returning how many were added and
+    /// any id remapping imported entries need to follow.
+    ///
+    /// Three cases, and the middle one is the reason this returns a mapping:
+    ///
+    /// - **Same id already here.** Keep the local profile untouched. It may
+    ///   hold a Keychain secret the incoming definition can't carry, so
+    ///   overwriting it with the same fields minus the password would be a
+    ///   pure loss.
+    /// - **Same name, different id.** The library was rebuilt by hand on this
+    ///   Mac — "Ops" exists, just not as the same record. Adding a second
+    ///   "Ops" gives two identical-looking profiles where only one holds the
+    ///   password, which is worse than either merging or refusing. Point the
+    ///   imported entries at the local one instead; the name is a deliberate
+    ///   user choice and the strongest signal available that these are meant
+    ///   to be the same credential.
+    /// - **Neither.** Genuinely new — take it, id and all, so a future import
+    ///   from the same source lines up on the first case rather than drifting.
+    private func mergeImportedProfiles(
+        _ imported: [CredentialProfile]
+    ) -> (added: Int, remapping: [UUID: UUID]) {
+        var remapping: [UUID: UUID] = [:]
+        var added = 0
+        for profile in imported {
+            if credentialProfiles.contains(where: { $0.id == profile.id }) { continue }
+            if let local = credentialProfiles.first(where: { $0.name.matchesProfileName(profile.name) }) {
+                remapping[profile.id] = local.id
+                continue
+            }
+            credentialProfiles.append(profile)
+            added += 1
+        }
+        return (added, remapping)
+    }
+
+    /// Adds imported entries, skipping exact duplicates (name + host + folder)
+    /// both against the library and within the incoming batch itself.
     @discardableResult
     func addImported(entries newEntries: [SessionEntry], macros newMacros: [Macro]) -> (sessions: Int, macros: Int) {
-        let existingKeys = Set(entries.map { "\($0.folder)|\($0.name)|\($0.hostname)" })
-        let fresh = newEntries.filter { !existingKeys.contains("\($0.folder)|\($0.name)|\($0.hostname)") }
+        var knownKeys = Set(entries.map { importKey(for: $0) })
+        let fresh = newEntries.filter { knownKeys.insert(importKey(for: $0)).inserted }
         entries.append(contentsOf: fresh)
 
-        let existingMacroNames = Set(macros.map(\.name))
-        let freshMacros = newMacros.filter { !existingMacroNames.contains($0.name) }
+        var knownMacroNames = Set(macros.map(\.name))
+        let freshMacros = newMacros.filter { knownMacroNames.insert($0.name).inserted }
         macros.append(contentsOf: freshMacros)
 
         if !fresh.isEmpty || !freshMacros.isEmpty { save() }
         return (fresh.count, freshMacros.count)
+    }
+
+    /// Identity for import dedup: two entries naming the same host, under the
+    /// same name, in the same folder are the same session.
+    ///
+    /// A struct rather than a joined string because folder and name are free
+    /// text: any separator character can appear inside them, so `a|b` + `c`
+    /// and `a` + `b|c` would collide and silently skip a distinct session.
+    private struct ImportKey: Hashable {
+        let folder: String
+        let name: String
+        let hostname: String
+    }
+
+    private func importKey(for entry: SessionEntry) -> ImportKey {
+        ImportKey(folder: entry.folder, name: entry.name, hostname: entry.hostname)
+    }
+
+    /// Decides what an imported entry may authenticate with.
+    ///
+    /// The two credential sources are keyed differently, and that's the whole
+    /// rule. A host-specific password is keyed by the entry's id — import
+    /// assigns a *fresh* id, so no such password can exist here and claiming
+    /// one would be a lie. A profile password is keyed by the profile, which
+    /// lives in this library: if the profile resolves locally, its secret is
+    /// genuinely available and the reference is worth keeping.
+    ///
+    /// So a resolvable profile keeps its id and switches `savePassword` on,
+    /// which is what makes restoring your own backup actually authenticate
+    /// rather than merely look right. Anything else clears the id and turns
+    /// saved-password use off, so an import can neither carry a dangling
+    /// reference nor quietly inherit this machine's default profile.
+    ///
+    /// Forcing the flag on normalises rather than overrides. "Profile
+    /// assigned, saved passwords off" is not a state the app can reach —
+    /// `applyCredentialProfile` and the editor's profile binding both set the
+    /// flag on assignment, and the editor hides the toggle entirely while a
+    /// profile is assigned. It's reachable only by hand-editing the JSON, and
+    /// carrying it through would be actively misleading: the editor reports
+    /// "password is set by the X profile" whenever a profile resolves, while
+    /// the resolver would return nothing.
+    private func applyImportedCredentialPolicy(to entry: inout SessionEntry) {
+        guard let id = entry.credentialProfileID,
+              credentialProfiles.contains(where: { $0.id == id }) else {
+            entry.credentialProfileID = nil
+            entry.savePassword = false
+            return
+        }
+        entry.savePassword = true
     }
 
     // MARK: - Persistence
@@ -766,6 +1119,7 @@ final class SessionStore: ObservableObject {
     private(set) var quarantinedLibraryPath: String?
 
     private func load() {
+        knownModificationDate = currentModificationDate
         let existingData = try? Data(contentsOf: fileURL)
         if let existingData {
             do {
@@ -779,9 +1133,16 @@ final class SessionStore: ObservableObject {
                 // the top, destroying a library that a schema bug, a bad hand
                 // edit, or a newer build might otherwise have recovered.
                 quarantine(existingData, error: error)
+                // The library is unreadable; the local sidecar probably isn't,
+                // and a broken host list is no reason to lose the window
+                // layout and font size too.
+                loadLocal(migratingFrom: nil)
                 return
             }
         }
+        // No library yet — a first run, or a library still to be created.
+        // The sidecar stands on its own and may already exist.
+        loadLocal(migratingFrom: nil)
         loadFresh()
         if seedsFromSSHConfig { migrateLegacyDefault() }
     }
@@ -811,24 +1172,41 @@ final class SessionStore: ObservableObject {
     private func apply(_ doc: Document) {
             entries = doc.entries
             macros = doc.macros
+            groups = doc.groups?.elements ?? []
             forwards = doc.forwards ?? []
             recents = doc.recents ?? []
             explicitFolders = doc.explicitFolders ?? []
-            appearance = doc.appearance ?? .default
-            customThemes = doc.customThemes ?? []
             defaults = doc.defaults ?? ConnectionDefaults()
-            logging = doc.logging ?? LoggingSettings()
-            terminal = doc.terminal ?? TerminalSettings()
             history = doc.history ?? HistorySettings()
+            // Local before history, deliberately: `recents` lives in the
+            // local sidecar now, and history seeds the aggregate stats from it
+            // on upgrade. The other order silently seeded from an empty list.
+            loadLocal(migratingFrom: doc)
             loadHistory(migratingFrom: doc)
-            workspace = doc.workspace ?? WorkspaceSnapshot()
             keyBindings = doc.keyBindings ?? KeyBindings()
             credentialProfiles = doc.credentialProfiles ?? []
             defaultProfileID = doc.defaultProfileID
-            if needsLegacyHistoryCleanup {
+            // Both cleanups rewrite the library, and only after everything
+            // above has been read out of the document — rewriting mid-load
+            // would persist the fields not yet applied as their empty defaults.
+            if needsLegacyHistoryCleanup || needsLegacyLocalCleanup {
                 needsLegacyHistoryCleanup = false
+                needsLegacyLocalCleanup = false
                 save()
             }
+    }
+
+    /// The library file's modification date as of the last read or write we
+    /// did. Anything else on disk means someone changed the file underneath us.
+    private var knownModificationDate: Date?
+
+    /// Set when the file on disk changed outside this app since we last read
+    /// or wrote it, so saving would silently discard whatever that change was.
+    /// Cleared by `reloadAfterExternalChange()` or `overwriteExternalChange()`.
+    @Published private(set) var externalChange: Bool = false
+
+    private var currentModificationDate: Date? {
+        try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date
     }
 
     private func save() {
@@ -838,6 +1216,28 @@ final class SessionStore: ObservableObject {
             NSLog("Portside: refusing to save over an unreadable library")
             return
         }
+        // The same principle, one case further along. `save()` writes the whole
+        // library, so if the file changed since we read it — another Portside,
+        // a sync client bringing down a copy edited on a second Mac, a hand
+        // edit — writing now discards that change with no trace. It matters
+        // more now that PORTSIDE_LIBRARY_DIR can point the library at a synced
+        // folder, where two machines really can hold it open at once.
+        //
+        //     a bad read can never become a bad write
+        //   → a stale read can never become a clobbering write
+        //
+        // Deliberately compares against the date of *our* last read or write
+        // rather than a timestamp of when we started: our own atomic writes
+        // replace the file and move the date forward every time, so anything
+        // else would refuse to save after the first one.
+        if let known = knownModificationDate, let onDisk = currentModificationDate,
+           onDisk != known {
+            if !externalChange {
+                NSLog("Portside: library changed on disk since it was read — not saving over it")
+            }
+            externalChange = true
+            return
+        }
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -845,17 +1245,49 @@ final class SessionStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(Document(entries: entries, macros: macros, forwards: forwards,
-                                        recents: recents,
-                                        explicitFolders: explicitFolders, appearance: appearance,
-                                        customThemes: customThemes, defaults: defaults, logging: logging,
-                                        terminal: terminal, workspace: workspace, keyBindings: keyBindings,
+            // Local state and history are deliberately nil here. They still
+            // exist on `Document` so a library written before the split can be
+            // read and migrated, but writing them back would put the file
+            // straight back to mixing three lifetimes — and would undo the
+            // migration on the next save.
+            try encoder.encode(Document(entries: entries, macros: macros, groups: LenientArray(groups),
+                                        forwards: forwards,
+                                        recents: nil,
+                                        explicitFolders: explicitFolders, appearance: nil,
+                                        customThemes: nil, defaults: defaults, logging: nil,
+                                        terminal: nil, workspace: nil, keyBindings: keyBindings,
                                         credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID,
-                                        connectionStats: connectionStats, connectionLog: connectionLog,
+                                        connectionStats: nil, connectionLog: nil,
                                         history: history))
                 .write(to: fileURL, options: .atomic)
+            // Our own write moved the date on; adopt it so the next save
+            // compares against this one rather than refusing.
+            knownModificationDate = currentModificationDate
         } catch {
             NSLog("Portside: failed to save library: \(error)")
         }
+    }
+
+    /// Takes the on-disk copy, discarding whatever is in memory.
+    ///
+    /// The safe answer to an external change: their edit is on disk and ours
+    /// is not, so re-reading loses the least. Everything in memory that
+    /// matters has already been saved — the conflict only blocks writes made
+    /// *after* the file moved.
+    func reloadAfterExternalChange() {
+        externalChange = false
+        knownModificationDate = currentModificationDate
+        load()
+    }
+
+    /// Writes over the newer file on disk, on purpose.
+    ///
+    /// Offered because refusing forever is its own failure mode — a stale
+    /// timestamp from a sync client that never settles would otherwise leave
+    /// the library permanently read-only.
+    func overwriteExternalChange() {
+        externalChange = false
+        knownModificationDate = currentModificationDate
+        save()
     }
 }

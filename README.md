@@ -263,16 +263,37 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ## Building
 
-Requires Swift 6+ (Xcode Command Line Tools are enough):
+Requires the Swift 6 toolchain (Xcode Command Line Tools are enough). The
+package itself is still on `swift-tools-version: 5.9` and builds in Swift 5
+language mode — the Swift 6 concurrency migration hasn't happened yet. CI
+holds the line with a per-file ratchet
+(`Scripts/strict-concurrency-check.sh`) so the outstanding warning count can
+shrink but never grow:
 
 ```sh
 # Run for development
 swift run
 
+# Run against a throwaway library instead of your real one
+PORTSIDE_LIBRARY_DIR=/tmp/portside-dev swift run
+
 # Build a standalone Portside.app
 Scripts/make_app.sh
 open build/Portside.app
 ```
+
+`swift run` otherwise shares everything with the installed app — the same
+hosts, the same saved workspace, the same history — so a dev build is a small
+risk to real data every time, and each launch stops to ask whether to restore
+the session you left open in the *other* copy. `PORTSIDE_LIBRARY_DIR` points
+it somewhere disposable instead; seeding from `~/.ssh/config` is off in that
+mode, so the library starts genuinely empty and your real hostnames stay out
+of any screenshots.
+
+A `swift run` build also has no `Info.plist`, so it has no Sparkle feed and
+deliberately doesn't start the updater — no "couldn't check for updates"
+dialog on launch, and "Check for Updates…" disables itself. Packaged builds
+are unaffected: `Scripts/make_app.sh` writes the feed URL and public key.
 
 ## Status & contributions
 

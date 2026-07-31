@@ -6,10 +6,22 @@ struct SessionArea: View {
     private var armed: Bool { sessions.selectedTab?.broadcastArmed ?? false }
 
     var body: some View {
+        // Total by construction: every state renders something.
+        //
+        // This was `if no sessions { welcome } else if let tab { tab }` with no
+        // final else, so "sessions exist but no tab is selected" drew nothing
+        // at all. SwiftUI removing the content doesn't remove the AppKit views
+        // underneath it, so that state left the previous frame's sidebar,
+        // toolbar and terminal panes on screen with nothing owning their
+        // layout — a window that looks half-erased and doesn't recover on
+        // resize. Reachable during tab teardown, and the reason
+        // disarm-on-reconnect had to be pulled back out.
+        //
+        // Inverted rather than given an `else` branch: with `selectedTab`
+        // falling back to the last tab, an added branch would be unreachable
+        // and read as dead code, while this shape simply cannot have a gap.
         Group {
-            if sessions.sessions.isEmpty {
-                WelcomeView()
-            } else if let tab = sessions.selectedTab {
+            if !sessions.sessions.isEmpty, let tab = sessions.selectedTab {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
@@ -19,6 +31,8 @@ struct SessionArea: View {
                         TabContentView(tab: tab)
                     }
                 }
+            } else {
+                WelcomeView()
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -92,6 +106,7 @@ private struct ToolbarToggleButton: View {
 struct TabContentView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     @ObservedObject var tab: Tab
     @ObservedObject private var transfers = TransferCenter.shared
     @State private var commandInput = ""
@@ -137,6 +152,49 @@ struct TabContentView: View {
         store.favoriteMacros.isEmpty ? store.macros : store.favoriteMacros
     }
 
+    /// Says why the app disarmed on its own. The banner vanishing is what the
+    /// user notices; without this they're left to work out whether they did it.
+    ///
+    /// An overlay, deliberately, and not a row in the VStack below.
+    ///
+    /// As a child it changes the container's children the moment it appears —
+    /// and it appears exactly when a pane is being swapped out of the tree
+    /// beneath it, which re-parents the persistent terminal views mid
+    /// replacement and leaves the window mis-laid-out: sidebar over the
+    /// toolbar, no tab bar, blank panes, no recovery on resize. Bisected to
+    /// this specific line: disarming during a reconnect is clean, *showing
+    /// this* is what breaks it. Removing a row during the swap is fine;
+    /// inserting one is not.
+    ///
+    /// An overlay floats above the layout instead of joining it, so the pane
+    /// tree never learns it exists. Styled as a floating card rather than a
+    /// full-width bar to read as something covering the panes, which it is.
+    @ViewBuilder private var disarmNotice: some View {
+        if let reason = sessions.disarmNotice {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(alert)
+                Text(reason.message)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Dismiss") { sessions.disarmNotice = nil }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+            }
+            .font(.callout)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(alert.opacity(0.7)))
+                    .shadow(radius: 8, y: 2)
+            )
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .transition(.opacity)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if tab.broadcastArmed {
@@ -176,6 +234,18 @@ struct TabContentView: View {
                             }
                             .disabled(!sessions.wouldChangeAnything(action))
                             .help(action.help)
+                        }
+                        // Assembling a group and arming it are the same motion,
+                        // so the offer to keep it belongs where you already are
+                        // rather than up in a menu.
+                        if let name = tab.groupID.flatMap({ store.group(id: $0)?.name }) {
+                            Button("Update “\(name)”") {
+                                sessions.captureGroupLayoutIfLinked(tab)
+                            }
+                            .help("Save this arrangement back to “\(name)” now")
+                        } else {
+                            Button("Save Group As…") { library.requestSaveTabAsGroup() }
+                                .help("Save these panes and their arrangement as a named group")
                         }
                         // ⇧⌘M rather than a key of its own: Toggle MultiExec is
                         // what turns the broadcast off, and this button is that.
@@ -270,6 +340,7 @@ struct TabContentView: View {
                 .background(.bar)
             }
         }
+        .overlay(alignment: .top) { disarmNotice }
     }
 }
 
@@ -369,6 +440,8 @@ struct FindBar: View {
 
 struct TabBar: View {
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     /// The tab being renamed (drives the rename alert), plus its draft name.
     @State private var renamingTab: Tab?
     @State private var renameText = ""
@@ -407,9 +480,17 @@ struct TabBar: View {
                             isSelected: tab.id == sessions.selectedTabID,
                             onSelect: { sessions.selectedTabID = tab.id },
                             onClose: { sessions.closeTab(tab) },
-                            onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
+                            onRename: {
+                                renameText = tabDisplayTitle(tab) { store.group(id: $0)?.name }
+                                renamingTab = tab
+                            },
                             onDuplicate: { sessions.duplicateTab(tab) },
-                            onCloseOthers: { sessions.closeOtherTabs(tab) }
+                            onCloseOthers: { sessions.closeOtherTabs(tab) },
+                            onSaveAsGroup: {
+                                sessions.selectedTabID = tab.id
+                                library.requestSaveTabAsGroup()
+                            },
+                            onUpdateGroup: { sessions.captureGroupLayoutIfLinked(tab) }
                         )
                     }
                 }
@@ -583,7 +664,28 @@ private struct TabStripScrollView<Content: View>: NSViewRepresentable {
     }
 }
 
+/// The name a tab shows, in precedence order.
+///
+/// Split out of `TabChip` so the rename field can offer the same string as its
+/// starting point — otherwise renaming a group tab prefilled the host name it
+/// was already not showing.
+func tabDisplayTitle(_ tab: Tab, groupName: (UUID) -> String?) -> String {
+    // An explicit rename always wins; it is the one the user typed.
+    if let custom = tab.customTitle, !custom.isEmpty { return custom }
+    // Then the group, if this tab came from one. A tab holding "Splunk
+    // Servers" should say so rather than naming whichever host happens to be
+    // first in it.
+    if let name = tab.groupID.flatMap(groupName) { return name }
+    if tab.isStartPage { return "New Tab" }
+    let leaves = tab.leaves
+    guard let first = leaves.first else { return "shell" }
+    // First pane, not the focused one: a title that changes as you click
+    // between panes is hard to track in a tab bar. The count carries the rest.
+    return leaves.count > 1 ? "\(first.title) +\(leaves.count - 1)" : first.title
+}
+
 struct TabChip: View {
+    @EnvironmentObject var store: SessionStore
     @ObservedObject var tab: Tab
     let isSelected: Bool
     let onSelect: () -> Void
@@ -591,8 +693,12 @@ struct TabChip: View {
     let onRename: () -> Void
     let onDuplicate: () -> Void
     let onCloseOthers: () -> Void
+    let onSaveAsGroup: () -> Void
+    let onUpdateGroup: () -> Void
 
-    private var title: String { tab.customTitle ?? tab.activeLeaf?.title ?? (tab.isStartPage ? "New Tab" : "shell") }
+    private var title: String {
+        tabDisplayTitle(tab) { store.group(id: $0)?.name }
+    }
     private var running: Bool { tab.activeLeaf?.isRunning ?? false }
     private var hasActivity: Bool { !isSelected && tab.leaves.contains { $0.hasActivity } }
 
@@ -628,6 +734,20 @@ struct TabChip: View {
         .onTapGesture(perform: onSelect)
         .contextMenu {
             Button("Rename…", action: onRename)
+            // Saving lives here as well as in the File menu: the thing you want
+            // to save is the tab you're looking at, and right-clicking it is
+            // where you'd reach for that.
+            if let name = tab.groupID.flatMap({ store.group(id: $0)?.name }) {
+                // Already a group. Updating is offered explicitly even though
+                // closing the tab does it silently — you shouldn't have to close
+                // something to checkpoint it.
+                Button("Update “\(name)”", action: onUpdateGroup)
+                Button("Save as New Group…", action: onSaveAsGroup)
+            } else {
+                Button("Save as Group…", action: onSaveAsGroup)
+                    .disabled(tab.isStartPage)
+            }
+            Divider()
             Button("Duplicate Tab", action: onDuplicate)
                 .disabled(tab.isStartPage)
             Button("Close", action: onClose)

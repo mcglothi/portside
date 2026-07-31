@@ -3,27 +3,29 @@ import Foundation
 
 enum PaneOrientation: String, Codable { case horizontal, vertical }
 
-/// Renormalizes split fractions to sum to 1 (after a child is added or removed).
-func normalizedFractions(_ fractions: [CGFloat]) -> [CGFloat] {
-    let total = fractions.reduce(0, +)
-    guard total > 0 else {
-        return Array(repeating: 1 / CGFloat(fractions.count), count: fractions.count)
-    }
-    return fractions.map { $0 / total }
-}
-
 /// A tab's terminal layout: a tree whose leaves are live sessions and whose
 /// interior nodes are horizontal/vertical splits. Generic over the leaf type so
 /// the tree algebra can be unit-tested with a lightweight stub; the app uses
 /// `PaneNode<TerminalSession>`. See docs/split-panes-plan.md.
 indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
     case leaf(Leaf)
-    case split(id: UUID, orientation: PaneOrientation, children: [PaneNode<Leaf>], fractions: [CGFloat])
+    // No proportions here, deliberately. A `fractions` array lived on this
+    // case for a long time: persisted, round-tripped, and tested — and never
+    // once set from anything a user did. Nothing observed a divider drag
+    // (HSplitView doesn't report positions), so it only ever held 0.5/0.5 or
+    // an even split, and the renderer discarded it anyway. Storing a layout
+    // the app can neither capture nor honour promised something it never did.
+    //
+    // Splits open evenly. Making them remember a hand-dragged size needs a
+    // splitter that both reports and accepts positions — an NSSplitView bridge
+    // or a custom SwiftUI one — at which point the value comes back with a
+    // real source and a real consumer.
+    case split(id: UUID, orientation: PaneOrientation, children: [PaneNode<Leaf>])
 
     var id: UUID {
         switch self {
         case .leaf(let leaf): return leaf.id
-        case .split(let id, _, _, _): return id
+        case .split(let id, _, _): return id
         }
     }
 
@@ -31,7 +33,7 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
     var leaves: [Leaf] {
         switch self {
         case .leaf(let leaf): return [leaf]
-        case .split(_, _, let children, _): return children.flatMap(\.leaves)
+        case .split(_, _, let children): return children.flatMap(\.leaves)
         }
     }
 
@@ -42,13 +44,12 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         case .leaf(let leaf):
             guard leaf.id == leafID else { return self }
             return .split(id: UUID(), orientation: orientation,
-                          children: [self, newNode], fractions: [0.5, 0.5])
-        case .split(let id, let o, let children, let fractions):
+                          children: [self, newNode])
+        case .split(let id, let o, let children):
             return .split(id: id, orientation: o,
                           children: children.map {
                               $0.splitting(leafID: leafID, with: newNode, orientation: orientation)
-                          },
-                          fractions: fractions)
+                          })
         }
     }
 
@@ -58,10 +59,9 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         switch self {
         case .leaf(let leaf):
             return leaf.id == leafID ? .leaf(newLeaf) : self
-        case .split(let id, let orientation, let children, let fractions):
+        case .split(let id, let orientation, let children):
             return .split(id: id, orientation: orientation,
-                          children: children.map { $0.replacingLeaf(leafID, with: newLeaf) },
-                          fractions: fractions)
+                          children: children.map { $0.replacingLeaf(leafID, with: newLeaf) })
         }
     }
 
@@ -72,22 +72,13 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         switch self {
         case .leaf(let leaf):
             return leaf.id == leafID ? nil : self
-        case .split(let id, let orientation, let children, let fractions):
-            var newChildren: [PaneNode<Leaf>] = []
-            var newFractions: [CGFloat] = []
-            for (child, fraction) in zip(children, fractions) {
-                if let kept = child.removingLeaf(leafID) {
-                    newChildren.append(kept)
-                    newFractions.append(fraction)
-                }
-            }
+        case .split(let id, let orientation, let children):
+            let newChildren = children.compactMap { $0.removingLeaf(leafID) }
             switch newChildren.count {
             case 0: return nil
             case 1: return newChildren[0]   // collapse a now-single-child split
             default:
-                return .split(id: id, orientation: orientation,
-                              children: newChildren,
-                              fractions: normalizedFractions(newFractions))
+                return .split(id: id, orientation: orientation, children: newChildren)
             }
         }
     }
@@ -109,6 +100,9 @@ final class Tab: Identifiable, ObservableObject {
     @Published var zoomedPaneID: UUID?
     /// User-set tab name; falls back to the active leaf's title when nil.
     @Published var customTitle: String?
+    /// The saved group this tab was opened from, if any. Set so closing the
+    /// tab can write the arrangement back to that group.
+    var groupID: UUID?
 
     init(session: TerminalSession) {
         root = .leaf(session)

@@ -40,6 +40,14 @@ struct SidebarView: View {
     @State private var newFolderName = ""
     @State private var renamingFolder: String?
     @State private var renameFolderName = ""
+    @State private var renamingGroup: SessionGroup?
+    @State private var renameGroupName = ""
+    @State private var groupToDelete: SessionGroup?
+    @State private var savingGroup = false
+    @State private var newGroupName = ""
+    /// Set when a launch couldn't open every member, so the user is told
+    /// which hosts are gone rather than silently getting a smaller grid.
+    @State private var groupLaunchNotice: String?
     @State private var selection: Set<UUID> = []
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
@@ -66,6 +74,16 @@ struct SidebarView: View {
         return store.entries.filter {
             $0.name.localizedCaseInsensitiveContains(filter)
                 || $0.subtitle.localizedCaseInsensitiveContains(filter)
+                || $0.folder.localizedCaseInsensitiveContains(filter)
+        }
+    }
+
+    /// Groups match the host filter on their own name, so filtering for
+    /// "splunk" finds the group as well as the boxes in it.
+    private var filteredGroups: [SessionGroup] {
+        guard !filter.isEmpty else { return store.groups }
+        return store.groups.filter {
+            $0.name.localizedCaseInsensitiveContains(filter)
                 || $0.folder.localizedCaseInsensitiveContains(filter)
         }
     }
@@ -125,7 +143,14 @@ struct SidebarView: View {
             onExpandAll: { section = .hosts; expandAllRequest += 1 },
             onCollapseAll: { section = .hosts; collapseAllRequest += 1 },
             onShowCoverage: { showingCoverage = true },
-            onShowHistory: { showingHistory = true }
+            onShowHistory: { showingHistory = true },
+            onSaveTabAsGroup: {
+                let tab = sessions.selectedTab
+                newGroupName = tab?.customTitle
+                    ?? tab?.groupID.flatMap { store.group(id: $0)?.name }
+                    ?? tab?.activeLeaf?.title ?? ""
+                savingGroup = true
+            }
         ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
@@ -190,6 +215,24 @@ struct SidebarView: View {
         } message: {
             Text(importMessage ?? "")
         }
+        .alert("Your library changed outside Portside",
+               isPresented: .constant(store.externalChange)) {
+            Button("Reload") { store.reloadAfterExternalChange() }
+            Button("Keep Mine and Overwrite", role: .destructive) {
+                store.overwriteExternalChange()
+            }
+        } message: {
+            Text("Something else wrote to your session library since Portside "
+                 + "read it — another copy of Portside, or a sync client "
+                 + "bringing down changes made elsewhere. Saving now would "
+                 + "discard them.\n\nReload takes the version on disk. "
+                 + "Portside has not saved anything in the meantime.")
+        }
+        .modifier(GroupAlerts(
+            savingGroup: $savingGroup, newGroupName: $newGroupName,
+            renamingGroup: $renamingGroup, renameGroupName: $renameGroupName,
+            groupToDelete: $groupToDelete, launchNotice: $groupLaunchNotice,
+            store: store, sessions: sessions))
         .alert(
             newFolderParent.map { $0.isEmpty ? "New Folder" : "New Subfolder in \($0)" } ?? "New Folder",
             isPresented: Binding(
@@ -230,7 +273,9 @@ struct SidebarView: View {
     // MARK: - Sections
 
     private var hostsList: some View {
-        let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
+        let tree = FolderTree.build(entries: filteredEntries,
+                                    explicitFolders: store.explicitFolders,
+                                    groups: filteredGroups)
         // The hosts list is an NSOutlineView (HostOutlineView) so selection and
         // drag are native — SwiftUI's List couldn't do range selection or
         // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
@@ -270,6 +315,9 @@ struct SidebarView: View {
                 expandAllRequest: expandAllRequest,
                 collapseAllRequest: collapseAllRequest,
                 connect: connect,
+                launchGroup: launchGroup,
+                renameGroup: { renameGroupName = $0.name; renamingGroup = $0 },
+                deleteGroup: { groupToDelete = $0 },
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
                 openFolder: openFolder,
@@ -382,12 +430,33 @@ struct SidebarView: View {
         sessions.connect(to: store.resolved(entry))
     }
 
+    /// Opens a saved group, reporting anything that couldn't be opened.
+    ///
+    /// A member that's been deleted since the group was saved is skipped, not
+    /// fatal — but it is said out loud. Silently opening six of eight is how
+    /// you run a command believing it reached the whole platform.
+    private func launchGroup(_ group: SessionGroup) {
+        let result = sessions.launch(group) { id in
+            store.entry(id: id).map(store.resolved)
+        }
+        guard !result.isComplete else { return }
+        let names = result.missing
+            .map { store.entry(id: $0)?.name ?? "a deleted host" }
+            .joined(separator: ", ")
+        groupLaunchNotice = result.opened == 0
+            ? "“\(group.name)” couldn't open — none of its hosts are in the library any more."
+            : "Opened \(result.opened) of \(group.paneCount) in “\(group.name)”. "
+              + "No longer in the library: \(names)."
+    }
+
     /// The filter field's first arrow-key press while searching: pick an
     /// initial selection if there isn't one already, then hand keyboard focus
     /// to the host list so further arrow keys navigate it directly (native
     /// NSOutlineView row navigation once it's first responder).
     private func moveFocusToResults(selectFirst: Bool) {
-        let tree = FolderTree.build(entries: filteredEntries, explicitFolders: store.explicitFolders)
+        let tree = FolderTree.build(entries: filteredEntries,
+                                    explicitFolders: store.explicitFolders,
+                                    groups: filteredGroups)
         let ids = flattenedEntryIDs(from: tree)
         guard !ids.isEmpty else { return }
         if selection.isEmpty {
@@ -399,7 +468,7 @@ struct SidebarView: View {
     /// Entry ids in the same depth-first order `HostOutlineView` renders them
     /// (folders then their entries, root entries last) — every one is visible
     /// while searching, since matching folders auto-expand.
-    private func flattenedEntryIDs(from tree: (root: [SessionEntry], folders: [FolderNode])) -> [UUID] {
+    private func flattenedEntryIDs(from tree: SidebarTree) -> [UUID] {
         var ids: [UUID] = []
         func walk(_ nodes: [SidebarNode]) {
             for node in nodes {
@@ -439,13 +508,15 @@ struct SidebarView: View {
                 if let doc = LibraryTransfer.decode(data) {
                     let added = store.importExport(entries: doc.entries ?? [],
                                                    folders: doc.folders ?? [],
-                                                   macros: doc.macros ?? [])
-                    importMessage = summary(sessions: added.sessions, macros: added.macros, skipped: 0)
+                                                   macros: doc.macros ?? [],
+                                                   credentialProfiles: doc.credentialProfiles ?? [])
+                    importMessage = summary(sessions: added.sessions, macros: added.macros,
+                                            profiles: added.profiles, skipped: 0)
                 } else {
                     let parsed = try MobaXtermImporter.importFile(at: url)
                     let added = store.addImported(entries: parsed.entries, macros: parsed.macros)
                     importMessage = summary(sessions: added.sessions, macros: added.macros,
-                                            skipped: parsed.skippedNonSSH)
+                                            profiles: 0, skipped: parsed.skippedNonSSH)
                 }
             } catch {
                 importMessage = "Import failed: \(error.localizedDescription)"
@@ -453,16 +524,27 @@ struct SidebarView: View {
         }
     }
 
-    private func summary(sessions: Int, macros: Int, skipped: Int) -> String {
-        if sessions == 0 && macros == 0 {
+    private func summary(sessions: Int, macros: Int, profiles: Int, skipped: Int) -> String {
+        if sessions == 0 && macros == 0 && profiles == 0 {
             return "Nothing new to import — everything was already in the library."
         }
         var parts: [String] = []
         if sessions > 0 { parts.append("\(sessions) session\(sessions == 1 ? "" : "s")") }
         if macros > 0 { parts.append("\(macros) macro\(macros == 1 ? "" : "s")") }
-        var message = "Imported " + parts.joined(separator: " and ")
+        if profiles > 0 {
+            parts.append("\(profiles) credential profile\(profiles == 1 ? "" : "s")")
+        }
+        var message = "Imported " + parts.joined(separator: ", ")
         if skipped > 0 { message += ", skipped \(skipped) non-SSH entries" }
-        return message + "."
+        message += "."
+        if profiles > 0 {
+            // The one thing that doesn't travel, said plainly at the moment
+            // it matters — otherwise the hosts look restored and simply fail
+            // to authenticate later, with nothing connecting the two events.
+            message += " Passwords aren't included in an export — set them in "
+                     + "Settings ▸ Profiles and every host using them will work."
+        }
+        return message
     }
 
     private func exportSessions() {
@@ -472,7 +554,8 @@ struct SidebarView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try LibraryTransfer.encodeSessions(entries: store.entries,
-                                                          folders: store.explicitFolders)
+                                                          folders: store.explicitFolders,
+                                                          credentialProfiles: store.credentialProfiles)
             try data.write(to: url)
             let n = store.entries.count
             importMessage = "Exported \(n) session\(n == 1 ? "" : "s") to \(url.lastPathComponent)."
@@ -634,6 +717,7 @@ private struct LibraryCommandRouter: ViewModifier {
     let onCollapseAll: () -> Void
     let onShowCoverage: () -> Void
     let onShowHistory: () -> Void
+    let onSaveTabAsGroup: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -647,5 +731,88 @@ private struct LibraryCommandRouter: ViewModifier {
             .onChange(of: library.collapseAllFolders) { _, _ in onCollapseAll() }
             .onChange(of: library.showCoverage) { _, _ in onShowCoverage() }
             .onChange(of: library.showHistory) { _, _ in onShowHistory() }
+            .onChange(of: library.saveTabAsGroup) { _, _ in onSaveTabAsGroup() }
+    }
+}
+
+/// The four group alerts, lifted out of `SidebarView`'s modifier chain.
+///
+/// Not organisation for its own sake: adding them inline pushed the chain past
+/// what the type-checker will solve in reasonable time, and the error lands on
+/// an unrelated alert several lines away rather than on the ones just added.
+private struct GroupAlerts: ViewModifier {
+    @Binding var savingGroup: Bool
+    @Binding var newGroupName: String
+    @Binding var renamingGroup: SessionGroup?
+    @Binding var renameGroupName: String
+    @Binding var groupToDelete: SessionGroup?
+    @Binding var launchNotice: String?
+    let store: SessionStore
+    let sessions: SessionManager
+
+    func body(content: Content) -> some View {
+        content
+    .alert("Save Tab as Group", isPresented: $savingGroup) {
+        TextField("Name", text: $newGroupName)
+        Button("Save") {
+            let name = newGroupName.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty, let group = sessions.groupFromSelectedTab(named: name) {
+                store.upsert(group)
+                sessions.selectedTab?.groupID = group.id
+            }
+            newGroupName = ""
+        }
+        Button("Cancel", role: .cancel) { newGroupName = "" }
+    } message: {
+        Text("Saves the panes in this tab and how they're arranged. "
+             + "Opening it later brings the whole grid back, disarmed.")
+    }
+    .alert(
+        "Rename Group",
+        isPresented: Binding(
+            get: { renamingGroup != nil },
+            set: { if !$0 { renamingGroup = nil } }
+        )
+    ) {
+        TextField("Name", text: $renameGroupName)
+        Button("Rename") {
+            if var group = renamingGroup {
+                let name = renameGroupName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty {
+                    group.name = name
+                    store.upsert(group)
+                }
+            }
+            renamingGroup = nil
+        }
+        Button("Cancel", role: .cancel) { renamingGroup = nil }
+    }
+    .alert(
+        "Delete “\(groupToDelete?.name ?? "")”?",
+        isPresented: Binding(
+            get: { groupToDelete != nil },
+            set: { if !$0 { groupToDelete = nil } }
+        )
+    ) {
+        Button("Delete", role: .destructive) {
+            if let group = groupToDelete { store.delete(group) }
+            groupToDelete = nil
+        }
+        Button("Cancel", role: .cancel) { groupToDelete = nil }
+    } message: {
+        // Worth saying: deleting the group is not deleting the hosts.
+        Text("The hosts in this group stay in your library — only the saved arrangement goes.")
+    }
+    .alert(
+        "Group opened incomplete",
+        isPresented: Binding(
+            get: { launchNotice != nil },
+            set: { if !$0 { launchNotice = nil } }
+        )
+    ) {
+        Button("OK", role: .cancel) { launchNotice = nil }
+    } message: {
+        Text(launchNotice ?? "")
+    }
     }
 }

@@ -24,6 +24,7 @@ final class LibraryCommands: ObservableObject {
     @Published private(set) var collapseAllFolders = 0
     @Published private(set) var showCoverage = 0
     @Published private(set) var showHistory = 0
+    @Published private(set) var saveTabAsGroup = 0
 
     func requestNewSession() { newSession += 1 }
     func requestNewFolder() { newFolder += 1 }
@@ -35,4 +36,5 @@ final class LibraryCommands: ObservableObject {
     func requestCollapseAllFolders() { collapseAllFolders += 1 }
     func requestShowCoverage() { showCoverage += 1 }
     func requestShowHistory() { showHistory += 1 }
+    func requestSaveTabAsGroup() { saveTabAsGroup += 1 }
 }

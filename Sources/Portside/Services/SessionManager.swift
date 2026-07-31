@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Network
 import SwiftTerm
 
 /// A terminal view that tees the child process's output to a session log
@@ -283,6 +284,33 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         selectionAutoScroll = nil
     }
 
+    /// Consulted before a paste reaches the pty; returning false drops it.
+    /// Set by `SessionManager` for panes that can broadcast.
+    var shouldAllowPaste: ((String) -> Bool)?
+
+    /// The one input path where confirmation is worth the friction.
+    ///
+    /// Overriding here rather than filtering bytes in `send` catches ⌘V and
+    /// the context-menu item together (both dispatch to this responder
+    /// action), and — the reason it has to be here — intercepts *before* the
+    /// local pane receives anything. Vetoing further down would already have
+    /// written to the focused pty, leaving the confirmation deciding only
+    /// whether the other eleven hosts join in.
+    /// Signature matches SwiftTerm's `open func paste(_ sender: Any)` exactly,
+    /// not `NSResponder`'s `Any?`. Both carry the `paste:` selector, so the
+    /// looser one compiles and looks like it works while overriding the wrong
+    /// method — leaving ⌘V dispatching straight to SwiftTerm's implementation
+    /// with the gate never consulted.
+    override func paste(_ sender: Any) {
+        if let shouldAllowPaste,
+           let text = NSPasteboard.general.string(forType: .string),
+           !text.isEmpty,
+           !shouldAllowPaste(text) {
+            return
+        }
+        super.paste(sender)
+    }
+
     // MARK: Right-click Copy/Paste
 
     /// SwiftTerm implements the standard `copy(_:)`/`paste(_:)` responder
@@ -337,6 +365,24 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @Published var isRunning = true
     /// Guards against the connection attempt being resolved twice.
     var resolvedConnectionOutcome = false
+
+    /// Whether something on the other end is currently reading a secret.
+    ///
+    /// Password prompts, key passphrases, `sudo`, and MFA challenges all work
+    /// the same way: turn off terminal echo, read a line, turn it back on. The
+    /// pty master reports the slave's termios, so a clear `ECHO` bit is a
+    /// direct reading of "a secret is being typed right now" rather than a
+    /// guess from output text — which would have to keep up with every prompt
+    /// wording, in every language, from ssh, sudo, and every PAM module.
+    ///
+    /// False for transports with no child process (serial, telnet) and for a
+    /// session that has already exited: nothing to read, nothing to protect.
+    var isReadingSecret: Bool {
+        guard isRunning, let process = terminalView.process, process.running else { return false }
+        var settings = termios()
+        guard tcgetattr(process.childfd, &settings) == 0 else { return false }
+        return settings.c_lflag & tcflag_t(ECHO) == 0
+    }
 
     /// Positive evidence the session actually came up.
     ///
@@ -742,6 +788,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     }
 }
 
+@MainActor
 final class SessionManager: ObservableObject {
     /// Source of truth: each open tab owns a pane tree of live sessions. Today
     /// every tab is a single leaf; splitting (0.9) grows the trees.
@@ -754,6 +801,10 @@ final class SessionManager: ObservableObject {
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
     /// presents a prompt while this is non-nil.
     @Published var pendingRestore: RestorePlan?
+    /// Set when the app took an armed broadcast down by itself. The banner
+    /// vanishing is what the user notices; this is what tells them why, and
+    /// the UI clears it once shown.
+    @Published var disarmNotice: MultiExecDisarmReason?
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
@@ -782,8 +833,16 @@ final class SessionManager: ObservableObject {
     private var isRestoring = false
     /// Per-session subscriptions to MultiExec-membership changes.
     private var membershipObservers: [UUID: AnyCancellable] = [:]
+    private var wakeObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
+    private var networkMonitor: NWPathMonitor?
+    /// Interfaces seen on the last network path; nil until the first callback.
+    private var lastNetworkInterfaces: Set<String>?
 
     init() {
+        observeSystemWake()
+        observeNetworkChanges()
+        observeTerminationForGroups()
         LoggingTerminalView.installSelectionAutoScrollMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -852,6 +911,17 @@ final class SessionManager: ObservableObject {
     deinit {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        // The wake observer was never torn down here. Harmless for the app's
+        // single long-lived manager, but a test that builds several leaves one
+        // live observer per instance, each holding a closure that fires on the
+        // next wake.
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
+        networkMonitor?.cancel()
     }
 
     /// Flat view of every live session (all leaves across all tabs), in tab and
@@ -859,7 +929,23 @@ final class SessionManager: ObservableObject {
     /// works on this set; the tree only governs layout.
     var sessions: [TerminalSession] { tabs.flatMap(\.leaves) }
 
-    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
+    /// The active tab, falling back to the last one when `selectedTabID` names
+    /// a tab that is no longer here.
+    ///
+    /// The fallback is not decoration. Every tab-scoped command — arm
+    /// MultiExec, broadcast, split, close, zoom — reads through this and does
+    /// nothing at all when it's nil, so a stale id turns the whole app into a
+    /// window that ignores input while looking perfectly normal. `SessionArea`
+    /// had the matching hole: it drew `WelcomeView` for no sessions and a tab
+    /// for a selected one, and *nothing* in between, which leaves the previous
+    /// frame's AppKit views on screen with no owner.
+    ///
+    /// Removal paths do reassign the id, so this should be unreachable; it is
+    /// here because "should be" is doing a lot of work in a teardown sequence,
+    /// and the cost of being wrong is a window that has to be force-quit.
+    /// Deliberately pure — healing `selectedTabID` from a getter would mutate
+    /// during a view update.
+    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } ?? tabs.last }
 
     /// The focused terminal — the active leaf of the selected tab. Drives find,
     /// zoom, the SFTP pane, and single-session close.
@@ -980,17 +1066,58 @@ final class SessionManager: ObservableObject {
     /// nothing to observe.
     private static let connectionGracePeriod: TimeInterval = 4
 
+    /// How long to keep waiting for an authentication prompt to finish before
+    /// giving up on the post-connect command. Generous on purpose: it has to
+    /// cover a push notification being approved on a phone, or a hardware key
+    /// being touched.
+    private static let postConnectAuthTimeout: TimeInterval = 90
+    private static let postConnectPollInterval: TimeInterval = 0.15
+
     private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
         if let command = entry.postConnectCommand {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
-                session?.sendText(command + "\r")
-            }
+            sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout)
         }
         // Logged immediately so a failure leaves a trace, but deliberately not
         // counted: only a confirmed connection updates the totals that drive
         // Quick Connect's ranking and stale-host detection.
         onConnectionAttempt?(entry, .attempted)
         confirmConnection(session, entry: entry)
+    }
+
+    /// Sends a post-connect command once nothing is reading a secret.
+    ///
+    /// This used to fire on a flat 1.2-second timer, which is long enough for a
+    /// fast local shell and nowhere near long enough for a password prompt, a
+    /// slow `ProxyJump` chain, or MFA. When it lost that race the command was
+    /// typed *into the prompt*: echo is off, so nothing appears, the newline
+    /// submits it as the password, and the command — which may be anything —
+    /// goes to the server as a failed credential and into its auth log.
+    ///
+    /// The signal is exact rather than heuristic. Anything reading a secret —
+    /// ssh, sudo, an MFA prompt — turns off `ECHO` on the tty, and the pty
+    /// master reports the slave's termios, so "echo is off" *is* "someone is
+    /// asking for a secret right now". Waiting for it to come back is precisely
+    /// the condition that was missing.
+    ///
+    /// No settle delay once it does: shells buffer stdin, so a command arriving
+    /// a moment before the prompt is drawn still runs at it. The old comment
+    /// here was right about that, and wrong only about the prompt it might land
+    /// in instead.
+    ///
+    /// Transports with no child process (serial, telnet) have no termios to
+    /// read and send immediately, exactly as before.
+    private func sendWhenNotPrompting(_ command: String, to session: TerminalSession,
+                                      deadline: DispatchTime) {
+        guard session.isRunning else { return }   // died during auth; nothing to send to
+        guard session.isReadingSecret, DispatchTime.now() < deadline else {
+            session.sendText(command + "\r")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.postConnectPollInterval) {
+            [weak self, weak session] in
+            guard let self, let session else { return }
+            self.sendWhenNotPrompting(command, to: session, deadline: deadline)
+        }
     }
 
     /// Resolves the attempt once the grace period has passed, or as soon as the
@@ -1107,6 +1234,20 @@ final class SessionManager: ObservableObject {
     /// dropped host or reopening a local shell without disturbing the layout.
     func reconnect(_ session: TerminalSession) {
         guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
+        // A pane coming back is not the pane that was armed. The replacement is
+        // a fresh shell — possibly at a login prompt, in a different directory,
+        // or on a different machine if DNS or a jump host moved. Membership
+        // carries over so the group is intact when the user re-arms, but the
+        // arming itself does not.
+        //
+        // This took two goes. Disarming here corrupted the window every time a
+        // reconnect happened while armed, and the cause was not the disarm but
+        // the *notice*: as a child of the pane container it was inserted at the
+        // exact moment the pane tree was being restructured, re-parenting the
+        // persistent terminal views. It's an overlay now, so it no longer joins
+        // that layout — see `TabContentView.disarmNotice`.
+        disarm(tab, reason: .paneReconnected(host: session.entry?.name))
+
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)
         replacement.includedInMultiExec = session.includedInMultiExec
@@ -1155,17 +1296,11 @@ final class SessionManager: ObservableObject {
             row.count == 1
                 ? .leaf(row[0])
                 : .split(id: UUID(), orientation: .horizontal,
-                         children: row.map { .leaf($0) },
-                         fractions: equalFractions(row.count))
+                         children: row.map { .leaf($0) })
         }
         return rowNodes.count == 1
             ? rowNodes[0]
-            : .split(id: UUID(), orientation: .vertical, children: rowNodes,
-                     fractions: equalFractions(rowNodes.count))
-    }
-
-    private func equalFractions(_ count: Int) -> [CGFloat] {
-        Array(repeating: 1 / CGFloat(count), count: count)
+            : .split(id: UUID(), orientation: .vertical, children: rowNodes)
     }
 
     // MARK: - Broadcast (MultiExec)
@@ -1191,6 +1326,116 @@ final class SessionManager: ObservableObject {
     /// Keyboard equivalent of the MultiExec toolbar toggle (⇧⌘M).
     func toggleMultiExec() {
         setMultiExecArmed(!(selectedTab?.broadcastArmed ?? false))
+    }
+
+    /// Takes an armed broadcast down because the world changed underneath it,
+    /// and records why so the UI can say so.
+    ///
+    /// Arming asserts "these panes are in a state I've checked, and I want one
+    /// command to reach all of them". Anything that invalidates the *checked*
+    /// half invalidates the arming — and the safe direction is unmistakable,
+    /// since re-arming costs one keystroke and a mistaken broadcast can't be
+    /// taken back.
+    private func disarm(_ tab: Tab, reason: MultiExecDisarmReason) {
+        guard tab.broadcastArmed else { return }
+        objectWillChange.send()
+        tab.broadcastArmed = false
+        disarmNotice = reason
+        notifyWorkspaceChanged()
+    }
+
+    /// Every armed tab, for events that invalidate all of them at once.
+    func disarmAll(reason: MultiExecDisarmReason) {
+        for tab in tabs where tab.broadcastArmed { disarm(tab, reason: reason) }
+    }
+
+    /// Sleep is the one event that invalidates every assumption at once: the
+    /// connections may have dropped and silently come back, the hosts may have
+    /// been rebooted, and an arbitrary amount of time passed with nobody
+    /// watching. Waking to a still-armed grid, with no memory of arming it in
+    /// this sitting, is the shape of the accident MultiExec's guardrails exist
+    /// to prevent.
+    /// Group tabs write their arrangement back at quit as well as at close.
+    /// Without this the silent-update rule quietly didn't apply to the most
+    /// common way of finishing with a tab: leaving it open and quitting.
+    private func observeTerminationForGroups() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.captureAllGroupLayouts() }
+        }
+    }
+
+    private func observeSystemWake() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.disarmAll(reason: .systemWoke) }
+        }
+    }
+
+    /// Disarms when the machine changes network.
+    ///
+    /// The hazard is a jump host or a `ProxyJump` chain resolving somewhere
+    /// else than it did when the group was armed. Coming off a VPN, or moving
+    /// between office and home Wi-Fi, can leave `prod-db` pointing at a
+    /// different machine — or at nothing — while the panes look untouched,
+    /// because an established SSH connection survives the change and only
+    /// *new* ones follow the new route.
+    ///
+    /// Deliberately keyed on the interface actually carrying traffic rather
+    /// than on reachability. `NWPathMonitor` fires for a great deal that isn't
+    /// interesting — every transition through `.unsatisfied` and back, every
+    /// change in expensive/constrained flags — and a guardrail that fires
+    /// constantly during ordinary work is one people learn to route around.
+    /// The first path is the baseline, not a change.
+    private func observeNetworkChanges() {
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            let interfaces = Set(path.availableInterfaces.map(\.name))
+            let satisfied = path.status == .satisfied
+            MainActor.assumeIsolated {
+                self?.networkPathChanged(interfaces: interfaces, satisfied: satisfied)
+            }
+        }
+        // Started on the main queue rather than a private one so the handler is
+        // already where the state it touches lives. The work is a set
+        // comparison; hopping to main from a background queue would only add a
+        // second closure — and a second capture of `self` — for nothing.
+        monitor.start(queue: .main)
+    }
+
+    /// Set PORTSIDE_NETWORK_DEBUG=1 to log every path update and the decision
+    /// it produced to Console.app.
+    ///
+    /// This rule fires unprompted and takes a broadcast down, so "did that do
+    /// the right thing?" deserves a better answer than watching for a banner to
+    /// vanish. A machine with a VPN and half a dozen `utun` interfaces has
+    /// plenty of churn that isn't a network *move*, and the way this rule fails
+    /// is by crying wolf until people stop trusting it — which is invisible
+    /// unless you can see what it saw.
+    private static let networkDebugLogging =
+        ProcessInfo.processInfo.environment["PORTSIDE_NETWORK_DEBUG"] != nil
+
+    @MainActor
+    func networkPathChanged(interfaces: Set<String>, satisfied: Bool) {
+        defer { lastNetworkInterfaces = interfaces }
+        let disarming = NetworkChangeDecision.shouldDisarm(
+            previous: lastNetworkInterfaces, current: interfaces, satisfied: satisfied
+        )
+        if Self.networkDebugLogging {
+            let was = lastNetworkInterfaces.map { $0.sorted().joined(separator: ",") }
+                ?? "(first path — baseline)"
+            NSLog("Portside network: [%@] -> [%@] satisfied=%@ decision=%@ armedTabs=%d",
+                  was,
+                  interfaces.sorted().joined(separator: ","),
+                  satisfied ? "yes" : "no",
+                  disarming ? "DISARM" : "ignore",
+                  tabs.filter(\.broadcastArmed).count)
+        }
+        guard disarming else { return }
+        disarmAll(reason: .networkChanged)
     }
 
     /// Keyboard equivalent of the Grid View toolbar toggle (⇧⌘G).
@@ -1334,6 +1579,19 @@ final class SessionManager: ObservableObject {
             let leaves = tabs.flatMap(\.leaves)
             let active = selectedTab?.activeLeaf?.id ?? leaves.first?.id ?? UUID()
             let grid = Tab(root: gridTree(of: leaves), activePaneID: active)
+            // Carry a rename across the merge. Gathering tabs into a grid built
+            // a fresh Tab and dropped `customTitle`, so renaming a tab and then
+            // arming MultiExec silently reverted the name — which reads as the
+            // rename not having worked.
+            //
+            // Only when exactly one source tab has one: with several there is
+            // no non-arbitrary answer, and picking would be worse than not.
+            // `groupID` is deliberately *not* carried — a grid merging several
+            // tabs is not the group any one of them came from, and inheriting
+            // the link would have closing it write this merged layout back over
+            // the saved group.
+            let renamed = tabs.compactMap(\.customTitle)
+            if renamed.count == 1 { grid.customTitle = renamed[0] }
             tabs = [grid]
             gridViewTabID = grid.id
             selectedTabID = grid.id   // didSet persists the layout
@@ -1357,7 +1615,9 @@ final class SessionManager: ObservableObject {
     /// pile of blank tabs.
     var currentWorkspace: WorkspaceSnapshot {
         let persistable = tabs.compactMap { tab in tab.root.map { (tab, $0) } }
-        let tabSnapshots = persistable.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1)) }
+        let tabSnapshots = persistable.map {
+            WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1), groupID: $0.0.groupID)
+        }
         let selectedIndex = persistable.firstIndex { $0.0.id == selectedTabID }
         return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex, wasGridView: isGridView)
     }
@@ -1369,10 +1629,88 @@ final class SessionManager: ObservableObject {
                 kind: session.entry.map { .host($0.id) } ?? .localShell,
                 includedInMultiExec: session.includedInMultiExec)
             return .leaf(leaf)
-        case .split(_, let orientation, let children, let fractions):
-            return .split(orientation: orientation, children: children.map(snapshot(of:)),
-                          fractions: fractions)
+        case .split(_, let orientation, let children):
+            return .split(orientation: orientation, children: children.map(snapshot(of:)))
         }
+    }
+
+    // MARK: - Groups
+
+    /// What a group launch actually managed to open.
+    struct GroupLaunchResult: Equatable {
+        var opened: Int
+        var missing: [UUID]
+        var isComplete: Bool { missing.isEmpty }
+    }
+
+    /// Captures the selected tab's arrangement as a named group.
+    ///
+    /// Returns nil for a start page — there's no layout to save, and a group
+    /// that opens nothing is worse than no group.
+    func groupFromSelectedTab(named name: String, folder: String = "") -> SessionGroup? {
+        guard let tab = selectedTab, let root = tab.root else { return nil }
+        return SessionGroup(
+            name: name, folder: folder,
+            layout: WorkspaceSnapshot.TabSnapshot(root: snapshot(of: root)),
+            wasGridView: isGridView
+        )
+    }
+
+    /// Opens a group as one tab, in the arrangement it was saved in.
+    ///
+    /// Reuses the workspace-restore path rather than a second replay: a group
+    /// *is* a saved tab, and that machinery already rebuilds pane trees,
+    /// restores split fractions and membership, and leaves everything
+    /// disarmed. A group inherits that last part deliberately — the grid comes
+    /// back assembled and ready, and arming stays a deliberate act.
+    ///
+    /// A member that's no longer in the library is skipped rather than failing
+    /// the launch: eight hosts where one was deleted should open seven and say
+    /// so, not refuse.
+    @discardableResult
+    func launch(_ group: SessionGroup, entryForID: (UUID) -> SessionEntry?) -> GroupLaunchResult {
+        let missing = group.memberEntryIDs.filter { entryForID($0) == nil }
+        let snapshot = WorkspaceSnapshot(
+            tabs: [group.layout], selectedTabIndex: 0, wasGridView: group.wasGridView
+        )
+        let plan = snapshot.plan(entryForID: entryForID)
+        guard !plan.tabs.isEmpty else { return GroupLaunchResult(opened: 0, missing: missing) }
+        restore(plan)
+        selectedTab?.groupID = group.id
+        return GroupLaunchResult(opened: selectedTab?.leaves.count ?? 0, missing: missing)
+    }
+
+    /// Writes a group's arrangement back when its tab closes.
+    ///
+    /// Silent, with undo, rather than an explicit "Update Group" step — chosen
+    /// to be lived with for a few days rather than argued about. A tab that
+    /// didn't come from a group writes nothing.
+    private func captureGroupLayout(from tab: Tab) {
+        guard let groupID = tab.groupID, let root = tab.root else { return }
+        onGroupLayoutChange?(
+            groupID,
+            WorkspaceSnapshot.TabSnapshot(root: snapshot(of: root), groupID: groupID),
+            isGridView
+        )
+    }
+
+    /// Wired to the store so a closing group tab persists its arrangement.
+    var onGroupLayoutChange: ((UUID, WorkspaceSnapshot.TabSnapshot, Bool) -> Void)?
+
+    /// Writes a group tab's arrangement back now rather than at close.
+    ///
+    /// The silent-on-close rule covers the ordinary path, but it only fires on
+    /// `closeTab` — quitting with the tab still open never wrote anything back,
+    /// so a rearranged grid was silently discarded by the one action people take
+    /// most. This is both the explicit "Update" command and what termination
+    /// calls.
+    func captureGroupLayoutIfLinked(_ tab: Tab) {
+        captureGroupLayout(from: tab)
+    }
+
+    /// Every open group tab, at quit.
+    private func captureAllGroupLayouts() {
+        for tab in tabs where tab.groupID != nil { captureGroupLayout(from: tab) }
     }
 
     /// Decides what to do with the last session's snapshot at launch: nothing
@@ -1414,27 +1752,21 @@ final class SessionManager: ObservableObject {
 
     private func buildTab(_ tabPlan: RestorePlan.TabPlan) -> Tab? {
         guard let root = buildNode(tabPlan.root) else { return nil }
-        return Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+        let tab = Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+        tab.groupID = tabPlan.groupID
+        return tab
     }
 
     private func buildNode(_ plan: RestorePlan.PanePlan) -> PaneNode<TerminalSession>? {
         switch plan {
         case .leaf(let action):
             return .leaf(makeRestoredSession(action))
-        case .split(let orientation, let children, let fractions):
-            var kept: [PaneNode<TerminalSession>] = []
-            var keptFractions: [CGFloat] = []
-            for (child, fraction) in zip(children, fractions) {
-                if let node = buildNode(child) {
-                    kept.append(node)
-                    keptFractions.append(fraction)
-                }
-            }
+        case .split(let orientation, let children):
+            let kept = children.compactMap { buildNode($0) }
             switch kept.count {
             case 0: return nil
             case 1: return kept[0]
-            default: return .split(id: UUID(), orientation: orientation, children: kept,
-                                   fractions: normalizedFractions(keptFractions))
+            default: return .split(id: UUID(), orientation: orientation, children: kept)
             }
         }
     }
@@ -1532,6 +1864,9 @@ final class SessionManager: ObservableObject {
     /// Closes every pane in a tab (the tab-bar close button / menu). A
     /// start-page tab has no panes for the loop to close, so drop it directly.
     func closeTab(_ tab: Tab) {
+        // Before the panes go: a group tab remembers the arrangement you're
+        // leaving, not the one you first saved.
+        captureGroupLayout(from: tab)
         if tab.isStartPage {
             tabs.removeAll { $0.id == tab.id }
             if selectedTabID == tab.id { selectedTabID = tabs.last?.id }
@@ -1638,16 +1973,115 @@ final class SessionManager: ObservableObject {
                 .connect($0, includedInMultiExec: session.includedInMultiExec)
             } ?? .localShell(includedInMultiExec: session.includedInMultiExec)
             return .leaf(action)
-        case .split(_, let orientation, let children, let fractions):
+        case .split(_, let orientation, let children):
             let kids = children.compactMap { planNode(for: $0) }
             guard kids.count == children.count else { return nil }
-            return .split(orientation: orientation, children: kids, fractions: fractions)
+            return .split(orientation: orientation, children: kids)
         }
     }
 
     /// The included, running panes of a tab — the broadcast targets.
     private func broadcastTargets(in tab: Tab) -> [TerminalSession] {
         tab.leaves.filter { $0.includedInMultiExec && $0.isRunning }
+    }
+
+    /// Gate for a paste about to fan out across an armed broadcast.
+    ///
+    /// Returns true for anything that isn't broadcasting, and for the ordinary
+    /// single-command paste — see `BroadcastPasteReview` for why nagging on
+    /// those would cost more than it saves.
+    private func confirmPasteIfNeeded(_ text: String, from focused: TerminalSession) -> Bool {
+        guard let tab = tabs.first(where: { $0.contains(focused.id) }),
+              tab.broadcastArmed, focused.includedInMultiExec else { return true }
+        let targets = broadcastTargets(in: tab)
+        switch BroadcastPasteReview.review(text: text, targetCount: targets.count) {
+        case .send:
+            return true
+        case .confirm(let lineCount, let characterCount):
+            return presentPasteConfirmation(
+                text: text, lineCount: lineCount, characterCount: characterCount, targets: targets
+            )
+        }
+    }
+
+    /// Names every host that would receive the paste, because "12 panes" is
+    /// not something anyone can check and a host list is.
+    private func presentPasteConfirmation(
+        text: String, lineCount: Int, characterCount: Int, targets: [TerminalSession]
+    ) -> Bool {
+        // `paste(_:)` is a responder action, so this is genuinely the main
+        // thread — the same assertion PortsideApp makes for its termination
+        // work, and the reason NSAlert can be driven synchronously here.
+        MainActor.assumeIsolated {
+            Self.presentPasteConfirmationOnMain(
+                text: text, lineCount: lineCount, characterCount: characterCount, targets: targets
+            )
+        }
+    }
+
+    @MainActor
+    private static func presentPasteConfirmationOnMain(
+        text: String, lineCount: Int, characterCount: Int, targets: [TerminalSession]
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = lineCount > 1
+            ? "Run \(lineCount) commands on \(targets.count) panes?"
+            : "Paste \(characterCount) characters to \(targets.count) panes?"
+
+        alert.informativeText = "This runs on: \(targetList(targets)).\n\n\(previewLines(of: text))"
+
+        alert.addButton(withTitle: "Run on \(targets.count) Pane\(targets.count == 1 ? "" : "s")")
+        alert.addButton(withTitle: "Cancel")
+        // Enter is the first button by default; a confirmation for something
+        // irreversible should not be dismissible by the reflex that got here.
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Names the panes a broadcast will reach, collapsing repeats.
+    ///
+    /// Naming every pane individually is the point — "12 panes" is not
+    /// something anyone can check and a host list is. But a grid of local
+    /// shells produced the same string a dozen times over, which reads as
+    /// noise and hides the one entry that might be different. Repeats collapse
+    /// to `name ×N`, in first-seen order so the list still tracks the grid.
+    ///
+    /// A pane with no library entry is described, not named: its title is
+    /// whatever the shell last reported through OSC, so a grid of local shells
+    /// was listing itself as three copies of the last command that ran.
+    static func targetList(_ targets: [TerminalSession], limit: Int = 12) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for target in targets {
+            let name = target.entry?.name ?? "local shell"
+            if counts[name] == nil { order.append(name) }
+            counts[name, default: 0] += 1
+        }
+        let labels = order.map { name -> String in
+            let n = counts[name] ?? 0
+            return n > 1 ? "\(name) ×\(n)" : name
+        }
+        // A long grid would push the alert's buttons off-screen; the count
+        // carries the rest, and the panes are on screen behind the alert.
+        var detail = labels.prefix(limit).joined(separator: ", ")
+        if labels.count > limit { detail += " and \(labels.count - limit) more" }
+        return detail
+    }
+
+    /// The first few lines of what's about to run, so the confirmation shows
+    /// the actual commands rather than asking the user to trust their memory
+    /// of what they copied.
+    private static func previewLines(of text: String, limit: Int = 6) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let shown = lines.prefix(limit).map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.count > 80 ? String(trimmed.prefix(80)) + "…" : trimmed
+        }
+        var preview = shown.joined(separator: "\n")
+        if lines.count > limit { preview += "\n… and \(lines.count - limit) more lines" }
+        return preview
     }
 
     /// Sends a full command line to the armed tab's included panes (command bar).
@@ -1683,6 +2117,10 @@ final class SessionManager: ObservableObject {
         session.terminalView.onOutput = { [weak self, weak session] in
             guard let self, let session else { return }
             self.markActivity(for: session)
+        }
+        session.terminalView.shouldAllowPaste = { [weak self, weak session] text in
+            guard let self, let session else { return true }
+            return self.confirmPasteIfNeeded(text, from: session)
         }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
