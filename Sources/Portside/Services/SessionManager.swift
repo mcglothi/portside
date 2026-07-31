@@ -1480,6 +1480,19 @@ final class SessionManager: ObservableObject {
             let leaves = tabs.flatMap(\.leaves)
             let active = selectedTab?.activeLeaf?.id ?? leaves.first?.id ?? UUID()
             let grid = Tab(root: gridTree(of: leaves), activePaneID: active)
+            // Carry a rename across the merge. Gathering tabs into a grid built
+            // a fresh Tab and dropped `customTitle`, so renaming a tab and then
+            // arming MultiExec silently reverted the name — which reads as the
+            // rename not having worked.
+            //
+            // Only when exactly one source tab has one: with several there is
+            // no non-arbitrary answer, and picking would be worse than not.
+            // `groupID` is deliberately *not* carried — a grid merging several
+            // tabs is not the group any one of them came from, and inheriting
+            // the link would have closing it write this merged layout back over
+            // the saved group.
+            let renamed = tabs.compactMap(\.customTitle)
+            if renamed.count == 1 { grid.customTitle = renamed[0] }
             tabs = [grid]
             gridViewTabID = grid.id
             selectedTabID = grid.id   // didSet persists the layout

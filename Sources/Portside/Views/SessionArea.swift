@@ -427,6 +427,7 @@ struct FindBar: View {
 
 struct TabBar: View {
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var store: SessionStore
     /// The tab being renamed (drives the rename alert), plus its draft name.
     @State private var renamingTab: Tab?
     @State private var renameText = ""
@@ -465,7 +466,10 @@ struct TabBar: View {
                             isSelected: tab.id == sessions.selectedTabID,
                             onSelect: { sessions.selectedTabID = tab.id },
                             onClose: { sessions.closeTab(tab) },
-                            onRename: { renameText = tab.customTitle ?? tab.activeLeaf?.title ?? ""; renamingTab = tab },
+                            onRename: {
+                                renameText = tabDisplayTitle(tab) { store.group(id: $0)?.name }
+                                renamingTab = tab
+                            },
                             onDuplicate: { sessions.duplicateTab(tab) },
                             onCloseOthers: { sessions.closeOtherTabs(tab) }
                         )
@@ -641,7 +645,28 @@ private struct TabStripScrollView<Content: View>: NSViewRepresentable {
     }
 }
 
+/// The name a tab shows, in precedence order.
+///
+/// Split out of `TabChip` so the rename field can offer the same string as its
+/// starting point — otherwise renaming a group tab prefilled the host name it
+/// was already not showing.
+func tabDisplayTitle(_ tab: Tab, groupName: (UUID) -> String?) -> String {
+    // An explicit rename always wins; it is the one the user typed.
+    if let custom = tab.customTitle, !custom.isEmpty { return custom }
+    // Then the group, if this tab came from one. A tab holding "Splunk
+    // Servers" should say so rather than naming whichever host happens to be
+    // first in it.
+    if let name = tab.groupID.flatMap(groupName) { return name }
+    if tab.isStartPage { return "New Tab" }
+    let leaves = tab.leaves
+    guard let first = leaves.first else { return "shell" }
+    // First pane, not the focused one: a title that changes as you click
+    // between panes is hard to track in a tab bar. The count carries the rest.
+    return leaves.count > 1 ? "\(first.title) +\(leaves.count - 1)" : first.title
+}
+
 struct TabChip: View {
+    @EnvironmentObject var store: SessionStore
     @ObservedObject var tab: Tab
     let isSelected: Bool
     let onSelect: () -> Void
@@ -650,7 +675,9 @@ struct TabChip: View {
     let onDuplicate: () -> Void
     let onCloseOthers: () -> Void
 
-    private var title: String { tab.customTitle ?? tab.activeLeaf?.title ?? (tab.isStartPage ? "New Tab" : "shell") }
+    private var title: String {
+        tabDisplayTitle(tab) { store.group(id: $0)?.name }
+    }
     private var running: Bool { tab.activeLeaf?.isRunning ?? false }
     private var hasActivity: Bool { !isSelected && tab.leaves.contains { $0.hasActivity } }
 
