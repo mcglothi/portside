@@ -1156,31 +1156,19 @@ final class SessionManager: ObservableObject {
     /// dropped host or reopening a local shell without disturbing the layout.
     func reconnect(_ session: TerminalSession) {
         guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
-        // Deliberately does NOT disarm, though it should — a pane coming back
-        // is a fresh shell, possibly at a login prompt, in a different
-        // directory, or on a different machine if DNS or a jump host moved, so
-        // the arming that covered the old one does not cover it.
+        // A pane coming back is not the pane that was armed. The replacement is
+        // a fresh shell — possibly at a login prompt, in a different directory,
+        // or on a different machine if DNS or a jump host moved. Membership
+        // carries over so the group is intact when the user re-arms, but the
+        // arming itself does not.
         //
-        // Disarming here was written and pulled back out. It corrupts the
-        // window whenever the reconnect happens while armed: sidebar draws over
-        // the toolbar, tab bar and banner vanish, panes go blank, and a forced
-        // relayout doesn't recover it. Bisected against ef67a4d — unarmed
-        // reconnect is clean on both builds, armed reconnect is clean before
-        // the disarm and broken after, so it is the disarm and not the
-        // reconnect. Deferring it a runloop turn does not help.
-        //
-        // Narrowed since: it is not the disarm, it is the *notice*. Dropping
-        // the banner during a reconnect is clean; setting `disarmNotice` is
-        // what breaks it, because that inserts a new sibling above the pane
-        // tree at the moment that tree is being restructured, re-parenting the
-        // persistent terminal views. Removal during the swap is fine,
-        // insertion is not. (The earlier suspicion that `SessionArea`'s
-        // missing branch was to blame was wrong — that hole was real and is
-        // fixed, and this still reproduced behind it.)
-        //
-        // So re-landing this needs the notice to stop being a child of that
-        // VStack — an overlay, or somewhere outside the pane container — and
-        // then a test.
+        // This took two goes. Disarming here corrupted the window every time a
+        // reconnect happened while armed, and the cause was not the disarm but
+        // the *notice*: as a child of the pane container it was inserted at the
+        // exact moment the pane tree was being restructured, re-parenting the
+        // persistent terminal views. It's an overlay now, so it no longer joins
+        // that layout — see `TabContentView.disarmNotice`.
+        disarm(tab, reason: .paneReconnected(host: session.entry?.name))
 
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)

@@ -151,31 +151,51 @@ struct TabContentView: View {
         store.favoriteMacros.isEmpty ? store.macros : store.favoriteMacros
     }
 
+    /// Says why the app disarmed on its own. The banner vanishing is what the
+    /// user notices; without this they're left to work out whether they did it.
+    ///
+    /// An overlay, deliberately, and not a row in the VStack below.
+    ///
+    /// As a child it changes the container's children the moment it appears —
+    /// and it appears exactly when a pane is being swapped out of the tree
+    /// beneath it, which re-parents the persistent terminal views mid
+    /// replacement and leaves the window mis-laid-out: sidebar over the
+    /// toolbar, no tab bar, blank panes, no recovery on resize. Bisected to
+    /// this specific line: disarming during a reconnect is clean, *showing
+    /// this* is what breaks it. Removing a row during the swap is fine;
+    /// inserting one is not.
+    ///
+    /// An overlay floats above the layout instead of joining it, so the pane
+    /// tree never learns it exists. Styled as a floating card rather than a
+    /// full-width bar to read as something covering the panes, which it is.
+    @ViewBuilder private var disarmNotice: some View {
+        if let reason = sessions.disarmNotice {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(alert)
+                Text(reason.message)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Dismiss") { sessions.disarmNotice = nil }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+            }
+            .font(.callout)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(alert.opacity(0.7)))
+                    .shadow(radius: 8, y: 2)
+            )
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .transition(.opacity)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // The banner vanishing is what the user notices when the app
-            // disarms by itself; without this they're left to work out
-            // whether they did it. Sits above the banner slot so it reads as
-            // the thing that replaced it.
-            if let reason = sessions.disarmNotice {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(alert)
-                    Text(reason.message)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 8)
-                    Button("Dismiss") { sessions.disarmNotice = nil }
-                        .buttonStyle(.plain)
-                        .font(.callout.weight(.medium))
-                }
-                .font(.callout)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(alert.opacity(0.12))
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(alert.opacity(0.5)).frame(height: 1)
-                }
-            }
             if tab.broadcastArmed {
                 let counts = sessions.multiExecInclusionCounts
                 // Banner and any in-flight copies share one container so the
@@ -307,6 +327,7 @@ struct TabContentView: View {
                 .background(.bar)
             }
         }
+        .overlay(alignment: .top) { disarmNotice }
     }
 }
 
