@@ -22,6 +22,14 @@ struct WorkspaceSnapshot: Codable, Equatable {
 
     struct TabSnapshot: Codable, Equatable {
         var root: PaneSnapshot
+        /// The saved group this tab came from, so the association survives a
+        /// workspace restore and closing the tab still writes back to it.
+        ///
+        /// Optional on purpose: Swift's synthesized decoder uses
+        /// `decodeIfPresent` for Optionals, so every snapshot written before
+        /// this existed still decodes. A non-optional here would have failed
+        /// the whole restore — the shape of the 0.16 audit's P0.
+        var groupID: UUID?
     }
 
     /// A tab's pane tree, mirroring `PaneNode` but with restore-stable payloads.
@@ -92,7 +100,11 @@ struct RestorePlan: Equatable {
     var selectedTabIndex: Int?
     var wasGridView: Bool = false
 
-    struct TabPlan: Equatable { var root: PanePlan }
+    struct TabPlan: Equatable {
+        var root: PanePlan
+        /// Carried through so a restored group tab stays linked to its group.
+        var groupID: UUID?
+    }
 
     indirect enum PanePlan: Equatable {
         case leaf(RestoreAction)
@@ -120,7 +132,7 @@ extension WorkspaceSnapshot {
         for (index, tab) in tabs.enumerated() {
             guard let root = Self.resolve(tab.root, entryForID) else { continue }
             if index == selectedTabIndex { selected = tabPlans.count }
-            tabPlans.append(RestorePlan.TabPlan(root: root))
+            tabPlans.append(RestorePlan.TabPlan(root: root, groupID: tab.groupID))
         }
         return RestorePlan(tabs: tabPlans, selectedTabIndex: selected, wasGridView: wasGridView)
     }

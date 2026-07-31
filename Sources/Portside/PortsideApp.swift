@@ -64,6 +64,9 @@ struct PortsideApp: App {
                     sessions.onWorkspaceChange = { [weak store] snapshot in
                         store?.saveWorkspace(snapshot)
                     }
+                    sessions.onGroupLayoutChange = { [weak store] id, layout, gridView in
+                        store?.updateLayout(groupID: id, layout: layout, wasGridView: gridView)
+                    }
                     sessions.recordsCommands = store.history.keepCommandHistory
                     sessions.excludesProtectedFromRecording = store.history.excludeProtectedHosts
                     sessions.onCommand = { [weak store] event in

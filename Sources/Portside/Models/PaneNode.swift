@@ -109,6 +109,9 @@ final class Tab: Identifiable, ObservableObject {
     @Published var zoomedPaneID: UUID?
     /// User-set tab name; falls back to the active leaf's title when nil.
     @Published var customTitle: String?
+    /// The saved group this tab was opened from, if any. Set so closing the
+    /// tab can write the arrangement back to that group.
+    var groupID: UUID?
 
     init(session: TerminalSession) {
         root = .leaf(session)

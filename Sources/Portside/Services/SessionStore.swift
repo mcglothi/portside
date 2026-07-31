@@ -7,6 +7,8 @@ import Foundation
 final class SessionStore: ObservableObject {
     @Published private(set) var entries: [SessionEntry] = []
     @Published private(set) var macros: [Macro] = []
+    /// Saved host groups — a named layout that reopens as one tab.
+    @Published private(set) var groups: [SessionGroup] = []
     @Published private(set) var forwards: [PortForward] = []
     /// Most-recent-first connection history for the welcome screen.
     @Published private(set) var recents: [RecentConnection] = []
@@ -39,6 +41,7 @@ final class SessionStore: ObservableObject {
     private struct Document: Codable {
         var entries: [SessionEntry]
         var macros: [Macro]
+        var groups: LenientArray<SessionGroup>?
         var forwards: [PortForward]?
         var recents: [RecentConnection]?
         var explicitFolders: [String]?
@@ -356,6 +359,47 @@ final class SessionStore: ObservableObject {
             macros.append(macro)
         }
         save()
+    }
+
+    // MARK: - Groups
+
+    func upsert(_ group: SessionGroup) {
+        var copy = group
+        copy.updatedAt = Date()
+        if let i = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[i] = copy
+        } else {
+            groups.append(copy)
+        }
+        save()
+    }
+
+    func delete(_ group: SessionGroup) {
+        groups.removeAll { $0.id == group.id }
+        save()
+    }
+
+    func group(id: UUID) -> SessionGroup? { groups.first { $0.id == id } }
+
+    /// Replaces a group's saved arrangement, leaving its name and folder alone.
+    ///
+    /// Called when a group's tab closes, so the group remembers what you left
+    /// rather than what you first saved — decided as silent-with-undo rather
+    /// than an explicit "Update Group" step, to be lived with for a while. No
+    /// group, no write: closing an ordinary tab must not invent one.
+    func updateLayout(groupID: UUID, layout: WorkspaceSnapshot.TabSnapshot, wasGridView: Bool) {
+        guard let i = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        guard groups[i].layout != layout || groups[i].wasGridView != wasGridView else { return }
+        groups[i].layout = layout
+        groups[i].wasGridView = wasGridView
+        groups[i].updatedAt = Date()
+        save()
+    }
+
+    /// Groups whose folder is `folder`, name-sorted for the sidebar.
+    func groups(inFolder folder: String) -> [SessionGroup] {
+        groups.filter { $0.folder == folder }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     func delete(_ macro: Macro) {
@@ -1022,6 +1066,7 @@ final class SessionStore: ObservableObject {
     private func apply(_ doc: Document) {
             entries = doc.entries
             macros = doc.macros
+            groups = doc.groups?.elements ?? []
             forwards = doc.forwards ?? []
             recents = doc.recents ?? []
             explicitFolders = doc.explicitFolders ?? []
@@ -1056,7 +1101,8 @@ final class SessionStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(Document(entries: entries, macros: macros, forwards: forwards,
+            try encoder.encode(Document(entries: entries, macros: macros, groups: LenientArray(groups),
+                                        forwards: forwards,
                                         recents: recents,
                                         explicitFolders: explicitFolders, appearance: appearance,
                                         customThemes: customThemes, defaults: defaults, logging: logging,

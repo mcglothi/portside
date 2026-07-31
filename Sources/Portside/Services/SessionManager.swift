@@ -1509,7 +1509,9 @@ final class SessionManager: ObservableObject {
     /// pile of blank tabs.
     var currentWorkspace: WorkspaceSnapshot {
         let persistable = tabs.compactMap { tab in tab.root.map { (tab, $0) } }
-        let tabSnapshots = persistable.map { WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1)) }
+        let tabSnapshots = persistable.map {
+            WorkspaceSnapshot.TabSnapshot(root: snapshot(of: $0.1), groupID: $0.0.groupID)
+        }
         let selectedIndex = persistable.firstIndex { $0.0.id == selectedTabID }
         return WorkspaceSnapshot(tabs: tabSnapshots, selectedTabIndex: selectedIndex, wasGridView: isGridView)
     }
@@ -1526,6 +1528,69 @@ final class SessionManager: ObservableObject {
                           fractions: fractions)
         }
     }
+
+    // MARK: - Groups
+
+    /// What a group launch actually managed to open.
+    struct GroupLaunchResult: Equatable {
+        var opened: Int
+        var missing: [UUID]
+        var isComplete: Bool { missing.isEmpty }
+    }
+
+    /// Captures the selected tab's arrangement as a named group.
+    ///
+    /// Returns nil for a start page — there's no layout to save, and a group
+    /// that opens nothing is worse than no group.
+    func groupFromSelectedTab(named name: String, folder: String = "") -> SessionGroup? {
+        guard let tab = selectedTab, let root = tab.root else { return nil }
+        return SessionGroup(
+            name: name, folder: folder,
+            layout: WorkspaceSnapshot.TabSnapshot(root: snapshot(of: root)),
+            wasGridView: isGridView
+        )
+    }
+
+    /// Opens a group as one tab, in the arrangement it was saved in.
+    ///
+    /// Reuses the workspace-restore path rather than a second replay: a group
+    /// *is* a saved tab, and that machinery already rebuilds pane trees,
+    /// restores split fractions and membership, and leaves everything
+    /// disarmed. A group inherits that last part deliberately — the grid comes
+    /// back assembled and ready, and arming stays a deliberate act.
+    ///
+    /// A member that's no longer in the library is skipped rather than failing
+    /// the launch: eight hosts where one was deleted should open seven and say
+    /// so, not refuse.
+    @discardableResult
+    func launch(_ group: SessionGroup, entryForID: (UUID) -> SessionEntry?) -> GroupLaunchResult {
+        let missing = group.memberEntryIDs.filter { entryForID($0) == nil }
+        let snapshot = WorkspaceSnapshot(
+            tabs: [group.layout], selectedTabIndex: 0, wasGridView: group.wasGridView
+        )
+        let plan = snapshot.plan(entryForID: entryForID)
+        guard !plan.tabs.isEmpty else { return GroupLaunchResult(opened: 0, missing: missing) }
+        restore(plan)
+        selectedTab?.groupID = group.id
+        return GroupLaunchResult(opened: selectedTab?.leaves.count ?? 0, missing: missing)
+    }
+
+    /// Writes a group's arrangement back when its tab closes.
+    ///
+    /// Silent, with undo, rather than an explicit "Update Group" step — chosen
+    /// to be lived with for a few days rather than argued about. A tab that
+    /// didn't come from a group writes nothing.
+    private func captureGroupLayout(from tab: Tab) {
+        guard let groupID = tab.groupID, let root = tab.root else { return }
+        onGroupLayoutChange?(
+            groupID,
+            WorkspaceSnapshot.TabSnapshot(root: snapshot(of: root), groupID: groupID),
+            isGridView
+        )
+    }
+
+    /// Wired to the store so a closing group tab persists its arrangement.
+    var onGroupLayoutChange: ((UUID, WorkspaceSnapshot.TabSnapshot, Bool) -> Void)?
 
     /// Decides what to do with the last session's snapshot at launch: nothing
     /// (off/empty), restore immediately (auto), or stash a plan for the UI to
@@ -1566,7 +1631,9 @@ final class SessionManager: ObservableObject {
 
     private func buildTab(_ tabPlan: RestorePlan.TabPlan) -> Tab? {
         guard let root = buildNode(tabPlan.root) else { return nil }
-        return Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+        let tab = Tab(root: root, activePaneID: root.leaves.first?.id ?? UUID())
+        tab.groupID = tabPlan.groupID
+        return tab
     }
 
     private func buildNode(_ plan: RestorePlan.PanePlan) -> PaneNode<TerminalSession>? {
@@ -1684,6 +1751,9 @@ final class SessionManager: ObservableObject {
     /// Closes every pane in a tab (the tab-bar close button / menu). A
     /// start-page tab has no panes for the loop to close, so drop it directly.
     func closeTab(_ tab: Tab) {
+        // Before the panes go: a group tab remembers the arrangement you're
+        // leaving, not the one you first saved.
+        captureGroupLayout(from: tab)
         if tab.isStartPage {
             tabs.removeAll { $0.id == tab.id }
             if selectedTabID == tab.id { selectedTabID = tabs.last?.id }
