@@ -273,9 +273,9 @@ boxes are protected together make a very good target-selection document.
 
 | Phase | Depends on | Size | Ships alone? | State |
 |---|---|---|---|---|
-| 1. Host groups | — | S–M | Yes | model, persistence, launch **done**; UI open |
+| 1. Host groups | — | S–M | Yes | **done** (model, persistence, launch, UI) |
 | 2. Portable manifest | — | S | Yes (fixes export) | profiles in exports **done**; library split open |
-| 3. Library location + guard | 2 | M | Yes | not started |
+| 3. Library location + guard | 2 | M | Yes | guard **done**; split still gates the rest |
 | 4. Shared sources | 2, 3 | L | No | not started |
 
 Recommended order: **2 → 1 → 3 → 4.** The manifest fix is small, ships
@@ -284,12 +284,19 @@ they're self-contained and wanted. Location and sharing build on the manifest.
 
 ### What's left in 1 and 2
 
-**Groups — UI only.** The model, persistence, `launch(_:entryForID:)` and the
-write-back on tab close are in, with tests. Deliberately no UI yet: sidebar
-placement, the save flow ("Save Tab as Group…" vs a sidebar multi-select) and
-context-menu wording are the shapeable parts and want eyes on them. Worth
-deciding at the same time: how a partial launch reports itself ("Opened 6 of
-8 — web-07 and web-08 are no longer in your library").
+**Groups — done.** Model, persistence, launch, write-back on close, and the
+UI: groups sit in their folder above the hosts with a grid glyph and pane
+count, double-click opens, the context menu offers open/rename/delete, and
+File ▸ Save Tab as Group… captures the selected tab. A partial launch says so
+rather than opening quietly smaller.
+
+One thing surfaced and *not* fixed: split proportions are never applied when
+a layout is rendered. `PaneNodeView` discards the fractions, and HSplitView
+sizes by its own rules — so a restored group (or a restored workspace) reopens
+with the splitter's proportions, not the ones you left. The model records and
+round-trips them faithfully; nothing consumes them. Fixing it means driving
+widths explicitly or replacing the split containers, which is a real change to
+the pane tree and wants doing on its own.
 
 **Manifest — the library split.** Exports now carry credential profile
 definitions, which was the live defect. The portable/machine-local split
@@ -297,10 +304,15 @@ described above is untouched, and it is what gates phase 3: `workspace`,
 `recents`, `connectionStats`, appearance and terminal settings should not
 travel, and today they all sit in the same file.
 
-One piece of that arrived early and by accident: `PORTSIDE_LIBRARY_DIR`
-already redirects the whole library, so the plumbing for "the library lives
-somewhere you choose" exists. What's missing is the split and the stale-read
-guard.
+Two pieces of phase 3 arrived early. `PORTSIDE_LIBRARY_DIR` already redirects
+the whole library, and the **stale-read guard is now in**: a save is refused
+when the file changed on disk since it was read, with reload and overwrite
+both offered. So pointing the library at a synced folder is already safe from
+silent clobbering.
+
+What's left for phase 3 is the split itself — until `workspace`, `recents`,
+`connectionStats`, appearance and terminal settings stop travelling with the
+portable data, "put the library in Dropbox" also syncs your open tabs.
 
 ## Explicitly deferred
 
