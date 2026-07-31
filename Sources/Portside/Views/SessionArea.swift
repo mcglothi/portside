@@ -139,6 +139,29 @@ struct TabContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The banner vanishing is what the user notices when the app
+            // disarms by itself; without this they're left to work out
+            // whether they did it. Sits above the banner slot so it reads as
+            // the thing that replaced it.
+            if let reason = sessions.disarmNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(alert)
+                    Text(reason.message)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Dismiss") { sessions.disarmNotice = nil }
+                        .buttonStyle(.plain)
+                        .font(.callout.weight(.medium))
+                }
+                .font(.callout)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(alert.opacity(0.12))
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(alert.opacity(0.5)).frame(height: 1)
+                }
+            }
             if tab.broadcastArmed {
                 let counts = sessions.multiExecInclusionCounts
                 // Banner and any in-flight copies share one container so the

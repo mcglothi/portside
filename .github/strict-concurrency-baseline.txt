@@ -3,7 +3,7 @@ Sources/Portside/Services/RemoteFileEditor.swift 4
 Sources/Portside/Services/RemoteRelayCoordinator.swift 19
 Sources/Portside/Services/SerialPort.swift 2
 Sources/Portside/Services/SessionLogger.swift 2
-Sources/Portside/Services/SessionManager.swift 110
+Sources/Portside/Services/SessionManager.swift 115
 Sources/Portside/Services/SessionStore.swift 1
 Sources/Portside/Services/SFTPClient.swift 1
 Sources/Portside/Services/TelnetPort.swift 3

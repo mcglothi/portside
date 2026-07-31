@@ -283,6 +283,33 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         selectionAutoScroll = nil
     }
 
+    /// Consulted before a paste reaches the pty; returning false drops it.
+    /// Set by `SessionManager` for panes that can broadcast.
+    var shouldAllowPaste: ((String) -> Bool)?
+
+    /// The one input path where confirmation is worth the friction.
+    ///
+    /// Overriding here rather than filtering bytes in `send` catches ⌘V and
+    /// the context-menu item together (both dispatch to this responder
+    /// action), and — the reason it has to be here — intercepts *before* the
+    /// local pane receives anything. Vetoing further down would already have
+    /// written to the focused pty, leaving the confirmation deciding only
+    /// whether the other eleven hosts join in.
+    /// Signature matches SwiftTerm's `open func paste(_ sender: Any)` exactly,
+    /// not `NSResponder`'s `Any?`. Both carry the `paste:` selector, so the
+    /// looser one compiles and looks like it works while overriding the wrong
+    /// method — leaving ⌘V dispatching straight to SwiftTerm's implementation
+    /// with the gate never consulted.
+    override func paste(_ sender: Any) {
+        if let shouldAllowPaste,
+           let text = NSPasteboard.general.string(forType: .string),
+           !text.isEmpty,
+           !shouldAllowPaste(text) {
+            return
+        }
+        super.paste(sender)
+    }
+
     // MARK: Right-click Copy/Paste
 
     /// SwiftTerm implements the standard `copy(_:)`/`paste(_:)` responder
@@ -754,6 +781,10 @@ final class SessionManager: ObservableObject {
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
     /// presents a prompt while this is non-nil.
     @Published var pendingRestore: RestorePlan?
+    /// Set when the app took an armed broadcast down by itself. The banner
+    /// vanishing is what the user notices; this is what tells them why, and
+    /// the UI clears it once shown.
+    @Published var disarmNotice: MultiExecDisarmReason?
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
@@ -782,8 +813,10 @@ final class SessionManager: ObservableObject {
     private var isRestoring = false
     /// Per-session subscriptions to MultiExec-membership changes.
     private var membershipObservers: [UUID: AnyCancellable] = [:]
+    private var wakeObserver: NSObjectProtocol?
 
     init() {
+        observeSystemWake()
         LoggingTerminalView.installSelectionAutoScrollMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -1107,6 +1140,13 @@ final class SessionManager: ObservableObject {
     /// dropped host or reopening a local shell without disturbing the layout.
     func reconnect(_ session: TerminalSession) {
         guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
+        // Before anything else: a pane coming back is not the pane that was
+        // armed. The replacement is a fresh shell — possibly at a login
+        // prompt, in a different directory, or on a different machine if DNS
+        // or a jump host moved. Membership carries over so the group is intact
+        // when the user re-arms, but the arming itself does not.
+        disarm(tab, reason: .paneReconnected(host: session.entry?.name ?? session.title))
+
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)
         replacement.includedInMultiExec = session.includedInMultiExec
@@ -1191,6 +1231,41 @@ final class SessionManager: ObservableObject {
     /// Keyboard equivalent of the MultiExec toolbar toggle (⇧⌘M).
     func toggleMultiExec() {
         setMultiExecArmed(!(selectedTab?.broadcastArmed ?? false))
+    }
+
+    /// Takes an armed broadcast down because the world changed underneath it,
+    /// and records why so the UI can say so.
+    ///
+    /// Arming asserts "these panes are in a state I've checked, and I want one
+    /// command to reach all of them". Anything that invalidates the *checked*
+    /// half invalidates the arming — and the safe direction is unmistakable,
+    /// since re-arming costs one keystroke and a mistaken broadcast can't be
+    /// taken back.
+    private func disarm(_ tab: Tab, reason: MultiExecDisarmReason) {
+        guard tab.broadcastArmed else { return }
+        objectWillChange.send()
+        tab.broadcastArmed = false
+        disarmNotice = reason
+        notifyWorkspaceChanged()
+    }
+
+    /// Every armed tab, for events that invalidate all of them at once.
+    private func disarmAll(reason: MultiExecDisarmReason) {
+        for tab in tabs where tab.broadcastArmed { disarm(tab, reason: reason) }
+    }
+
+    /// Sleep is the one event that invalidates every assumption at once: the
+    /// connections may have dropped and silently come back, the hosts may have
+    /// been rebooted, and an arbitrary amount of time passed with nobody
+    /// watching. Waking to a still-armed grid, with no memory of arming it in
+    /// this sitting, is the shape of the accident MultiExec's guardrails exist
+    /// to prevent.
+    private func observeSystemWake() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.disarmAll(reason: .systemWoke) }
+        }
     }
 
     /// Keyboard equivalent of the Grid View toolbar toggle (⇧⌘G).
@@ -1650,6 +1725,83 @@ final class SessionManager: ObservableObject {
         tab.leaves.filter { $0.includedInMultiExec && $0.isRunning }
     }
 
+    /// Gate for a paste about to fan out across an armed broadcast.
+    ///
+    /// Returns true for anything that isn't broadcasting, and for the ordinary
+    /// single-command paste — see `BroadcastPasteReview` for why nagging on
+    /// those would cost more than it saves.
+    private func confirmPasteIfNeeded(_ text: String, from focused: TerminalSession) -> Bool {
+        guard let tab = tabs.first(where: { $0.contains(focused.id) }),
+              tab.broadcastArmed, focused.includedInMultiExec else { return true }
+        let targets = broadcastTargets(in: tab)
+        switch BroadcastPasteReview.review(text: text, targetCount: targets.count) {
+        case .send:
+            return true
+        case .confirm(let lineCount, let characterCount):
+            return presentPasteConfirmation(
+                text: text, lineCount: lineCount, characterCount: characterCount, targets: targets
+            )
+        }
+    }
+
+    /// Names every host that would receive the paste, because "12 panes" is
+    /// not something anyone can check and a host list is.
+    private func presentPasteConfirmation(
+        text: String, lineCount: Int, characterCount: Int, targets: [TerminalSession]
+    ) -> Bool {
+        // `paste(_:)` is a responder action, so this is genuinely the main
+        // thread — the same assertion PortsideApp makes for its termination
+        // work, and the reason NSAlert can be driven synchronously here.
+        MainActor.assumeIsolated {
+            Self.presentPasteConfirmationOnMain(
+                text: text, lineCount: lineCount, characterCount: characterCount, targets: targets
+            )
+        }
+    }
+
+    @MainActor
+    private static func presentPasteConfirmationOnMain(
+        text: String, lineCount: Int, characterCount: Int, targets: [TerminalSession]
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = lineCount > 1
+            ? "Run \(lineCount) commands on \(targets.count) hosts?"
+            : "Paste \(characterCount) characters to \(targets.count) hosts?"
+
+        let hosts = targets.map { $0.entry?.name ?? $0.title }
+        // A long grid would push the buttons off-screen; the count carries the
+        // rest, and the panes themselves are on screen behind the alert.
+        let shownHosts = hosts.prefix(12)
+        var detail = shownHosts.joined(separator: ", ")
+        if hosts.count > shownHosts.count {
+            detail += " and \(hosts.count - shownHosts.count) more"
+        }
+        alert.informativeText = "This runs on: \(detail).\n\n\(previewLines(of: text))"
+
+        alert.addButton(withTitle: "Run on \(targets.count) Hosts")
+        alert.addButton(withTitle: "Cancel")
+        // Enter is the first button by default; a confirmation for something
+        // irreversible should not be dismissible by the reflex that got here.
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The first few lines of what's about to run, so the confirmation shows
+    /// the actual commands rather than asking the user to trust their memory
+    /// of what they copied.
+    private static func previewLines(of text: String, limit: Int = 6) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let shown = lines.prefix(limit).map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.count > 80 ? String(trimmed.prefix(80)) + "…" : trimmed
+        }
+        var preview = shown.joined(separator: "\n")
+        if lines.count > limit { preview += "\n… and \(lines.count - limit) more lines" }
+        return preview
+    }
+
     /// Sends a full command line to the armed tab's included panes (command bar).
     func broadcast(_ command: String) {
         guard !command.isEmpty, let tab = selectedTab, tab.broadcastArmed else { return }
@@ -1683,6 +1835,10 @@ final class SessionManager: ObservableObject {
         session.terminalView.onOutput = { [weak self, weak session] in
             guard let self, let session else { return }
             self.markActivity(for: session)
+        }
+        session.terminalView.shouldAllowPaste = { [weak self, weak session] text in
+            guard let self, let session else { return true }
+            return self.confirmPasteIfNeeded(text, from: session)
         }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
