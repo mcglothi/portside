@@ -82,6 +82,38 @@ final class SessionStore: ObservableObject {
     /// is rewritten once loading has finished, never during.
     private var needsLegacyHistoryCleanup = false
 
+    /// State that belongs to *this Mac*, not to the infrastructure the library
+    /// describes.
+    ///
+    /// The library is the thing worth backing up, sharing and putting in a
+    /// synced folder. These fields would actively misbehave there: a second Mac
+    /// restoring the first one's open tabs, a laptop adopting a desktop's font
+    /// size and Metal setting, a log directory that doesn't exist on the other
+    /// machine. Third file for a third lifetime, on the same reasoning that
+    /// moved history out — churn-heavy, machine-shaped, nobody's idea of
+    /// shareable.
+    ///
+    /// Every field optional and defaulted: this file is *disposable*. Losing it
+    /// costs you a window layout and a font size, so a decode failure falls
+    /// back to defaults rather than blocking anything, which is the opposite of
+    /// how the library is treated.
+    private struct LocalDocument: Codable {
+        var workspace: WorkspaceSnapshot?
+        var appearance: TerminalAppearance?
+        var customThemes: [TerminalTheme]?
+        var terminal: TerminalSettings?
+        var logging: LoggingSettings?
+        var recents: [RecentConnection]?
+    }
+
+    private var localFileURL: URL {
+        fileURL.deletingPathExtension().appendingPathExtension("local.json")
+    }
+
+    /// Set when local state was migrated out of the library mid-load; the
+    /// library is rewritten once loading has finished, never during.
+    private var needsLegacyLocalCleanup = false
+
     private struct HistoryDocument: Codable {
         var connectionStats: [ConnectionStat]?
         var connectionLog: [ConnectionLogEntry]?
@@ -478,7 +510,7 @@ final class SessionStore: ObservableObject {
             entryID: entry.id, at: now, into: connectionStats
         )
         scheduleHistorySave()
-        save()   // recents still live in the library
+        saveLocal()   // recents are this Mac's jump-back-in list
     }
 
     func updateHistorySettings(_ settings: HistorySettings) {
@@ -507,7 +539,7 @@ final class SessionStore: ObservableObject {
         commandHistory = []
         recents = []
         flushHistory()
-        save()
+        saveLocal()
     }
 
     /// Records a command the shell reported. Honours the same protected-host
@@ -516,6 +548,67 @@ final class SessionStore: ObservableObject {
     /// Reads the history file, falling back to whatever the library still
     /// carries from before history moved out — then writes the sidecar and
     /// leaves the library to drop the old keys on its next save.
+    /// Reads the local sidecar, falling back to whatever the library still
+    /// carries from before local state moved out.
+    ///
+    /// Deliberately gentler than the library's load. An unreadable local file
+    /// is preserved and then ignored: it holds a window layout and a font
+    /// size, so refusing to start — or refusing to save — over it would cost
+    /// far more than it protects. The library gets quarantined; this gets a
+    /// shrug and a log line.
+    private func loadLocal(migratingFrom doc: Document?) {
+        if let data = try? Data(contentsOf: localFileURL) {
+            do {
+                let local = try JSONDecoder().decode(LocalDocument.self, from: data)
+                workspace = local.workspace ?? WorkspaceSnapshot()
+                appearance = local.appearance ?? .default
+                customThemes = local.customThemes ?? []
+                terminal = local.terminal ?? TerminalSettings()
+                logging = local.logging ?? LoggingSettings()
+                recents = local.recents ?? []
+                return
+            } catch {
+                let backup = localFileURL.deletingPathExtension()
+                    .appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                try? data.write(to: backup, options: .atomic)
+                NSLog("Portside: local state at \(localFileURL.path) could not be read — preserved at \(backup.path)")
+            }
+        }
+        // No sidecar (or an unreadable one): take what the library has. On a
+        // first upgrade that is the real state; on a fresh library it is
+        // defaults, which is also right.
+        workspace = doc?.workspace ?? WorkspaceSnapshot()
+        appearance = doc?.appearance ?? .default
+        customThemes = doc?.customThemes ?? []
+        terminal = doc?.terminal ?? TerminalSettings()
+        logging = doc?.logging ?? LoggingSettings()
+        recents = doc?.recents ?? []
+
+        let hadLegacyLocal = doc?.workspace != nil || doc?.appearance != nil
+            || doc?.customThemes != nil || doc?.terminal != nil
+            || doc?.logging != nil || doc?.recents != nil
+        if hadLegacyLocal {
+            // Sidecar first, library second. If anything fails between them the
+            // library still holds the originals, so the worst case is that the
+            // migration runs again — never that the state is gone from both.
+            saveLocal()
+            needsLegacyLocalCleanup = true
+        }
+    }
+
+    private func saveLocal() {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(LocalDocument(
+                workspace: workspace, appearance: appearance, customThemes: customThemes,
+                terminal: terminal, logging: logging, recents: recents
+            )).write(to: localFileURL, options: .atomic)
+        } catch {
+            NSLog("Portside: could not save local state — \(error)")
+        }
+    }
+
     private func loadHistory(migratingFrom doc: Document) {
         if let data = try? Data(contentsOf: historyFileURL) {
             do {
@@ -686,7 +779,7 @@ final class SessionStore: ObservableObject {
 
     func updateAppearance(_ appearance: TerminalAppearance) {
         self.appearance = appearance
-        save()
+        saveLocal()
     }
 
     /// Adds (or replaces by name) an imported theme and returns the stored
@@ -700,7 +793,7 @@ final class SessionStore: ObservableObject {
         }
         customThemes.removeAll { $0.name == theme.name }
         customThemes.append(theme)
-        save()
+        saveLocal()
         return theme
     }
 
@@ -711,12 +804,12 @@ final class SessionStore: ObservableObject {
 
     func updateLogging(_ logging: LoggingSettings) {
         self.logging = logging
-        save()
+        saveLocal()
     }
 
     func updateTerminal(_ terminal: TerminalSettings) {
         self.terminal = terminal
-        save()
+        saveLocal()
     }
 
     func updateKeyBindings(_ keyBindings: KeyBindings) {
@@ -726,10 +819,15 @@ final class SessionStore: ObservableObject {
 
     /// Records the open session layout for restore-on-launch. No-op when the
     /// snapshot is unchanged so churning tabs don't rewrite disk needlessly.
+    ///
+    /// Writes the local sidecar, not the library. This is the change the split
+    /// exists for: every tab opened, closed, split or selected used to rewrite
+    /// the entire host library — every host, folder, macro, group and profile —
+    /// to record which tabs were open.
     func saveWorkspace(_ snapshot: WorkspaceSnapshot) {
         guard snapshot != workspace else { return }
         workspace = snapshot
-        save()
+        saveLocal()
     }
 
     /// All sessions in a folder and its subfolders, resolved and sorted by name.
@@ -1035,9 +1133,16 @@ final class SessionStore: ObservableObject {
                 // the top, destroying a library that a schema bug, a bad hand
                 // edit, or a newer build might otherwise have recovered.
                 quarantine(existingData, error: error)
+                // The library is unreadable; the local sidecar probably isn't,
+                // and a broken host list is no reason to lose the window
+                // layout and font size too.
+                loadLocal(migratingFrom: nil)
                 return
             }
         }
+        // No library yet — a first run, or a library still to be created.
+        // The sidecar stands on its own and may already exist.
+        loadLocal(migratingFrom: nil)
         loadFresh()
         if seedsFromSSHConfig { migrateLegacyDefault() }
     }
@@ -1071,19 +1176,22 @@ final class SessionStore: ObservableObject {
             forwards = doc.forwards ?? []
             recents = doc.recents ?? []
             explicitFolders = doc.explicitFolders ?? []
-            appearance = doc.appearance ?? .default
-            customThemes = doc.customThemes ?? []
             defaults = doc.defaults ?? ConnectionDefaults()
-            logging = doc.logging ?? LoggingSettings()
-            terminal = doc.terminal ?? TerminalSettings()
             history = doc.history ?? HistorySettings()
+            // Local before history, deliberately: `recents` lives in the
+            // local sidecar now, and history seeds the aggregate stats from it
+            // on upgrade. The other order silently seeded from an empty list.
+            loadLocal(migratingFrom: doc)
             loadHistory(migratingFrom: doc)
-            workspace = doc.workspace ?? WorkspaceSnapshot()
             keyBindings = doc.keyBindings ?? KeyBindings()
             credentialProfiles = doc.credentialProfiles ?? []
             defaultProfileID = doc.defaultProfileID
-            if needsLegacyHistoryCleanup {
+            // Both cleanups rewrite the library, and only after everything
+            // above has been read out of the document — rewriting mid-load
+            // would persist the fields not yet applied as their empty defaults.
+            if needsLegacyHistoryCleanup || needsLegacyLocalCleanup {
                 needsLegacyHistoryCleanup = false
+                needsLegacyLocalCleanup = false
                 save()
             }
     }
@@ -1137,14 +1245,19 @@ final class SessionStore: ObservableObject {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // Local state and history are deliberately nil here. They still
+            // exist on `Document` so a library written before the split can be
+            // read and migrated, but writing them back would put the file
+            // straight back to mixing three lifetimes — and would undo the
+            // migration on the next save.
             try encoder.encode(Document(entries: entries, macros: macros, groups: LenientArray(groups),
                                         forwards: forwards,
-                                        recents: recents,
-                                        explicitFolders: explicitFolders, appearance: appearance,
-                                        customThemes: customThemes, defaults: defaults, logging: logging,
-                                        terminal: terminal, workspace: workspace, keyBindings: keyBindings,
+                                        recents: nil,
+                                        explicitFolders: explicitFolders, appearance: nil,
+                                        customThemes: nil, defaults: defaults, logging: nil,
+                                        terminal: nil, workspace: nil, keyBindings: keyBindings,
                                         credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID,
-                                        connectionStats: connectionStats, connectionLog: connectionLog,
+                                        connectionStats: nil, connectionLog: nil,
                                         history: history))
                 .write(to: fileURL, options: .atomic)
             // Our own write moved the date on; adopt it so the next save

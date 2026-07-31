@@ -274,8 +274,8 @@ boxes are protected together make a very good target-selection document.
 | Phase | Depends on | Size | Ships alone? | State |
 |---|---|---|---|---|
 | 1. Host groups | — | S–M | Yes | **done** (model, persistence, launch, UI) |
-| 2. Portable manifest | — | S | Yes (fixes export) | profiles in exports **done**; library split open |
-| 3. Library location + guard | 2 | M | Yes | guard **done**; split still gates the rest |
+| 2. Portable manifest | — | S | Yes (fixes export) | **done** (profiles in exports, library split) |
+| 3. Library location + guard | 2 | M | Yes | **done** (override, guard, split) |
 | 4. Shared sources | 2, 3 | L | No | not started |
 
 Recommended order: **2 → 1 → 3 → 4.** The manifest fix is small, ships
@@ -298,11 +298,16 @@ round-trips them faithfully; nothing consumes them. Fixing it means driving
 widths explicitly or replacing the split containers, which is a real change to
 the pane tree and wants doing on its own.
 
-**Manifest — the library split.** Exports now carry credential profile
-definitions, which was the live defect. The portable/machine-local split
-described above is untouched, and it is what gates phase 3: `workspace`,
-`recents`, `connectionStats`, appearance and terminal settings should not
-travel, and today they all sit in the same file.
+**Manifest — done.** Exports carry credential profile definitions, and the
+split has landed: `workspace`, `recents`, appearance, custom themes, terminal
+and logging settings now live in `portside.local.json`, migrated out of the
+library on first load. The library is what you'd back up, share or sync; the
+sidecar is this Mac's window and font size, and is disposable.
+
+Left in the library on purpose: `defaults`, `keyBindings` and the history
+*settings*. Those are preferences rather than machine state — a second Mac
+wanting your default SSH user and your key bindings is the likely case, not
+the surprising one. Easy to move later if that turns out backwards.
 
 Two pieces of phase 3 arrived early. `PORTSIDE_LIBRARY_DIR` already redirects
 the whole library, and the **stale-read guard is now in**: a save is refused

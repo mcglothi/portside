@@ -57,6 +57,11 @@ final class UpgradeRehearsalTests: XCTestCase {
         XCTAssertEqual(upgraded.connectionStats.count, count("recents"),
                        "every remembered host should carry into the ranking")
 
+        XCTAssertEqual(upgraded.terminal.scrollbackLines,
+                       (before["terminal"] as? [String: Any])?["scrollbackLines"] as? Int
+                           ?? TerminalSettings().scrollbackLines,
+                       "terminal settings lost in the local split")
+
         // Second launch: nothing may drift on a plain reload.
         let reloaded = SessionStore(fileURL: copy)
         XCTAssertEqual(reloaded.entries.count, upgraded.entries.count)
@@ -64,5 +69,27 @@ final class UpgradeRehearsalTests: XCTestCase {
         XCTAssertEqual(reloaded.defaultProfileID, upgraded.defaultProfileID)
         XCTAssertEqual(reloaded.connectionStats.count, upgraded.connectionStats.count,
                        "seeding must not run twice")
+
+        // The local split, on a real file. Everything machine-shaped has to
+        // survive the move and then stay put — a migration that re-runs on
+        // every launch would keep rewriting the library it was meant to leave
+        // alone.
+        XCTAssertEqual(reloaded.workspace, upgraded.workspace, "workspace drifted after the split")
+        XCTAssertEqual(reloaded.recents.count, upgraded.recents.count, "recents drifted")
+        XCTAssertEqual(reloaded.customThemes.count, upgraded.customThemes.count, "themes drifted")
+        XCTAssertEqual(reloaded.terminal, upgraded.terminal, "terminal settings drifted")
+        XCTAssertEqual(reloaded.appearance, upgraded.appearance, "appearance drifted")
+
+        let localURL = copy.deletingPathExtension().appendingPathExtension("local.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: localURL.path),
+                      "local state should have its own file after the upgrade")
+
+        let library = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: copy)) as? [String: Any] ?? [:]
+        for moved in ["workspace", "recents", "appearance", "customThemes", "terminal", "logging"] {
+            XCTAssertNil(library[moved],
+                         "\(moved) should no longer be written into the library")
+        }
+        XCTAssertNotNil(library["entries"], "the hosts must obviously stay")
     }
 }
