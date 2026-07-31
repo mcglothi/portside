@@ -1140,12 +1140,25 @@ final class SessionManager: ObservableObject {
     /// dropped host or reopening a local shell without disturbing the layout.
     func reconnect(_ session: TerminalSession) {
         guard let tab = tabs.first(where: { $0.contains(session.id) }), let root = tab.root else { return }
-        // Before anything else: a pane coming back is not the pane that was
-        // armed. The replacement is a fresh shell — possibly at a login
-        // prompt, in a different directory, or on a different machine if DNS
-        // or a jump host moved. Membership carries over so the group is intact
-        // when the user re-arms, but the arming itself does not.
-        disarm(tab, reason: .paneReconnected(host: session.entry?.name ?? session.title))
+        // Deliberately does NOT disarm, though it should — a pane coming back
+        // is a fresh shell, possibly at a login prompt, in a different
+        // directory, or on a different machine if DNS or a jump host moved, so
+        // the arming that covered the old one does not cover it.
+        //
+        // Disarming here was written and pulled back out. It corrupts the
+        // window whenever the reconnect happens while armed: sidebar draws over
+        // the toolbar, tab bar and banner vanish, panes go blank, and a forced
+        // relayout doesn't recover it. Bisected against ef67a4d — unarmed
+        // reconnect is clean on both builds, armed reconnect is clean before
+        // the disarm and broken after, so it is the disarm and not the
+        // reconnect. Deferring it a runloop turn does not help.
+        //
+        // Prime suspect is teardown rather than the disarm itself: `SessionArea`
+        // renders `WelcomeView` when there are no sessions and `TabContentView`
+        // when there's a selected tab, with no branch for "sessions exist but
+        // selectedTab is nil" — which is reachable while a tab is being torn
+        // down, and would leave exactly these stale views on screen. Fix that
+        // hole first, then re-land this with a test.
 
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)

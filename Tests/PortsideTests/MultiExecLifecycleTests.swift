@@ -82,18 +82,12 @@ final class MultiExecLifecycleTests: XCTestCase {
         // The banner vanishing is the signal that something changed; it's only
         // useful if followed by what. A reason that can't say why it disarmed
         // isn't a good enough reason to disarm.
-        let reasons: [MultiExecDisarmReason] = [.paneReconnected(host: "web-03"), .systemWoke]
+        let reasons: [MultiExecDisarmReason] = [.systemWoke]
         for reason in reasons {
             XCTAssertTrue(reason.message.contains("MultiExec disarmed"),
                           "\(reason) must name what happened")
             XCTAssertGreaterThan(reason.message.count, 40,
                                  "\(reason) must say why, not just that")
         }
-    }
-
-    func testTheReconnectReasonNamesTheHostThatCameBack() {
-        // With twelve panes, "a pane reconnected" is not actionable.
-        let message = MultiExecDisarmReason.paneReconnected(host: "web-03").message
-        XCTAssertTrue(message.contains("web-03"))
     }
 }

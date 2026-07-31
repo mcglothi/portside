@@ -6,20 +6,18 @@ import Foundation
 /// reason good enough to state plainly — the banner disappearing is the signal
 /// that something changed, and it has to be followed by *what*. Anything that
 /// can't fill in this sentence isn't a good enough reason to disarm.
+/// There is deliberately no `paneReconnected` case yet. Disarming on reconnect
+/// is the sharpest of these rules and was written first, but it corrupts the
+/// window during tab teardown — see the note in `SessionManager.reconnect`.
+/// Adding the case back without the wiring would advertise a guarantee the app
+/// doesn't make.
 enum MultiExecDisarmReason: Equatable {
-    /// A pane's session was relaunched. The replacement is a fresh shell that
-    /// may be at a login prompt, in a different directory, or — if DNS or a
-    /// jump host moved underneath it — on a different machine entirely.
-    case paneReconnected(host: String)
     /// The machine slept. Everything on the other side of every connection had
     /// an unbounded amount of time to change while nobody was watching.
     case systemWoke
 
     var message: String {
         switch self {
-        case .paneReconnected(let host):
-            return "MultiExec disarmed — \(host) reconnected. Its shell is fresh, "
-                 + "so the group is no longer in a known matching state."
         case .systemWoke:
             return "MultiExec disarmed — the Mac slept. Re-arm once you've "
                  + "confirmed the sessions are still where you left them."
