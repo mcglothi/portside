@@ -770,6 +770,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     }
 }
 
+@MainActor
 final class SessionManager: ObservableObject {
     /// Source of truth: each open tab owns a pane tree of live sessions. Today
     /// every tab is a single leaf; splitting (0.9) grows the trees.
@@ -815,6 +816,7 @@ final class SessionManager: ObservableObject {
     /// Per-session subscriptions to MultiExec-membership changes.
     private var membershipObservers: [UUID: AnyCancellable] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
     private var networkMonitor: NWPathMonitor?
     /// Interfaces seen on the last network path; nil until the first callback.
     private var lastNetworkInterfaces: Set<String>?
@@ -822,6 +824,7 @@ final class SessionManager: ObservableObject {
     init() {
         observeSystemWake()
         observeNetworkChanges()
+        observeTerminationForGroups()
         LoggingTerminalView.installSelectionAutoScrollMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -896,6 +899,9 @@ final class SessionManager: ObservableObject {
         // next wake.
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
         }
         networkMonitor?.cancel()
     }
@@ -1290,6 +1296,17 @@ final class SessionManager: ObservableObject {
     /// watching. Waking to a still-armed grid, with no memory of arming it in
     /// this sitting, is the shape of the accident MultiExec's guardrails exist
     /// to prevent.
+    /// Group tabs write their arrangement back at quit as well as at close.
+    /// Without this the silent-update rule quietly didn't apply to the most
+    /// common way of finishing with a tab: leaving it open and quitting.
+    private func observeTerminationForGroups() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.captureAllGroupLayouts() }
+        }
+    }
+
     private func observeSystemWake() {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -1597,6 +1614,22 @@ final class SessionManager: ObservableObject {
 
     /// Wired to the store so a closing group tab persists its arrangement.
     var onGroupLayoutChange: ((UUID, WorkspaceSnapshot.TabSnapshot, Bool) -> Void)?
+
+    /// Writes a group tab's arrangement back now rather than at close.
+    ///
+    /// The silent-on-close rule covers the ordinary path, but it only fires on
+    /// `closeTab` — quitting with the tab still open never wrote anything back,
+    /// so a rearranged grid was silently discarded by the one action people take
+    /// most. This is both the explicit "Update" command and what termination
+    /// calls.
+    func captureGroupLayoutIfLinked(_ tab: Tab) {
+        captureGroupLayout(from: tab)
+    }
+
+    /// Every open group tab, at quit.
+    private func captureAllGroupLayouts() {
+        for tab in tabs where tab.groupID != nil { captureGroupLayout(from: tab) }
+    }
 
     /// Decides what to do with the last session's snapshot at launch: nothing
     /// (off/empty), restore immediately (auto), or stash a plan for the UI to

@@ -145,7 +145,10 @@ struct SidebarView: View {
             onShowCoverage: { showingCoverage = true },
             onShowHistory: { showingHistory = true },
             onSaveTabAsGroup: {
-                newGroupName = sessions.selectedTab?.activeLeaf?.title ?? ""
+                let tab = sessions.selectedTab
+                newGroupName = tab?.customTitle
+                    ?? tab?.groupID.flatMap { store.group(id: $0)?.name }
+                    ?? tab?.activeLeaf?.title ?? ""
                 savingGroup = true
             }
         ))

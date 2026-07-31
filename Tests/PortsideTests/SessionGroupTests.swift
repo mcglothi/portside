@@ -222,3 +222,90 @@ final class SessionGroupTests: XCTestCase {
         XCTAssertNil(manager.groupFromSelectedTab(named: "Nothing"))
     }
 }
+
+/// Saving and updating a group from the tab, rather than only the File menu.
+@MainActor
+final class GroupSaveFromTabTests: XCTestCase {
+    private var tempURL: URL!
+
+    override func setUp() {
+        super.setUp()
+        tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-gsave-\(UUID().uuidString).json")
+    }
+
+    override func tearDown() {
+        for suffix in ["", ".local", ".history"] {
+            let u = suffix.isEmpty ? tempURL!
+                : tempURL.deletingPathExtension().appendingPathExtension("\(suffix.dropFirst()).json")
+            try? FileManager.default.removeItem(at: u)
+        }
+        super.tearDown()
+    }
+
+    /// A manager wired to a store the way the app wires them.
+    private func wired(_ store: SessionStore) -> SessionManager {
+        let manager = SessionManager()
+        manager.onGroupLayoutChange = { [weak store] id, layout, grid in
+            store?.updateLayout(groupID: id, layout: layout, wasGridView: grid)
+        }
+        return manager
+    }
+
+    func testUpdatingWritesTheCurrentArrangementBackWithoutClosing() throws {
+        // You shouldn't have to close a tab to checkpoint it.
+        let store = SessionStore(fileURL: tempURL)
+        let manager = wired(store)
+        defer { for s in manager.sessions { s.shutdown() } }
+
+        manager.openLocalShell()
+        let group = try XCTUnwrap(manager.groupFromSelectedTab(named: "Splunk"))
+        store.upsert(group)
+        manager.selectedTab?.groupID = group.id
+        XCTAssertEqual(store.group(id: group.id)?.paneCount, 1)
+
+        manager.splitActivePane(.horizontal)          // rearrange
+        manager.captureGroupLayoutIfLinked(try XCTUnwrap(manager.selectedTab))
+
+        XCTAssertEqual(store.group(id: group.id)?.paneCount, 2,
+                       "the new arrangement should be saved without closing the tab")
+    }
+
+    func testUpdatingATabWithNoGroupWritesNothing() throws {
+        let store = SessionStore(fileURL: tempURL)
+        let manager = wired(store)
+        defer { for s in manager.sessions { s.shutdown() } }
+        manager.openLocalShell()
+
+        manager.captureGroupLayoutIfLinked(try XCTUnwrap(manager.selectedTab))
+
+        XCTAssertTrue(store.groups.isEmpty, "an ordinary tab must not invent a group")
+    }
+
+    func testSavingAsANewGroupFromALinkedTabRelinksToTheNewOne() throws {
+        // Forking: "Save as New Group…" from a tab that's already a group. The
+        // tab should now belong to the new one, or the next close would write
+        // this layout back over the original.
+        let store = SessionStore(fileURL: tempURL)
+        let manager = wired(store)
+        defer { for s in manager.sessions { s.shutdown() } }
+
+        manager.openLocalShell()
+        let first = try XCTUnwrap(manager.groupFromSelectedTab(named: "Splunk"))
+        store.upsert(first)
+        manager.selectedTab?.groupID = first.id
+
+        let second = try XCTUnwrap(manager.groupFromSelectedTab(named: "Splunk copy"))
+        store.upsert(second)
+        manager.selectedTab?.groupID = second.id
+
+        XCTAssertEqual(store.groups.count, 2)
+        XCTAssertEqual(manager.selectedTab?.groupID, second.id)
+
+        manager.splitActivePane(.horizontal)
+        manager.captureGroupLayoutIfLinked(try XCTUnwrap(manager.selectedTab))
+
+        XCTAssertEqual(store.group(id: second.id)?.paneCount, 2, "the fork took the change")
+        XCTAssertEqual(store.group(id: first.id)?.paneCount, 1, "the original is untouched")
+    }
+}

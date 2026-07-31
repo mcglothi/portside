@@ -106,6 +106,7 @@ private struct ToolbarToggleButton: View {
 struct TabContentView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     @ObservedObject var tab: Tab
     @ObservedObject private var transfers = TransferCenter.shared
     @State private var commandInput = ""
@@ -233,6 +234,18 @@ struct TabContentView: View {
                             }
                             .disabled(!sessions.wouldChangeAnything(action))
                             .help(action.help)
+                        }
+                        // Assembling a group and arming it are the same motion,
+                        // so the offer to keep it belongs where you already are
+                        // rather than up in a menu.
+                        if let name = tab.groupID.flatMap({ store.group(id: $0)?.name }) {
+                            Button("Update “\(name)”") {
+                                sessions.captureGroupLayoutIfLinked(tab)
+                            }
+                            .help("Save this arrangement back to “\(name)” now")
+                        } else {
+                            Button("Save Group As…") { library.requestSaveTabAsGroup() }
+                                .help("Save these panes and their arrangement as a named group")
                         }
                         // ⇧⌘M rather than a key of its own: Toggle MultiExec is
                         // what turns the broadcast off, and this button is that.
@@ -428,6 +441,7 @@ struct FindBar: View {
 struct TabBar: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var library: LibraryCommands
     /// The tab being renamed (drives the rename alert), plus its draft name.
     @State private var renamingTab: Tab?
     @State private var renameText = ""
@@ -471,7 +485,12 @@ struct TabBar: View {
                                 renamingTab = tab
                             },
                             onDuplicate: { sessions.duplicateTab(tab) },
-                            onCloseOthers: { sessions.closeOtherTabs(tab) }
+                            onCloseOthers: { sessions.closeOtherTabs(tab) },
+                            onSaveAsGroup: {
+                                sessions.selectedTabID = tab.id
+                                library.requestSaveTabAsGroup()
+                            },
+                            onUpdateGroup: { sessions.captureGroupLayoutIfLinked(tab) }
                         )
                     }
                 }
@@ -674,6 +693,8 @@ struct TabChip: View {
     let onRename: () -> Void
     let onDuplicate: () -> Void
     let onCloseOthers: () -> Void
+    let onSaveAsGroup: () -> Void
+    let onUpdateGroup: () -> Void
 
     private var title: String {
         tabDisplayTitle(tab) { store.group(id: $0)?.name }
@@ -713,6 +734,20 @@ struct TabChip: View {
         .onTapGesture(perform: onSelect)
         .contextMenu {
             Button("Rename…", action: onRename)
+            // Saving lives here as well as in the File menu: the thing you want
+            // to save is the tab you're looking at, and right-clicking it is
+            // where you'd reach for that.
+            if let name = tab.groupID.flatMap({ store.group(id: $0)?.name }) {
+                // Already a group. Updating is offered explicitly even though
+                // closing the tab does it silently — you shouldn't have to close
+                // something to checkpoint it.
+                Button("Update “\(name)”", action: onUpdateGroup)
+                Button("Save as New Group…", action: onSaveAsGroup)
+            } else {
+                Button("Save as Group…", action: onSaveAsGroup)
+                    .disabled(tab.isStartPage)
+            }
+            Divider()
             Button("Duplicate Tab", action: onDuplicate)
                 .disabled(tab.isStartPage)
             Button("Close", action: onClose)
