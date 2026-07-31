@@ -228,10 +228,20 @@ final class SFTPBrowserModel: ObservableObject {
     @Published var showHidden = false
 
     private var loaded = false
+    /// Where to open, when the session already reported a working directory.
+    private let startingPath: String?
     private var transferTask: Task<Void, Never>?
 
-    init(entry: SessionEntry) {
+    /// `startingPath` is the shell's current directory if the session already
+    /// knows one. The browser is created lazily, the first time it is shown
+    /// for a host, which is usually *after* that shell has been `cd`-ed
+    /// somewhere — so opening at the SSH login home meant it opened in the
+    /// wrong place and stayed there. OSC 7 could not rescue it either: those
+    /// updates only fire on a new prompt, and the browser it should have
+    /// spoken to did not exist when the earlier ones went past.
+    init(entry: SessionEntry, startingPath: String? = nil) {
         self.entry = entry
+        self.startingPath = startingPath
         self.client = SFTPClient(entry: entry)
     }
 
@@ -250,8 +260,13 @@ final class SFTPBrowserModel: ObservableObject {
         guard !loaded else { return }
         loaded = true
         await withBusy {
-            let home = try await self.client.pwd()
-            try await self.load(home)
+            let start: String
+            if let known = self.startingPath, !known.isEmpty {
+                start = known
+            } else {
+                start = try await self.client.pwd()
+            }
+            try await self.load(start)
         }
     }
 

@@ -375,7 +375,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @MainActor var sftp: SFTPBrowserModel? {
         guard let entry, entry.supportsFileBrowser else { return nil }
         if _sftp == nil {
-            _sftp = SFTPBrowserModel(entry: entry)
+            // Seeded with what OSC 7 has already told us, so a browser opened
+            // after the shell moved opens where the shell actually is.
+            _sftp = SFTPBrowserModel(entry: entry, startingPath: currentDirectory)
         }
         return _sftp
     }
