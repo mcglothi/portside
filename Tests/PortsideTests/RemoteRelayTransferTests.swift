@@ -188,7 +188,9 @@ final class RemoteRelayTransferTests: XCTestCase {
         XCTAssertEqual(recorder.downloaded.first?.0, "/var/log/app.log")
         XCTAssertEqual(recorder.uploaded.count, 1)
         XCTAssertEqual(recorder.uploaded.first?.1, "/srv/incoming")
-        XCTAssertEqual(phases.recorded, [.downloading, .uploading, .finished])
+        // Compared by kind: the download phase carries the staging URL, which
+        // is a fresh temp path every run.
+        XCTAssertEqual(phases.recorded.map(\.label), ["downloading", "uploading", "finished"])
     }
 
     /// The staged file keeps the source's name so it arrives at the
@@ -294,6 +296,17 @@ final class RemoteRelayTransferTests: XCTestCase {
             entry: makeEntry(name: "web-01"), path: "/notes.txt", name: "notes.txt"
         )
         XCTAssertEqual(source.directory, "/")
+    }
+}
+
+extension RemoteRelayTransfer.Phase {
+    /// Kind only, ignoring the staging URL.
+    var label: String {
+        switch self {
+        case .downloading: return "downloading"
+        case .uploading: return "uploading"
+        case .finished: return "finished"
+        }
     }
 }
 
@@ -550,5 +563,47 @@ final class RemoteRelayReportingTests: XCTestCase {
         let skipped = outcomes.filter { $0 == .skipped }.count
         let failed = outcomes.filter { if case .failed = $0 { return true } else { return false } }.count
         XCTAssertEqual(delivered + skipped + failed, outcomes.count)
+    }
+}
+
+/// A relay changes what its progress bar counts partway through: bytes while
+/// the file comes down, then hosts while it goes out to a broadcast group.
+@MainActor
+final class TransferCenterRescaleTests: XCTestCase {
+
+    func testRescaleSwitchesUnitsWithoutLosingTheEntry() {
+        let center = TransferCenter.shared
+        let id = center.begin(
+            entryID: UUID(), remotePath: "/tmp/f", label: "Copying…",
+            total: 1_000, cancel: {}
+        )
+        defer { center.finish(id) }
+
+        center.rescale(id, transferred: 400, total: 1_000)
+        XCTAssertEqual(center.transfers.first { $0.id == id }?.fraction, 0.4)
+
+        // Bytes -> hosts.
+        center.rescale(id, transferred: 3, total: 8)
+        let transfer = center.transfers.first { $0.id == id }
+        XCTAssertEqual(transfer?.transferred, 3)
+        XCTAssertEqual(transfer?.total, 8)
+        XCTAssertEqual(transfer?.fraction, 0.375)
+    }
+
+    /// total 0 means "no measurable progress" — the view shows a spinner
+    /// rather than a bar frozen at 100%.
+    func testRescalingToZeroTotalYieldsNoFraction() {
+        let center = TransferCenter.shared
+        let id = center.begin(
+            entryID: UUID(), remotePath: "/tmp/f", label: "Copying…",
+            total: 1_000, cancel: {}
+        )
+        defer { center.finish(id) }
+
+        center.rescale(id, transferred: 1_000, total: 1_000)
+        XCTAssertEqual(center.transfers.first { $0.id == id }?.fraction, 1.0)
+
+        center.rescale(id, transferred: 0, total: 0)
+        XCTAssertNil(center.transfers.first { $0.id == id }?.fraction)
     }
 }

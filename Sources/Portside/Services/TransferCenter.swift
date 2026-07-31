@@ -62,6 +62,18 @@ final class TransferCenter: ObservableObject {
         transfers[index].transferred = transferred
     }
 
+    /// Re-bases a transfer onto different units.
+    ///
+    /// A relay changes what it is counting partway through: bytes while the
+    /// file comes down, then hosts while it goes out to a broadcast group.
+    /// Without this the bar would keep the byte total and read as stuck at
+    /// 100% for the whole second half.
+    func rescale(_ id: UUID, transferred: Int, total: Int) {
+        guard let index = transfers.firstIndex(where: { $0.id == id }) else { return }
+        transfers[index].transferred = transferred
+        transfers[index].total = total
+    }
+
     func relabel(_ id: UUID, _ label: String) {
         guard let index = transfers.firstIndex(where: { $0.id == id }) else { return }
         transfers[index].label = label

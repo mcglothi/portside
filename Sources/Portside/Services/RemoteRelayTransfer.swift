@@ -164,7 +164,7 @@ enum RemoteRelayTransfer {
         defer { try? FileManager.default.removeItem(at: staging) }
         let stagedFile = staging.appendingPathComponent(source.name)
 
-        onPhase(.downloading)
+        onPhase(.downloading(staged: stagedFile))
         try await operations.download(source.entry, source.remotePath, stagedFile)
         try Task.checkCancellation()
 
@@ -238,7 +238,7 @@ enum RemoteRelayTransfer {
         defer { try? FileManager.default.removeItem(at: staging) }
         let stagedFile = staging.appendingPathComponent(source.name)
 
-        onPhase(.downloading)
+        onPhase(.downloading(staged: stagedFile))
         try await operations.download(source.entry, source.remotePath, stagedFile)
         try Task.checkCancellation()
 
@@ -262,7 +262,13 @@ enum RemoteRelayTransfer {
     }
 
     enum Phase: Equatable {
-        case downloading, uploading, finished
+        /// Carries the staging file so a caller can watch it grow. Batch
+        /// `sftp` prints no progress, but the listing already gave us the
+        /// size, so polling the partial file yields a real percentage — the
+        /// same trick the browser's own downloads use.
+        case downloading(staged: URL)
+        case uploading
+        case finished
     }
 
     /// Where the staging file for `name` sits inside `directory`. Exposed so

@@ -18,6 +18,27 @@ enum RemoteRelayCoordinator {
         var task: Task<Void, Never>?
     }
 
+    /// Reports a growing staging file into a `TransferCenter` entry.
+    ///
+    /// Batch `sftp` prints no progress of its own, but the drag payload
+    /// carried the file's size, so watching the partial file grow gives a
+    /// real percentage. Same 400ms cadence as the browser's own downloads.
+    private static func pollStagedFile(
+        _ staged: URL, into id: UUID, total: Int
+    ) -> Task<Void, Never> {
+        Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard !Task.isCancelled else { return }
+                let written = (try? FileManager.default
+                    .attributesOfItem(atPath: staged.path)[.size] as? Int) ?? nil
+                if let written {
+                    TransferCenter.shared.rescale(id, transferred: written, total: total)
+                }
+            }
+        }
+    }
+
     /// One pane a fan-out will deliver to.
     struct Target {
         let session: TerminalSession
@@ -54,8 +75,13 @@ enum RemoteRelayCoordinator {
             cancel: { box.task?.cancel() }
         )
 
+        var poll: Task<Void, Never>?
+        var delivered = 0
         box.task = Task { @MainActor in
-            defer { TransferCenter.shared.finish(id) }
+            defer {
+                poll?.cancel()
+                TransferCenter.shared.finish(id)
+            }
             do {
                 var destinations: [RemoteRelayTransfer.Destination] = []
                 var seen: Set<String> = []
@@ -79,16 +105,34 @@ enum RemoteRelayCoordinator {
                     source: source, destinations: destinations, operations: operations,
                     onPhase: { phase in
                         Task { @MainActor in
-                            guard phase == .uploading else { return }
-                            TransferCenter.shared.relabel(
-                                id, "Sending \(payload.name) to \(destinations.count) host(s)…"
-                            )
+                            switch phase {
+                            case .downloading(let staged):
+                                poll = pollStagedFile(staged, into: id, total: payload.size)
+                            case .uploading:
+                                poll?.cancel()
+                                // Switch the bar from bytes to hosts: the
+                                // upload leg reports no bytes, but "3 of 8
+                                // hosts" is the number that matters for a
+                                // broadcast anyway.
+                                TransferCenter.shared.rescale(
+                                    id, transferred: 0, total: destinations.count
+                                )
+                                TransferCenter.shared.relabel(
+                                    id, "Sending \(payload.name) to \(destinations.count) host(s)…"
+                                )
+                            case .finished:
+                                poll?.cancel()
+                            }
                         }
                     },
                     onDestination: { destination, outcome in
                         guard outcome == .delivered else { return }
                         Task { @MainActor in
                             sessionsByEntry[destination.entry.id]?.flashRelayLanded()
+                            delivered += 1
+                            TransferCenter.shared.rescale(
+                                id, transferred: delivered, total: destinations.count
+                            )
                         }
                     }
                 )
@@ -149,8 +193,12 @@ enum RemoteRelayCoordinator {
             cancel: { box.task?.cancel() }
         )
 
+        var poll: Task<Void, Never>?
         box.task = Task { @MainActor in
-            defer { TransferCenter.shared.finish(id) }
+            defer {
+                poll?.cancel()
+                TransferCenter.shared.finish(id)
+            }
             do {
                 let directory = try await RemoteRelayTransfer.resolveDirectory(
                     sessionCurrentDirectory: reported, entry: destinationEntry,
@@ -165,16 +213,23 @@ enum RemoteRelayCoordinator {
                     onPhase: { phase in
                         Task { @MainActor in
                             switch phase {
-                            case .downloading:
+                            case .downloading(let staged):
+                                poll = pollStagedFile(staged, into: id, total: payload.size)
                                 TransferCenter.shared.relabel(
                                     id, "Copying \(payload.name) from \(sourceEntry.name)…"
                                 )
                             case .uploading:
+                                poll?.cancel()
+                                // No bytes to report on the way up (batch
+                                // sftp prints none), so drop the bar to a
+                                // spinner rather than leave it pinned at 100%
+                                // for the whole second half.
+                                TransferCenter.shared.rescale(id, transferred: 0, total: 0)
                                 TransferCenter.shared.relabel(
                                     id, "Writing \(payload.name) to \(destinationEntry.name)…"
                                 )
                             case .finished:
-                                break
+                                poll?.cancel()
                             }
                         }
                     }
