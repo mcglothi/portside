@@ -114,6 +114,8 @@ struct PortsideApp: App {
                 Button("New Session…") { library.requestNewSession() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("New Folder…") { library.requestNewFolder() }
+                Button("Save Tab as Group…") { library.requestSaveTabAsGroup() }
+                    .disabled(sessions.selectedTab?.root == nil)
                 Button("New Local Shell") { sessions.openLocalShell() }
                     .keyboardShortcut(shortcut(.newLocalShell))
                 Button("Quick Connect…") { sessions.showQuickConnect = true }

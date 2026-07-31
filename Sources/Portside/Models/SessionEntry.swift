@@ -472,6 +472,21 @@ struct FolderNode: Identifiable {
     let name: String
     var subfolders: [FolderNode]
     var entries: [SessionEntry]
+    /// Saved groups filed here, shown above the individual hosts — a group is
+    /// a way to open several of them at once, so it reads as the heading for
+    /// the folder rather than one more item in it.
+    var groups: [SessionGroup] = []
+}
+
+/// What the sidebar renders: loose hosts and groups at the top level, then the
+/// folder hierarchy. A named type rather than a tuple because it is threaded
+/// through the outline view, its coordinator, the signature used to decide
+/// whether to rebuild, and keyboard navigation — and it grew a third member
+/// the moment groups arrived.
+struct SidebarTree {
+    var root: [SessionEntry] = []
+    var rootGroups: [SessionGroup] = []
+    var folders: [FolderNode] = []
 }
 
 enum FolderTree {
@@ -480,9 +495,11 @@ enum FolderTree {
     /// render even when no session lives in them.
     static func build(
         entries: [SessionEntry],
-        explicitFolders: [String] = []
-    ) -> (root: [SessionEntry], folders: [FolderNode]) {
+        explicitFolders: [String] = [],
+        groups: [SessionGroup] = []
+    ) -> SidebarTree {
         let root = entries.filter { $0.folder.isEmpty }.sorted(by: byName)
+        let rootGroups = groups.filter { $0.folder.isEmpty }.sorted(by: byGroupName)
 
         // Every folder path, expanded so each ancestor exists as a node too.
         var paths = Set<String>()
@@ -495,19 +512,31 @@ enum FolderTree {
         }
         for entry in entries where !entry.folder.isEmpty { addWithAncestors(entry.folder) }
         for folder in explicitFolders { addWithAncestors(folder) }
+        // A group keeps its folder alive even when every host has moved out,
+        // or the group would vanish from the sidebar while still existing.
+        for group in groups where !group.folder.isEmpty { addWithAncestors(group.folder) }
 
         var directEntries: [String: [SessionEntry]] = [:]
         for entry in entries where !entry.folder.isEmpty {
             directEntries[entry.folder, default: []].append(entry)
         }
 
-        return (root, childNodes(parent: "", paths: paths, directEntries: directEntries))
+        var directGroups: [String: [SessionGroup]] = [:]
+        for group in groups where !group.folder.isEmpty {
+            directGroups[group.folder, default: []].append(group)
+        }
+
+        return SidebarTree(
+            root: root, rootGroups: rootGroups,
+            folders: childNodes(parent: "", paths: paths,
+                       directEntries: directEntries, directGroups: directGroups))
     }
 
     private static func childNodes(
         parent: String,
         paths: Set<String>,
-        directEntries: [String: [SessionEntry]]
+        directEntries: [String: [SessionEntry]],
+        directGroups: [String: [SessionGroup]] = [:]
     ) -> [FolderNode] {
         let prefix = parent.isEmpty ? "" : parent + "/"
         let depth = parent.isEmpty ? 1 : parent.split(separator: "/").count + 1
@@ -517,13 +546,19 @@ enum FolderTree {
             FolderNode(
                 path: path,
                 name: String(path.split(separator: "/").last ?? Substring(path)),
-                subfolders: childNodes(parent: path, paths: paths, directEntries: directEntries),
-                entries: (directEntries[path] ?? []).sorted(by: byName)
+                subfolders: childNodes(parent: path, paths: paths,
+                                      directEntries: directEntries, directGroups: directGroups),
+                entries: (directEntries[path] ?? []).sorted(by: byName),
+                groups: (directGroups[path] ?? []).sorted(by: byGroupName)
             )
         }
     }
 
     private static func byName(_ a: SessionEntry, _ b: SessionEntry) -> Bool {
+        a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+
+    private static func byGroupName(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
         a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 }

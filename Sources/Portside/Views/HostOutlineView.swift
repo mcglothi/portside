@@ -11,7 +11,7 @@ import SwiftUI
 /// folders only (no manual reordering — the tree is alphabetical), and only
 /// hosts are selectable (folders expand/collapse and have their own menu).
 struct HostOutlineView: NSViewRepresentable {
-    let tree: (root: [SessionEntry], folders: [FolderNode])
+    let tree: SidebarTree
     @Binding var selection: Set<UUID>
     let store: SessionStore
     /// True while a host filter is active — every folder in the (already
@@ -31,6 +31,11 @@ struct HostOutlineView: NSViewRepresentable {
 
     // SwiftUI-state-driven actions the coordinator can't do on its own.
     let connect: (SessionEntry) -> Void
+    /// Opens a saved group as one tab. Double-click, same as a host.
+    var launchGroup: (SessionGroup) -> Void = { _ in }
+    /// Rename/delete for a group's context menu.
+    var renameGroup: (SessionGroup) -> Void = { _ in }
+    var deleteGroup: (SessionGroup) -> Void = { _ in }
     let connectSelected: (_ multiExec: Bool) -> Void
     let edit: (SessionEntry) -> Void
     let openFolder: (_ path: String, _ multiExec: Bool) -> Void
@@ -93,6 +98,7 @@ struct HostOutlineView: NSViewRepresentable {
 
     // MARK: - Coordinator
 
+    @MainActor
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         var parent: HostOutlineView
         weak var outline: NSOutlineView?
@@ -171,19 +177,23 @@ struct HostOutlineView: NSViewRepresentable {
 
         // MARK: Tree building
 
-        func rebuild(from tree: (root: [SessionEntry], folders: [FolderNode])) {
-            roots = tree.folders.map(SidebarNode.folder) + tree.root.map(SidebarNode.entry)
+        func rebuild(from tree: SidebarTree) {
+            roots = tree.folders.map(SidebarNode.folder)
+                + tree.rootGroups.map(SidebarNode.group)
+                + tree.root.map(SidebarNode.entry)
             lastSignature = Self.signature(of: tree)
             outline?.reloadData()
             expandAfterReload()
         }
 
         /// Reload only when the tree actually changed; always reconcile selection.
-        func sync(tree: (root: [SessionEntry], folders: [FolderNode]), selection: Set<UUID>) {
+        func sync(tree: SidebarTree, selection: Set<UUID>) {
             let signature = Self.signature(of: tree)
             if signature != lastSignature {
                 let previouslyExpanded = expandedPaths
-                roots = tree.folders.map(SidebarNode.folder) + tree.root.map(SidebarNode.entry)
+                roots = tree.folders.map(SidebarNode.folder)
+                + tree.rootGroups.map(SidebarNode.group)
+                + tree.root.map(SidebarNode.entry)
                 lastSignature = signature
                 outline?.reloadData()
                 expandedPaths = previouslyExpanded
@@ -244,19 +254,27 @@ struct HostOutlineView: NSViewRepresentable {
             return map
         }
 
-        private static func signature(of tree: (root: [SessionEntry], folders: [FolderNode])) -> String {
+        private static func signature(of tree: SidebarTree) -> String {
             var parts: [String] = []
             func line(_ entry: SessionEntry) {
                 parts.append("e:\(entry.id):\(entry.name):\(entry.subtitle):\(entry.environment.rawValue):\(entry.isProtected):\(entry.isFavorite)")
+            }
+            // Groups belong in the signature too, or renaming, refiling or
+            // deleting one leaves the outline showing the old state until some
+            // unrelated change happens to force a rebuild.
+            func groupLine(_ group: SessionGroup) {
+                parts.append("g:\(group.id):\(group.name):\(group.paneCount):\(group.isFavorite)")
             }
             func walk(_ folders: [FolderNode]) {
                 for folder in folders {
                     parts.append("f:\(folder.path)")
                     walk(folder.subfolders)
+                    folder.groups.forEach(groupLine)
                     folder.entries.forEach(line)
                 }
             }
             walk(tree.folders)
+            tree.rootGroups.forEach(groupLine)
             tree.root.forEach(line)
             return parts.joined(separator: "|")
         }
@@ -330,7 +348,9 @@ struct HostOutlineView: NSViewRepresentable {
 
         @objc func handleDoubleClick(_ sender: Any?) {
             guard let outline, outline.clickedRow >= 0,
-                  let entry = (outline.item(atRow: outline.clickedRow) as? SidebarNode)?.entry else { return }
+                  let node = outline.item(atRow: outline.clickedRow) as? SidebarNode else { return }
+            if let group = node.group { return parent.launchGroup(group) }
+            guard let entry = node.entry else { return }
             parent.connect(entry)
         }
 
@@ -448,7 +468,18 @@ struct HostOutlineView: NSViewRepresentable {
             switch node.kind {
             case .entry(let entry): buildEntryMenu(menu, clicked: entry)
             case .folder(let folder): buildFolderMenu(menu, folder: folder)
+            case .group(let group): buildGroupMenu(menu, group: group)
             }
+        }
+
+        private func buildGroupMenu(_ menu: NSMenu, group: SessionGroup) {
+            let launch = parent.launchGroup
+            let rename = parent.renameGroup
+            let remove = parent.deleteGroup
+            menu.addItem(ClosureMenuItem(title: "Open “\(group.name)”") { launch(group) })
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(title: "Rename…") { rename(group) })
+            menu.addItem(ClosureMenuItem(title: "Delete Group") { remove(group) })
         }
 
         private func buildEntryMenu(_ menu: NSMenu, clicked entry: SessionEntry) {
@@ -601,6 +632,7 @@ final class SidebarNode {
     enum Kind {
         case folder(FolderNode)
         case entry(SessionEntry)
+        case group(SessionGroup)
     }
     let kind: Kind
     let children: [SidebarNode]
@@ -611,7 +643,9 @@ final class SidebarNode {
     }
 
     static func folder(_ node: FolderNode) -> SidebarNode {
-        let kids = node.subfolders.map(folder) + node.entries.map(entry)
+        // Groups first: a group opens several of the hosts below it, so it
+        // reads as the folder's heading rather than one more item in the list.
+        let kids = node.subfolders.map(folder) + node.groups.map(group) + node.entries.map(entry)
         return SidebarNode(kind: .folder(node), children: kids)
     }
 
@@ -619,11 +653,16 @@ final class SidebarNode {
         SidebarNode(kind: .entry(entry), children: [])
     }
 
+    static func group(_ group: SessionGroup) -> SidebarNode {
+        SidebarNode(kind: .group(group), children: [])
+    }
+
     var isFolder: Bool { if case .folder = kind { return true }; return false }
     var isEntry: Bool { if case .entry = kind { return true }; return false }
 
     var entry: SessionEntry? { if case .entry(let e) = kind { return e }; return nil }
     var entryID: UUID? { entry?.id }
+    var group: SessionGroup? { if case .group(let g) = kind { return g }; return nil }
     var folderPath: String? { if case .folder(let f) = kind { return f.path }; return nil }
 }
 
@@ -680,6 +719,7 @@ private struct SidebarRowLabel: View {
             switch model.node?.kind {
             case .entry(let entry): entryRow(entry)
             case .folder(let folder): folderRow(folder)
+            case .group(let group): groupRow(group)
             case .none: EmptyView()
             }
         }
@@ -716,6 +756,21 @@ private struct SidebarRowLabel: View {
             EnvironmentBadge(environment: entry.environment)
         }
         .onHover { hoveringEntry = $0 }
+    }
+
+    /// A saved group. Distinct glyph and a pane count, because the thing that
+    /// matters at a glance is "this opens several at once" and how many.
+    private func groupRow(_ group: SessionGroup) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.grid.2x2.fill")
+                .foregroundStyle(model.emphasized ? .white : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group.name).foregroundStyle(primary)
+                Text("\(group.paneCount) pane\(group.paneCount == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(secondary)
+            }
+            Spacer(minLength: 4)
+        }
     }
 
     private func folderRow(_ folder: FolderNode) -> some View {

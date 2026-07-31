@@ -9,7 +9,6 @@ Sources/Portside/Services/SFTPClient.swift 1
 Sources/Portside/Services/TelnetPort.swift 3
 Sources/Portside/Services/TunnelManager.swift 11
 Sources/Portside/Services/Updater.swift 16
-Sources/Portside/Views/HostOutlineView.swift 51
 Sources/Portside/Views/RemoteFileDragSource.swift 1
 Sources/Portside/Views/SessionArea.swift 25
 Sources/Portside/Views/SettingsWindowSizer.swift 1
