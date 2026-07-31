@@ -93,3 +93,69 @@ final class UpgradeRehearsalTests: XCTestCase {
         XCTAssertNotNil(library["entries"], "the hosts must obviously stay")
     }
 }
+
+/// Rehearses an *export* round trip against a real exported file.
+///
+///     PORTSIDE_EXPORT_FIXTURE=/path/to/portside-sessions.json \
+///       PORTSIDE_LIBRARY_FIXTURE=/path/to/portside.json \
+///       swift test --filter ExportRehearsal
+///
+/// Both fixtures are read-only; everything happens in a temp directory.
+final class ExportRehearsalTests: XCTestCase {
+
+    func testARealExportRoundTripsWithItsCredentialProfiles() throws {
+        guard let exportPath = ProcessInfo.processInfo.environment["PORTSIDE_EXPORT_FIXTURE"],
+              let libraryPath = ProcessInfo.processInfo.environment["PORTSIDE_LIBRARY_FIXTURE"] else {
+            throw XCTSkip("Set PORTSIDE_EXPORT_FIXTURE and PORTSIDE_LIBRARY_FIXTURE to run this.")
+        }
+
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-export-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: work) }
+
+        // The source machine, loaded from its real library.
+        let source = SessionStore(fileURL: work.appendingPathComponent("source.json"))
+        try Data(contentsOf: URL(fileURLWithPath: libraryPath))
+            .write(to: work.appendingPathComponent("source.json"))
+        let reloadedSource = SessionStore(fileURL: work.appendingPathComponent("source.json"))
+        _ = source
+        XCTAssertFalse(reloadedSource.credentialProfiles.isEmpty, "fixture should have profiles")
+
+        // An export written by the *old* build: no profiles at all.
+        let oldExport = try XCTUnwrap(
+            LibraryTransfer.decode(Data(contentsOf: URL(fileURLWithPath: exportPath))))
+        XCTAssertNil(oldExport.credentialProfiles, "fixture should predate profiles travelling")
+
+        let referencing = (oldExport.entries ?? []).filter { $0.credentialProfileID != nil }.count
+        XCTAssertGreaterThan(referencing, 0, "fixture should exercise the bug")
+
+        // Importing it fresh: every dangling reference is cleared rather than
+        // left pointing at nothing or falling through to this Mac's default.
+        let oldTarget = SessionStore(fileURL: work.appendingPathComponent("old-target.json"))
+        oldTarget.importExport(entries: oldExport.entries ?? [], folders: oldExport.folders ?? [],
+                               macros: oldExport.macros ?? [],
+                               credentialProfiles: oldExport.credentialProfiles ?? [])
+        XCTAssertTrue(oldTarget.entries.allSatisfy { $0.credentialProfileID == nil },
+                      "a profile that isn't here must not be left dangling")
+        XCTAssertTrue(oldTarget.entries.allSatisfy { !$0.savePassword },
+                      "and must not fall through to this machine's credentials")
+
+        // Re-exported by the new build, the profiles travel...
+        let newExport = try LibraryTransfer.encodeSessions(
+            entries: reloadedSource.entries, folders: reloadedSource.explicitFolders,
+            credentialProfiles: reloadedSource.credentialProfiles)
+        let decoded = try XCTUnwrap(LibraryTransfer.decode(newExport))
+        XCTAssertEqual(decoded.credentialProfiles?.count, reloadedSource.credentialProfiles.count)
+
+        // ...and the references survive the trip.
+        let newTarget = SessionStore(fileURL: work.appendingPathComponent("new-target.json"))
+        newTarget.importExport(entries: decoded.entries ?? [], folders: decoded.folders ?? [],
+                               macros: decoded.macros ?? [],
+                               credentialProfiles: decoded.credentialProfiles ?? [])
+        let landed = newTarget.entries.filter { $0.credentialProfileID != nil }.count
+        let expected = reloadedSource.entries.filter { $0.credentialProfileID != nil }.count
+        XCTAssertEqual(landed, expected, "every profile reference should survive the round trip")
+        XCTAssertTrue(landed > 0)
+    }
+}
