@@ -37,6 +37,8 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 
     /// A remote file was dropped on this terminal.
     var onRemoteFileDrop: ((RemoteFileDragPayload) -> Void)?
+    /// Local files (from Finder, or anywhere else) were dropped here.
+    var onLocalFilesDrop: (([URL]) -> Void)?
     /// A droppable remote file entered or left this terminal's bounds.
     var onDropTargetChanged: ((Bool) -> Void)?
 
@@ -55,11 +57,30 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// This view is already the hit-test target over the terminal, so it
     /// needs no overlay and cannot steal mouse handling from one.
     func enableRemoteFileDrops() {
-        registerForDraggedTypes([.portsideRemoteFile])
+        // `.fileURL` as well as our own type: a Finder drag onto a pane used
+        // to do nothing at all, so sending a local file to a broadcast group
+        // meant dropping it into the file browser (which uploaded it to that
+        // one host) and dragging it back out to the group.
+        registerForDraggedTypes([.portsideRemoteFile, .fileURL])
     }
 
     private func canAccept(_ sender: NSDraggingInfo) -> Bool {
         sender.draggingPasteboard.data(forType: .portsideRemoteFile) != nil
+            || !localFileURLs(from: sender).isEmpty
+    }
+
+    private func localFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: options
+        ) as? [URL] ?? []
+        // Directories would need recursive upload; sftp `put` of one is not a
+        // thing here. Left out rather than half-working.
+        return urls.filter { url in
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            return exists && !isDir.boolValue
+        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -87,7 +108,10 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onDropTargetChanged?(false)
         guard let data = sender.draggingPasteboard.data(forType: .portsideRemoteFile) else {
-            return false
+            let urls = localFileURLs(from: sender)
+            guard !urls.isEmpty else { return false }
+            onLocalFilesDrop?(urls)
+            return true
         }
         guard let payload = try? JSONDecoder().decode(
             RemoteFileDragPayload.self, from: data
@@ -350,6 +374,8 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
 
     /// A remote file is hovering over this pane and could land here.
     @Published var dropTargeted = false
+    /// Local files dropped on this pane, awaiting the view's routing.
+    @Published var pendingLocalDrop: [URL]?
     /// Set by the terminal view when a remote file is dropped; the pane view
     /// picks it up, resolves the hosts against the store, and starts the
     /// relay. Routed through here rather than handled in AppKit so the store
@@ -673,6 +699,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         }
         terminalView.onRemoteFileDrop = { [weak self] payload in
             Task { @MainActor in self?.pendingRemoteDrop = payload }
+        }
+        terminalView.onLocalFilesDrop = { [weak self] urls in
+            Task { @MainActor in self?.pendingLocalDrop = urls }
         }
     }
 

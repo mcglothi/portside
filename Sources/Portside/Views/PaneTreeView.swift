@@ -110,6 +110,11 @@ struct PaneLeafView: View {
                 session.pendingRemoteDrop = nil
                 acceptRelayDrop(payload)
             }
+            .onChange(of: session.pendingLocalDrop) { _, urls in
+                guard let urls, !urls.isEmpty else { return }
+                session.pendingLocalDrop = nil
+                acceptLocalDrop(urls)
+            }
             .overlay {
                 if showsDropHighlight {
                     RoundedRectangle(cornerRadius: 4)
@@ -188,6 +193,23 @@ struct PaneLeafView: View {
             sourceEntry: sourceEntry,
             destinationSession: session,
             destinationEntry: destinationEntry
+        )
+    }
+
+    /// Takes local files dropped on this pane — from Finder or anywhere else
+    /// — and uploads them where a remote file dropped here would go: the
+    /// whole broadcast group when this pane is broadcasting, otherwise just
+    /// this host.
+    private func acceptLocalDrop(_ urls: [URL]) {
+        guard let destinationEntry = session.entry, destinationEntry.supportsFileBrowser else {
+            session.relayError = "This pane has no host to upload to — "
+                + "file upload needs a plain SSH session."
+            return
+        }
+        let group = broadcastTargets()
+            ?? [RemoteRelayCoordinator.Target(session: session, entry: destinationEntry)]
+        RemoteRelayCoordinator.startLocalFanOut(
+            urls: urls, droppedOn: session, targets: group
         )
     }
 

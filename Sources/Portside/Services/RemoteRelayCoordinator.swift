@@ -118,11 +118,22 @@ enum RemoteRelayCoordinator {
                                     id, transferred: 0, total: destinations.count
                                 )
                                 TransferCenter.shared.relabel(
-                                    id, "Sending \(payload.name) to \(destinations.count) host(s)…"
+                                    id, "Sending \(payload.name) to \(destinations.count) hosts…"
                                 )
                             case .finished:
                                 poll?.cancel()
                             }
+                        }
+                    },
+                    onDeliveryStarted: { destination, index, total in
+                        Task { @MainActor in
+                            // Naming the host in flight is what makes the
+                            // count legible: "3 of 8" alone says how far but
+                            // not what is happening, and on a slow box the
+                            // number sits still long enough to look stuck.
+                            TransferCenter.shared.relabel(
+                                id, "Sending \(payload.name) to \(destination.entry.name) (\(index) of \(total))…"
+                            )
                         }
                     },
                     onDestination: { destination, outcome in
@@ -154,6 +165,97 @@ enum RemoteRelayCoordinator {
                     }
                     droppedOn.relayError = """
                     \(summary)
+
+                    \(failures.joined(separator: "\n"))
+                    """
+                }
+            } catch is CancellationError {
+                // Nothing to report: the user asked for this.
+            } catch {
+                droppedOn.relayError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Uploads local files dropped on a pane to every host in `targets`.
+    ///
+    /// The symmetric case to a fan-out from a remote host: dropping from
+    /// Finder onto a broadcasting pane should reach the group, exactly as
+    /// dragging from the file browser does. Previously a Finder drag onto a
+    /// pane did nothing at all, so the only route was dropping into the
+    /// browser (which uploaded to that one host) and dragging it back out to
+    /// the group.
+    static func startLocalFanOut(
+        urls: [URL],
+        droppedOn: TerminalSession,
+        targets: [Target],
+        operations: RemoteRelayTransfer.Operations = .live
+    ) {
+        guard !urls.isEmpty, !targets.isEmpty else { return }
+        let reported = targets.map { ($0.entry, $0.session.currentDirectory) }
+        let sessionsByEntry = Dictionary(
+            targets.map { ($0.entry.id, $0.session) }, uniquingKeysWith: { first, _ in first }
+        )
+
+        let box = TaskBox()
+        let label = urls.count == 1
+            ? urls[0].lastPathComponent
+            : "\(urls.count) files"
+        let id = TransferCenter.shared.begin(
+            entryID: droppedOn.entry?.id ?? UUID(),
+            remotePath: urls[0].path,
+            label: "Uploading \(label)…",
+            cancel: { box.task?.cancel() }
+        )
+
+        box.task = Task { @MainActor in
+            defer { TransferCenter.shared.finish(id) }
+            do {
+                var destinations: [RemoteRelayTransfer.Destination] = []
+                var seen: Set<String> = []
+                for (entry, cwd) in reported {
+                    let directory = try await RemoteRelayTransfer.resolveDirectory(
+                        sessionCurrentDirectory: cwd, entry: entry, operations: operations
+                    )
+                    let key = "\(entry.id)|\(RemoteRelayTransfer.normalize(directory))"
+                    guard seen.insert(key).inserted else { continue }
+                    destinations.append(.init(entry: entry, directory: directory))
+                }
+                try Task.checkCancellation()
+
+                var failures: [String] = []
+                var delivered = 0
+                var attempted = 0
+                for url in urls {
+                    let name = url.lastPathComponent
+                    let results = try await RemoteRelayTransfer.runLocalFanOut(
+                        localURL: url, name: name, destinations: destinations,
+                        operations: operations,
+                        onDeliveryStarted: { destination, index, total in
+                            Task { @MainActor in
+                                TransferCenter.shared.relabel(
+                                    id, "Uploading \(name) to \(destination.entry.name) (\(index) of \(total))…"
+                                )
+                            }
+                        },
+                        onDestination: { destination, outcome in
+                            Task { @MainActor in
+                                guard outcome == .delivered else { return }
+                                sessionsByEntry[destination.entry.id]?.flashRelayLanded()
+                            }
+                        }
+                    )
+                    attempted += results.count
+                    delivered += results.filter { $0.1 == .delivered }.count
+                    failures += results.compactMap { destination, outcome in
+                        guard case .failed(let message) = outcome else { return nil }
+                        return "\(destination.entry.name): \(name) — \(message)"
+                    }
+                }
+
+                if !failures.isEmpty {
+                    droppedOn.relayError = """
+                    Uploaded \(delivered) of \(attempted).
 
                     \(failures.joined(separator: "\n"))
                     """

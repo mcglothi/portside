@@ -211,6 +211,7 @@ enum RemoteRelayTransfer {
         destinations: [Destination],
         operations: Operations = .live,
         onPhase: @Sendable (Phase) -> Void = { _ in },
+        onDeliveryStarted: @Sendable (Destination, Int, Int) -> Void = { _, _, _ in },
         onDestination: @Sendable (Destination, Outcome) -> Void = { _, _ in }
     ) async throws -> [(Destination, Outcome)] {
         guard !destinations.isEmpty else { return [] }
@@ -243,7 +244,8 @@ enum RemoteRelayTransfer {
         try Task.checkCancellation()
 
         onPhase(.uploading)
-        for destination in eligible {
+        for (index, destination) in eligible.enumerated() {
+            onDeliveryStarted(destination, index + 1, eligible.count)
             do {
                 try Task.checkCancellation()
                 try await operations.upload(destination.entry, stagedFile, destination.directory)
@@ -258,6 +260,62 @@ enum RemoteRelayTransfer {
             }
         }
         onPhase(.finished)
+        return results
+    }
+
+    /// Sends a file that is **already local** to several hosts.
+    ///
+    /// A Finder drag needs no download leg — the dropped file is the staging
+    /// file — so this is the fan-out without its first half. It deliberately
+    /// does not copy into a staging directory first: the source is a file the
+    /// user already has, and duplicating a large one to upload it would cost
+    /// disk for nothing.
+    static func runLocalFanOut(
+        localURL: URL,
+        name: String,
+        destinations: [Destination],
+        operations: Operations = .live,
+        onDeliveryStarted: @Sendable (Destination, Int, Int) -> Void = { _, _, _ in },
+        onDestination: @Sendable (Destination, Outcome) -> Void = { _, _ in }
+    ) async throws -> [(Destination, Outcome)] {
+        guard !destinations.isEmpty else { return [] }
+
+        var eligible: [Destination] = []
+        var results: [(Destination, Outcome)] = []
+        for destination in destinations {
+            do {
+                guard destination.entry.supportsFileBrowser else {
+                    throw Failure.unsupportedDestination(destination.entry.name)
+                }
+                let existing = try await operations.list(
+                    destination.entry, destination.directory
+                )
+                if existing.contains(where: { $0.name == name }) {
+                    throw Failure.nameCollision(name)
+                }
+                eligible.append(destination)
+            } catch {
+                let outcome = Outcome.failed(error.localizedDescription)
+                results.append((destination, outcome))
+                onDestination(destination, outcome)
+            }
+        }
+
+        for (index, destination) in eligible.enumerated() {
+            onDeliveryStarted(destination, index + 1, eligible.count)
+            do {
+                try Task.checkCancellation()
+                try await operations.upload(destination.entry, localURL, destination.directory)
+                results.append((destination, .delivered))
+                onDestination(destination, .delivered)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let outcome = Outcome.failed(error.localizedDescription)
+                results.append((destination, outcome))
+                onDestination(destination, outcome)
+            }
+        }
         return results
     }
 

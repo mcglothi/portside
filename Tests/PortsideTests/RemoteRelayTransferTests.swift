@@ -607,3 +607,146 @@ final class TransferCenterRescaleTests: XCTestCase {
         XCTAssertNil(center.transfers.first { $0.id == id }?.fraction)
     }
 }
+
+/// Dropping a file from Finder onto a broadcasting pane. No download leg —
+/// the dropped file is already the staging file.
+final class RemoteRelayLocalFanOutTests: XCTestCase {
+
+    private func makeEntry(_ name: String, kind: SessionKind = .host) -> SessionEntry {
+        SessionEntry(name: name, hostname: "\(name).internal", kind: kind)
+    }
+
+    private func remoteFile(_ name: String) -> RemoteFile {
+        RemoteFile(
+            name: name, isDirectory: false, isSymlink: false,
+            size: 1, dateText: "", permissions: "-rw-r--r--"
+        )
+    }
+
+    private final class Fake: @unchecked Sendable {
+        var uploads: [(host: String, url: URL)] = []
+        var listings: [String: [RemoteFile]] = [:]
+        var failUploadsTo: Set<String> = []
+        var downloads = 0
+
+        func operations() -> RemoteRelayTransfer.Operations {
+            RemoteRelayTransfer.Operations(
+                pwd: { _ in "/home/deploy" },
+                list: { entry, _ in self.listings[entry.name] ?? [] },
+                download: { _, _, _ in self.downloads += 1 },
+                upload: { entry, url, _ in
+                    if self.failUploadsTo.contains(entry.name) {
+                        throw SFTPClientError.failed("no space left on device")
+                    }
+                    self.uploads.append((entry.name, url))
+                }
+            )
+        }
+    }
+
+    private func tempFile(named name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-localfanout-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try Data("local payload".utf8).write(to: url)
+        return url
+    }
+
+    func testUploadsTheLocalFileToEveryHostWithoutDownloading() async throws {
+        let fake = Fake()
+        let file = try tempFile(named: "deploy.sh")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        let hosts = ["web-01", "web-02", "web-03"].map { makeEntry($0) }
+        let results = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.downloads, 0, "a local file needs no download leg")
+        XCTAssertEqual(fake.uploads.map(\.host).sorted(), ["web-01", "web-02", "web-03"])
+        XCTAssertEqual(results.filter { $0.1 == .delivered }.count, 3)
+    }
+
+    /// The dropped file is uploaded in place rather than copied to staging —
+    /// duplicating a large file to upload it would cost disk for nothing.
+    func testUploadsTheDroppedFileItselfNotACopy() async throws {
+        let fake = Fake()
+        let file = try tempFile(named: "deploy.sh")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        _ = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: [.init(entry: makeEntry("web-01"), directory: "/tmp")],
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.uploads.first?.url, file)
+    }
+
+    func testCollisionIsReportedPerHostAndOthersStillGo() async throws {
+        let fake = Fake()
+        fake.listings["web-02"] = [remoteFile("deploy.sh")]
+        let file = try tempFile(named: "deploy.sh")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        let results = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: ["web-01", "web-02"].map {
+                .init(entry: makeEntry($0), directory: "/tmp")
+            },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.uploads.map(\.host), ["web-01"])
+        guard case .failed(let message)? = results.first(where: {
+            $0.0.entry.name == "web-02"
+        })?.1 else { return XCTFail("expected a collision on web-02") }
+        XCTAssertTrue(message.contains("already exists"), message)
+    }
+
+    func testHostWithoutAFileBrowserIsReportedNotUploadedTo() async throws {
+        let fake = Fake()
+        let file = try tempFile(named: "deploy.sh")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        let results = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: [
+                .init(entry: makeEntry("web-01"), directory: "/tmp"),
+                .init(entry: makeEntry("app-container", kind: .container), directory: "/tmp"),
+            ],
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.uploads.map(\.host), ["web-01"])
+        XCTAssertEqual(results.count, 2)
+    }
+
+    /// The per-host label needs a 1-based index and the eligible count, so
+    /// "2 of 3" never counts hosts that were rejected before any upload.
+    func testDeliveryStartedReportsPositionAmongEligibleHostsOnly() async throws {
+        let fake = Fake()
+        fake.listings["web-02"] = [remoteFile("deploy.sh")]   // ineligible
+        let file = try tempFile(named: "deploy.sh")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        let seen = LocalDeliveryLog()
+        _ = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: ["web-01", "web-02", "web-03"].map {
+                .init(entry: makeEntry($0), directory: "/tmp")
+            },
+            operations: fake.operations(),
+            onDeliveryStarted: { destination, index, total in
+                seen.record("\(destination.entry.name) \(index)/\(total)")
+            }
+        )
+        XCTAssertEqual(seen.recorded, ["web-01 1/2", "web-03 2/2"])
+    }
+}
+
+private final class LocalDeliveryLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    func record(_ entry: String) { lock.lock(); entries.append(entry); lock.unlock() }
+    var recorded: [String] { lock.lock(); defer { lock.unlock() }; return entries }
+}
