@@ -1231,17 +1231,11 @@ final class SessionManager: ObservableObject {
             row.count == 1
                 ? .leaf(row[0])
                 : .split(id: UUID(), orientation: .horizontal,
-                         children: row.map { .leaf($0) },
-                         fractions: equalFractions(row.count))
+                         children: row.map { .leaf($0) })
         }
         return rowNodes.count == 1
             ? rowNodes[0]
-            : .split(id: UUID(), orientation: .vertical, children: rowNodes,
-                     fractions: equalFractions(rowNodes.count))
-    }
-
-    private func equalFractions(_ count: Int) -> [CGFloat] {
-        Array(repeating: 1 / CGFloat(count), count: count)
+            : .split(id: UUID(), orientation: .vertical, children: rowNodes)
     }
 
     // MARK: - Broadcast (MultiExec)
@@ -1523,9 +1517,8 @@ final class SessionManager: ObservableObject {
                 kind: session.entry.map { .host($0.id) } ?? .localShell,
                 includedInMultiExec: session.includedInMultiExec)
             return .leaf(leaf)
-        case .split(_, let orientation, let children, let fractions):
-            return .split(orientation: orientation, children: children.map(snapshot(of:)),
-                          fractions: fractions)
+        case .split(_, let orientation, let children):
+            return .split(orientation: orientation, children: children.map(snapshot(of:)))
         }
     }
 
@@ -1640,20 +1633,12 @@ final class SessionManager: ObservableObject {
         switch plan {
         case .leaf(let action):
             return .leaf(makeRestoredSession(action))
-        case .split(let orientation, let children, let fractions):
-            var kept: [PaneNode<TerminalSession>] = []
-            var keptFractions: [CGFloat] = []
-            for (child, fraction) in zip(children, fractions) {
-                if let node = buildNode(child) {
-                    kept.append(node)
-                    keptFractions.append(fraction)
-                }
-            }
+        case .split(let orientation, let children):
+            let kept = children.compactMap { buildNode($0) }
             switch kept.count {
             case 0: return nil
             case 1: return kept[0]
-            default: return .split(id: UUID(), orientation: orientation, children: kept,
-                                   fractions: normalizedFractions(keptFractions))
+            default: return .split(id: UUID(), orientation: orientation, children: kept)
             }
         }
     }
@@ -1860,10 +1845,10 @@ final class SessionManager: ObservableObject {
                 .connect($0, includedInMultiExec: session.includedInMultiExec)
             } ?? .localShell(includedInMultiExec: session.includedInMultiExec)
             return .leaf(action)
-        case .split(_, let orientation, let children, let fractions):
+        case .split(_, let orientation, let children):
             let kids = children.compactMap { planNode(for: $0) }
             guard kids.count == children.count else { return nil }
-            return .split(orientation: orientation, children: kids, fractions: fractions)
+            return .split(orientation: orientation, children: kids)
         }
     }
 

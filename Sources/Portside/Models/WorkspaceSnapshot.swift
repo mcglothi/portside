@@ -35,7 +35,7 @@ struct WorkspaceSnapshot: Codable, Equatable {
     /// A tab's pane tree, mirroring `PaneNode` but with restore-stable payloads.
     indirect enum PaneSnapshot: Codable, Equatable {
         case leaf(Leaf)
-        case split(orientation: PaneOrientation, children: [PaneSnapshot], fractions: [CGFloat])
+        case split(orientation: PaneOrientation, children: [PaneSnapshot])
     }
 
     /// A single pane: a library host (by entry id) or an entry-less local shell,
@@ -108,12 +108,12 @@ struct RestorePlan: Equatable {
 
     indirect enum PanePlan: Equatable {
         case leaf(RestoreAction)
-        case split(orientation: PaneOrientation, children: [PanePlan], fractions: [CGFloat])
+        case split(orientation: PaneOrientation, children: [PanePlan])
 
         var leafCount: Int {
             switch self {
             case .leaf: return 1
-            case .split(_, let children, _): return children.reduce(0) { $0 + $1.leafCount }
+            case .split(_, let children): return children.reduce(0) { $0 + $1.leafCount }
             }
         }
     }
@@ -147,20 +147,12 @@ extension WorkspaceSnapshot {
             case .localShell:
                 return .leaf(.localShell(includedInMultiExec: leaf.includedInMultiExec))
             }
-        case .split(let orientation, let children, let fractions):
-            var kept: [RestorePlan.PanePlan] = []
-            var keptFractions: [CGFloat] = []
-            for (child, fraction) in zip(children, fractions) {
-                if let resolved = resolve(child, entryForID) {
-                    kept.append(resolved)
-                    keptFractions.append(fraction)
-                }
-            }
+        case .split(let orientation, let children):
+            let kept = children.compactMap { resolve($0, entryForID) }
             switch kept.count {
             case 0: return nil
             case 1: return kept[0]   // collapse a now-single-child split
-            default: return .split(orientation: orientation, children: kept,
-                                   fractions: normalizedFractions(keptFractions))
+            default: return .split(orientation: orientation, children: kept)
             }
         }
     }

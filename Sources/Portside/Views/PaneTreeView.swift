@@ -39,19 +39,7 @@ struct PaneNodeView: View {
             // makeNSView keeps showing the previous session.
             PaneLeafView(session: session, tab: tab)
                 .id(session.id)
-        // The stored fractions are deliberately discarded here, and that is a
-        // known gap rather than a decision. `HSplitView`/`VSplitView` size
-        // their children by intrinsic size and whatever the user has dragged;
-        // neither takes proportions. So the model records fractions, the
-        // snapshot persists them, and `restore` rebuilds them faithfully
-        // (see LayoutFidelityTests) — and then nothing ever applies them.
-        //
-        // The visible effect: a workspace restore, or a saved group, reopens
-        // with the splitter's own proportions instead of the ones you left.
-        // Fixing it means driving the widths explicitly — a GeometryReader and
-        // `.frame`, or a custom splitter — which is a real change to the pane
-        // tree and wants doing deliberately, not folded into a feature.
-        case .split(_, let orientation, let children, _):
+        case .split(_, let orientation, let children):
             container(orientation, children)
         }
     }

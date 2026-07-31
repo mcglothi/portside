@@ -40,7 +40,7 @@ struct SessionGroup: Identifiable, Codable, Equatable {
         case .leaf(let leaf):
             if case .host(let id) = leaf.kind { return [id] }
             return []
-        case .split(_, let children, _):
+        case .split(_, let children):
             return children.flatMap { entryIDs(in: $0) }
         }
     }
@@ -52,7 +52,7 @@ struct SessionGroup: Identifiable, Codable, Equatable {
     private static func paneCount(in node: WorkspaceSnapshot.PaneSnapshot) -> Int {
         switch node {
         case .leaf: return 1
-        case .split(_, let children, _): return children.reduce(0) { $0 + paneCount(in: $1) }
+        case .split(_, let children): return children.reduce(0) { $0 + paneCount(in: $1) }
         }
     }
 }

@@ -25,8 +25,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
     func testTreeSnapshotRoundTrips() throws {
         let a = UUID(), b = UUID()
         let snap = WorkspaceSnapshot(tabs: [
-            tab(.split(orientation: .horizontal, children: [hostLeaf(a), shellLeaf(multiExec: false)],
-                       fractions: [0.5, 0.5])),
+            tab(.split(orientation: .horizontal, children: [hostLeaf(a), shellLeaf(multiExec: false)])),
             tab(hostLeaf(b)),
         ], selectedTabIndex: 1)
 
@@ -65,8 +64,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
         let library = [a.id: a, b.id: b]
         let snap = WorkspaceSnapshot(tabs: [
             tab(.split(orientation: .vertical,
-                       children: [hostLeaf(a.id, multiExec: false), shellLeaf()],
-                       fractions: [0.5, 0.5])),
+                       children: [hostLeaf(a.id, multiExec: false), shellLeaf()])),
             tab(hostLeaf(b.id)),
         ], selectedTabIndex: 1)
 
@@ -76,7 +74,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
         XCTAssertEqual(plan.selectedTabIndex, 1)
 
         // First tab is a vertical split of a connect + a local shell.
-        guard case .split(let orientation, let children, _) = plan.tabs[0].root else {
+        guard case .split(let orientation, let children) = plan.tabs[0].root else {
             return XCTFail("expected a split")
         }
         XCTAssertEqual(orientation, .vertical)
@@ -89,8 +87,7 @@ final class WorkspaceSnapshotTests: XCTestCase {
         let a = host("a")
         let library = [a.id: a]     // 'b' was deleted
         let snap = WorkspaceSnapshot(tabs: [
-            tab(.split(orientation: .horizontal, children: [hostLeaf(a.id), hostLeaf(UUID())],
-                       fractions: [0.5, 0.5])),
+            tab(.split(orientation: .horizontal, children: [hostLeaf(a.id), hostLeaf(UUID())])),
         ], selectedTabIndex: 0)
 
         let plan = snap.plan { library[$0] }

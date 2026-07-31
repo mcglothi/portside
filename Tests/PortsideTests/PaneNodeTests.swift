@@ -19,8 +19,7 @@ final class PaneNodeTests: XCTestCase {
         let (a, aID) = leaf(), (b, bID) = leaf(), (c, cID) = leaf()
         let tree = Node.split(id: UUID(), orientation: .horizontal,
                               children: [a, .split(id: UUID(), orientation: .vertical,
-                                                   children: [b, c], fractions: [0.5, 0.5])],
-                              fractions: [0.5, 0.5])
+                                                   children: [b, c])])
         XCTAssertEqual(tree.leaves.map(\.id), [aID, bID, cID])
     }
 
@@ -30,19 +29,18 @@ final class PaneNodeTests: XCTestCase {
         let (a, aID) = leaf(), (b, _) = leaf()
         let split = a.splitting(leafID: aID, with: b, orientation: .horizontal)
 
-        guard case .split(_, let orientation, let children, let fractions) = split else {
+        guard case .split(_, let orientation, let children) = split else {
             return XCTFail("expected a split")
         }
         XCTAssertEqual(orientation, .horizontal)
         XCTAssertEqual(children.count, 2)
-        XCTAssertEqual(fractions, [0.5, 0.5])
         XCTAssertEqual(split.leaves.count, 2)
     }
 
     func testSplittingOnlyAffectsTargetLeaf() {
         let (a, aID) = leaf(), (b, bID) = leaf(), (c, _) = leaf()
         let tree = Node.split(id: UUID(), orientation: .horizontal,
-                              children: [a, b], fractions: [0.5, 0.5])
+                              children: [a, b])
         let result = tree.splitting(leafID: bID, with: c, orientation: .vertical)
 
         // a untouched; b replaced by a vertical 2-split → 3 leaves total.
@@ -56,14 +54,13 @@ final class PaneNodeTests: XCTestCase {
         let (a, aID) = leaf(), (b, bID) = leaf()
         let replacement = StubLeaf()
         let tree = Node.split(id: UUID(), orientation: .horizontal,
-                              children: [a, b], fractions: [0.3, 0.7])
+                              children: [a, b])
         let result = tree.replacingLeaf(aID, with: replacement)
 
         // Same geometry, a swapped for the replacement, b untouched.
-        guard case .split(_, _, let children, let fractions) = result else {
+        guard case .split(_, _, let children) = result else {
             return XCTFail("expected the split shape to be preserved")
         }
-        XCTAssertEqual(fractions, [0.3, 0.7])
         XCTAssertEqual(result.leaves.map(\.id), [replacement.id, bID])
         XCTAssertNotEqual(replacement.id, aID)
     }
@@ -89,7 +86,7 @@ final class PaneNodeTests: XCTestCase {
     func testRemovingOneChildCollapsesSplitToSibling() {
         let (a, aID) = leaf(), (b, bID) = leaf()
         let tree = Node.split(id: UUID(), orientation: .horizontal,
-                              children: [a, b], fractions: [0.3, 0.7])
+                              children: [a, b])
         let result = tree.removingLeaf(aID)
 
         // The split collapses to the surviving leaf b.
@@ -102,24 +99,20 @@ final class PaneNodeTests: XCTestCase {
     func testRemovingFromThreeWayKeepsSplitAndRenormalizes() {
         let (a, _) = leaf(), (b, bID) = leaf(), (c, _) = leaf()
         let tree = Node.split(id: UUID(), orientation: .vertical,
-                              children: [a, b, c], fractions: [0.2, 0.3, 0.5])
+                              children: [a, b, c])
         let result = tree.removingLeaf(bID)
 
-        guard case .split(_, _, let children, let fractions)? = result else {
+        guard case .split(_, _, let children)? = result else {
             return XCTFail("expected a split of the two survivors")
         }
-        XCTAssertEqual(children.count, 2)
-        XCTAssertEqual(fractions.reduce(0, +), 1.0, accuracy: 0.0001)
-        // Original 0.2 : 0.5 renormalized to sum 1 while keeping their ratio.
-        XCTAssertEqual(fractions[0], 0.2 / 0.7, accuracy: 0.0001)
-        XCTAssertEqual(fractions[1], 0.5 / 0.7, accuracy: 0.0001)
+        XCTAssertEqual(children.count, 2, "the two survivors stay, in order")
     }
 
     func testRemovingNestedLeafCollapsesInnerSplit() {
         let (a, _) = leaf(), (b, bID) = leaf(), (c, cID) = leaf()
         // outer[ a | inner[ b / c ] ]
-        let inner = Node.split(id: UUID(), orientation: .vertical, children: [b, c], fractions: [0.5, 0.5])
-        let outer = Node.split(id: UUID(), orientation: .horizontal, children: [a, inner], fractions: [0.5, 0.5])
+        let inner = Node.split(id: UUID(), orientation: .vertical, children: [b, c])
+        let outer = Node.split(id: UUID(), orientation: .horizontal, children: [a, inner])
 
         let result = outer.removingLeaf(bID)
         // inner collapses to c, so outer becomes [ a | c ] — still 2 leaves.
@@ -127,14 +120,4 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertEqual(result?.leaves.last?.id, cID)
     }
 
-    // MARK: - normalized
-
-    func testNormalizedSumsToOne() {
-        XCTAssertEqual(normalizedFractions([1, 1, 2]).reduce(0, +), 1.0, accuracy: 0.0001)
-    }
-
-    func testNormalizedZeroTotalFallsBackToEqual() {
-        let result = normalizedFractions([0, 0])
-        XCTAssertEqual(result, [0.5, 0.5])
-    }
 }

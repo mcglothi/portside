@@ -28,10 +28,8 @@ final class SessionGroupTests: XCTestCase {
 
     /// A grid of `ids` split evenly, the shape "save these eight boxes" makes.
     private func grid(_ ids: [UUID]) -> WorkspaceSnapshot.TabSnapshot {
-        let children = ids.map { leaf(.host($0)) }
-        let fractions = Array(repeating: CGFloat(1.0 / Double(ids.count)), count: ids.count)
         return WorkspaceSnapshot.TabSnapshot(
-            root: .split(orientation: .horizontal, children: children, fractions: fractions)
+            root: .split(orientation: .horizontal, children: ids.map { leaf(.host($0)) })
         )
     }
 
@@ -43,8 +41,7 @@ final class SessionGroupTests: XCTestCase {
         // Mix in a local shell: it counts as a pane but is not a member host.
         root = WorkspaceSnapshot.TabSnapshot(root: .split(
             orientation: .horizontal,
-            children: [leaf(.host(a)), leaf(.host(b)), leaf(.localShell)],
-            fractions: [0.34, 0.33, 0.33]))
+            children: [leaf(.host(a)), leaf(.host(b)), leaf(.localShell)]))
         let group = SessionGroup(name: "Splunk", layout: root)
 
         XCTAssertEqual(group.memberEntryIDs, [a, b])

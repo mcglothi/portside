@@ -3,10 +3,11 @@ import XCTest
 
 /// Whether a saved layout comes back the shape it went in.
 ///
-/// Written after a group reopened with visibly different pane proportions from
-/// the tab it was saved from. The question that needs settling first is where
-/// the loss happens: capture, replay, or neither (and the live view was the
-/// odd one all along).
+/// This used to be about split *proportions*. It isn't any more: `fractions`
+/// was removed once it turned out nothing ever set it from a user action and
+/// nothing ever rendered it. What remains — and what a saved group or a
+/// restored workspace actually depends on — is that the *structure* survives:
+/// the same panes, in the same nesting, in the same order.
 @MainActor
 final class LayoutFidelityTests: XCTestCase {
 
@@ -14,92 +15,88 @@ final class LayoutFidelityTests: XCTestCase {
         .leaf(WorkspaceSnapshot.Leaf(kind: .localShell, includedInMultiExec: included))
     }
 
-    /// Fractions survive an encode/decode of the snapshot itself.
-    func testUnevenFractionsSurviveCodable() throws {
-        let uneven: [CGFloat] = [0.09, 0.46, 0.45]
+    private func leafCount(_ node: WorkspaceSnapshot.PaneSnapshot) -> Int {
+        switch node {
+        case .leaf: return 1
+        case .split(_, let children): return children.reduce(0) { $0 + leafCount($1) }
+        }
+    }
+
+    func testStructureSurvivesCodable() throws {
         let snapshot = WorkspaceSnapshot(tabs: [
             WorkspaceSnapshot.TabSnapshot(root: .split(
                 orientation: .horizontal,
-                children: [leaf(), leaf(), leaf()],
-                fractions: uneven))
+                children: [leaf(), .split(orientation: .vertical, children: [leaf(), leaf(false)])]))
         ])
 
-        let data = try JSONEncoder().encode(snapshot)
-        let decoded = try JSONDecoder().decode(WorkspaceSnapshot.self, from: data)
+        let decoded = try JSONDecoder().decode(
+            WorkspaceSnapshot.self, from: JSONEncoder().encode(snapshot))
 
-        guard case .split(_, _, let fractions)? = decoded.tabs.first?.root else {
-            return XCTFail("expected a split")
-        }
-        XCTAssertEqual(fractions, uneven, "persistence must not round the layout off")
+        XCTAssertEqual(decoded, snapshot, "nesting, order and membership must all round-trip")
     }
 
-    /// Fractions survive the plan step that sits between snapshot and rebuild.
-    func testUnevenFractionsSurviveThePlan() throws {
-        let uneven: [CGFloat] = [0.09, 0.46, 0.45]
-        let snapshot = WorkspaceSnapshot(tabs: [
-            WorkspaceSnapshot.TabSnapshot(root: .split(
-                orientation: .horizontal,
-                children: [leaf(), leaf(), leaf()],
-                fractions: uneven))
-        ])
+    /// The compatibility guarantee for removing `fractions`.
+    func testASnapshotWrittenWithFractionsStillDecodes() throws {
+        // Every library and group saved before the removal has this key. A
+        // synthesized enum decoder ignores associated-value keys it doesn't
+        // know, so they load — but that is exactly the kind of assumption that
+        // deserves a test rather than a comment.
+        let json = """
+        {"tabs":[{"root":{"split":{"orientation":"horizontal",
+                                   "fractions":[0.09,0.46,0.45],
+                                   "children":[
+            {"leaf":{"_0":{"kind":{"localShell":{}},"includedInMultiExec":true}}},
+            {"leaf":{"_0":{"kind":{"localShell":{}},"includedInMultiExec":false}}}
+          ]}}}],
+         "selectedTabIndex":0,"wasGridView":false}
+        """.data(using: .utf8)!
 
-        let plan = snapshot.plan { _ in nil }   // local shells need no lookup
+        let decoded = try JSONDecoder().decode(WorkspaceSnapshot.self, from: json)
 
-        guard case .split(_, _, let fractions)? = plan.tabs.first?.root else {
-            return XCTFail("expected a split")
+        guard case .split(let orientation, let children)? = decoded.tabs.first?.root else {
+            return XCTFail("a pre-removal snapshot must still load")
         }
-        XCTAssertEqual(fractions, uneven, "planning must not renormalise an intact layout")
+        XCTAssertEqual(orientation, .horizontal)
+        XCTAssertEqual(children.count, 2)
     }
 
-    /// The full loop: build a real tab, snapshot it, and compare.
-    func testCapturingALiveTabPreservesItsFractions() throws {
+    func testCapturingALiveTabPreservesItsStructure() throws {
         let manager = SessionManager()
         defer { for s in manager.sessions { s.shutdown() } }
         manager.openLocalShell()
         manager.splitActivePane(.horizontal)
-        manager.splitActivePane(.horizontal)
+        manager.splitActivePane(.vertical)
 
         let tab = try XCTUnwrap(manager.selectedTab)
-        guard case .split(_, _, _, let live)? = tab.root else {
-            return XCTFail("expected a split after two splits, got \(String(describing: tab.root))")
-        }
-
         let captured = manager.currentWorkspace
-        guard case .split(_, _, let saved)? = captured.tabs.first?.root else {
-            return XCTFail("expected a split in the snapshot")
-        }
 
-        XCTAssertEqual(saved, live, "capture must record the layout the tab actually has")
+        XCTAssertEqual(captured.tabs.count, 1)
+        XCTAssertEqual(leafCount(captured.tabs[0].root), tab.leaves.count,
+                       "capture must record every pane the tab actually has")
     }
 
-    /// And back out again, which is what a group launch does.
-    func testReplayingASnapshotRebuildsTheSameFractions() throws {
+    func testReplayingASnapshotRebuildsTheSameStructure() throws {
         let manager = SessionManager()
         defer { for s in manager.sessions { s.shutdown() } }
         manager.openLocalShell()
         manager.splitActivePane(.horizontal)
-        manager.splitActivePane(.horizontal)
-
+        manager.splitActivePane(.vertical)
         let captured = manager.currentWorkspace
-        guard case .split(_, _, let saved)? = captured.tabs.first?.root else {
-            return XCTFail("expected a split in the snapshot")
-        }
 
         let replayer = SessionManager()
         defer { for s in replayer.sessions { s.shutdown() } }
         replayer.restore(captured.plan { _ in nil })
 
-        guard case .split(_, _, _, let rebuilt)? = replayer.selectedTab?.root else {
-            return XCTFail("expected a split after replay")
-        }
-        XCTAssertEqual(rebuilt, saved, "replay must rebuild the layout that was saved")
+        XCTAssertEqual(replayer.selectedTab?.leaves.count, manager.selectedTab?.leaves.count)
+        XCTAssertEqual(replayer.currentWorkspace.tabs.first?.root,
+                       captured.tabs.first?.root,
+                       "a replayed tab must snapshot back to what it was built from")
     }
-}
 
-extension LayoutFidelityTests {
-    /// Documents the shape two splits produce, so the rendering question has a
-    /// stated baseline to be compared against.
-    func testTwoSplitsProduceANestedTreeNotAFlatRow() throws {
+    func testTwoSplitsNestRatherThanWideningARow() throws {
+        // Splitting the *active* pane, which is the one just created, nests.
+        // Worth stating: it's why a three-pane tab isn't three equal columns,
+        // and it was mistaken for lost proportions before `fractions` went.
         let manager = SessionManager()
         defer { for s in manager.sessions { s.shutdown() } }
         manager.openLocalShell()
@@ -108,13 +105,24 @@ extension LayoutFidelityTests {
 
         let tab = try XCTUnwrap(manager.selectedTab)
         XCTAssertEqual(tab.leaves.count, 3)
-        guard case .split(_, _, let children, let fractions)? = tab.root else {
-            return XCTFail("expected a split")
+        guard case .split(_, _, let children)? = tab.root else { return XCTFail("expected a split") }
+        XCTAssertEqual(children.count, 2, "nested, not a flat row of three")
+    }
+
+    func testRemovingAPaneCollapsesASingleChildSplit() throws {
+        // The tree algebra that used to renormalise fractions still has to
+        // collapse a split left with one child.
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        manager.openLocalShell()
+        manager.splitActivePane(.horizontal)
+        let tab = try XCTUnwrap(manager.selectedTab)
+        XCTAssertEqual(tab.leaves.count, 2)
+
+        manager.close(try XCTUnwrap(tab.leaves.last))
+
+        guard case .leaf? = manager.selectedTab?.root else {
+            return XCTFail("a two-way split losing one child should collapse to a leaf")
         }
-        // Splitting the *active* pane, which is the pane just created, nests
-        // rather than widening the row — so the first pane keeps half the
-        // width and the later two share the other half.
-        XCTAssertEqual(children.count, 2, "shape: \(children.count) children, fractions \(fractions)")
-        XCTAssertEqual(fractions, [0.5, 0.5])
     }
 }
