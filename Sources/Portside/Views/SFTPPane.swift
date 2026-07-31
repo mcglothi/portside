@@ -320,7 +320,18 @@ final class SFTPBrowserModel: ObservableObject {
                     ? "Uploading \(url.lastPathComponent)"
                     : "Uploading \(url.lastPathComponent) (\(index + 1) of \(toUpload.count))")
                 try Task.checkCancellation()
-                try await self.client.upload(localURL: url, toDirectory: target)
+                // `uploadReplacing`, not `upload`: the plain one puts straight
+                // to the final filename, so an interrupted drop leaves a
+                // partial file wearing the real name — which the collision
+                // check above would then refuse to replace on the retry. The
+                // name is known to be free here, so the rename cannot clash.
+                try await self.client.uploadReplacing(
+                    localURL: url,
+                    remotePath: RemoteRelayTransfer.remotePath(
+                        directory: target, name: url.lastPathComponent
+                    ),
+                    preservingModeFrom: nil
+                )
             }
             try await self.load(target)
             if !colliding.isEmpty {

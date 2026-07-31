@@ -230,6 +230,15 @@ exists to fill that gap without giving up native speed and macOS polish.
   **browsable recently-closed tabs**; **⌘W closes the tab**; a **"never
   connected"** coverage category; and inline images documented at last —
   Sixel, iTerm2 and Kitty graphics all render.
+- ✅ **Host-to-host file copy** — drag a file from the SFTP browser onto a
+  different pane and it lands on that host, in whatever directory that
+  pane's shell is currently sitting in. Drop it on a pane that is
+  broadcasting and it goes to every host in the MultiExec group at once;
+  files dragged in from Finder follow the same rule. The bytes relay
+  through a staging file on the Mac (there is no safe direct host-to-host
+  path without trusting one box with credentials for another), downloaded
+  once no matter how many hosts receive it, and uploaded to several at a
+  time — configurable in Settings ▸ Connection.
 - ✅ **Changelog on update** — the Sparkle update prompt now shows a
   cumulative changelog covering everything since whatever version you're
   updating from, not just the latest release's own notes, since releases
@@ -237,16 +246,7 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ### Next up
 
-- **SFTP: host-to-host file copy in Grid View** — drag a file from the one
-  shared SFTP pane onto a *different* pane/tab (not its own file browser —
-  there's only one shared pane today, tied to whichever pane is focused) to
-  copy it directly to that host, landing in whatever directory that
-  session's shell is currently sitting in. The live-current-directory
-  tracking this needs already landed (OSC 7, used by the SFTP pane's own
-  `cd`-following) — what's left is the new drop target and the actual
-  transfer, which relays through a temp file behind the scenes (reusing the
-  existing download/upload code) rather than a true zero-hop pipe between
-  the two hosts.
+- Nothing named. See **Later** for the standing list.
 
 ### Later
 
