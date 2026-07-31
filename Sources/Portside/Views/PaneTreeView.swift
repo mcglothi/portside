@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// Renders a tab's pane tree: leaves are terminals, interior nodes are
@@ -97,6 +98,56 @@ struct PaneLeafView: View {
                         .allowsHitTesting(false)
                 }
             }
+            // Host-to-host copy: a file dragged from the SFTP pane lands in
+            // whatever directory *this* pane's shell is sitting in.
+            //
+            // The drop itself is caught in AppKit by `LoggingTerminalView`
+            // (see `enableRemoteFileDrops` for why neither SwiftUI drop API
+            // can see this drag); it lands here for the store lookup and any
+            // error presentation.
+            .onChange(of: session.pendingRemoteDrop) { _, payload in
+                guard let payload else { return }
+                session.pendingRemoteDrop = nil
+                acceptRelayDrop(payload)
+            }
+            .onChange(of: session.pendingLocalDrop) { _, urls in
+                guard let urls, !urls.isEmpty else { return }
+                session.pendingLocalDrop = nil
+                acceptLocalDrop(urls)
+            }
+            .overlay {
+                if showsDropHighlight {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                        .background(Color.accentColor.opacity(0.08))
+                        .allowsHitTesting(false)
+                        .animation(.easeOut(duration: 0.12), value: showsDropHighlight)
+                }
+            }
+            // A pane flashes when the copy actually lands on it, so a fan-out
+            // is visible as several panes lighting up in turn. The drag icon
+            // can only ever drop on one of them.
+            .overlay {
+                if session.relayLanded {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(.green, lineWidth: 3)
+                        .background(Color.green.opacity(0.10))
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: session.relayLanded)
+            .alert(
+                "Could not copy here",
+                isPresented: Binding(
+                    get: { session.relayError != nil },
+                    set: { if !$0 { session.relayError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { session.relayError = nil }
+            } message: {
+                Text(session.relayError ?? "")
+            }
             .confirmationDialog(
                 "\"\(session.title)\" is a protected host. Include it in the MultiExec broadcast?",
                 isPresented: confirmingInclude
@@ -106,6 +157,94 @@ struct PaneLeafView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+    }
+
+    /// Takes a remote file dropped on this pane and starts the relay.
+    ///
+    /// The source entry is resolved from the store at drop time rather than
+    /// trusted from the pasteboard, so a drag that started before a host was
+    /// edited or deleted cannot act on stale connection details.
+    private func acceptRelayDrop(_ payload: RemoteFileDragPayload) {
+        guard let sourceEntry = store.entry(id: payload.entryID) else {
+            session.relayError = "That host is no longer in your session library."
+            return
+        }
+        guard let destinationEntry = session.entry else {
+            session.relayError = "This pane has no host to copy to — "
+                + "host-to-host copy needs a plain SSH session."
+            return
+        }
+
+        // Dropping onto a pane that is currently broadcasting sends the file
+        // to the whole group, matching what typing into that pane would do.
+        // Dropping onto an *excluded* pane while armed copies only there —
+        // exclusion means "keystrokes don't reach this box", and a file is no
+        // different.
+        if let group = broadcastTargets(), group.count > 1 {
+            RemoteRelayCoordinator.startFanOut(
+                payload: payload, sourceEntry: sourceEntry,
+                droppedOn: session, targets: group,
+                concurrency: store.defaults.resolvedTransferConcurrency
+            )
+            return
+        }
+
+        RemoteRelayCoordinator.start(
+            payload: payload,
+            sourceEntry: sourceEntry,
+            destinationSession: session,
+            destinationEntry: destinationEntry
+        )
+    }
+
+    /// Takes local files dropped on this pane — from Finder or anywhere else
+    /// — and uploads them where a remote file dropped here would go: the
+    /// whole broadcast group when this pane is broadcasting, otherwise just
+    /// this host.
+    private func acceptLocalDrop(_ urls: [URL]) {
+        guard let destinationEntry = session.entry, destinationEntry.supportsFileBrowser else {
+            session.relayError = "This pane has no host to upload to — "
+                + "file upload needs a plain SSH session."
+            return
+        }
+        let group = broadcastTargets()
+            ?? [RemoteRelayCoordinator.Target(session: session, entry: destinationEntry)]
+        RemoteRelayCoordinator.startLocalFanOut(
+            urls: urls, droppedOn: session, targets: group,
+            concurrency: store.defaults.resolvedTransferConcurrency
+        )
+    }
+
+    /// Highlights this pane while a droppable file hovers anywhere in the
+    /// group it would be copied to — not just over this pane.
+    ///
+    /// The drag icon can only sit over one pane, so without this a fan-out
+    /// looks identical to a single-host copy right up until the file appears
+    /// on hosts you did not visibly aim at. Lighting the whole group during
+    /// the hover answers "where is this going?" before the drop rather than
+    /// after it.
+    private var showsDropHighlight: Bool {
+        if session.dropTargeted { return true }
+        guard tab.broadcastArmed, session.includedInMultiExec else { return false }
+        return tab.leaves.contains { $0.dropTargeted && $0.includedInMultiExec }
+    }
+
+    /// Every pane the file should reach, or nil when this is an ordinary
+    /// single-pane drop.
+    ///
+    /// Panes with no file browser (containers, local shells, mosh) are left
+    /// out rather than reported: a mixed group is an ordinary way to work,
+    /// and a broadcast that half-fails by design should not raise an error
+    /// about it every time.
+    private func broadcastTargets() -> [RemoteRelayCoordinator.Target]? {
+        guard tab.broadcastArmed, session.includedInMultiExec else { return nil }
+        let targets = tab.leaves.compactMap { leaf -> RemoteRelayCoordinator.Target? in
+            guard leaf.includedInMultiExec,
+                  let entry = leaf.entry, entry.supportsFileBrowser
+            else { return nil }
+            return .init(session: leaf, entry: entry)
+        }
+        return targets.isEmpty ? nil : targets
     }
 
     /// Presented over the pane the manager raised the guard for — so ⌥⌘M on a

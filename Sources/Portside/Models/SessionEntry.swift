@@ -381,6 +381,24 @@ struct ConnectionDefaults: Codable, Equatable {
     /// files, which is why this is worth setting once.
     var remoteEditorPath: String?
 
+    /// How many hosts a MultiExec file copy uploads to at once.
+    ///
+    /// Optional like everything else here on purpose: a missing key has to
+    /// decode, not throw, or one old record fails the whole library load.
+    ///
+    /// Serial (1) is a legitimate choice — hosts then finish one at a time, so
+    /// the earliest is usable soonest — but it lets a single unresponsive host
+    /// block every host behind it, which is why the default is not 1.
+    var transferConcurrency: Int?
+
+    /// Clamped to something a shared uplink can actually sustain. Four is a
+    /// deliberate middle: enough that one stalled host cannot hold up the
+    /// group, few enough that a broadcast to twenty boxes does not open twenty
+    /// ssh processes against one upstream.
+    var resolvedTransferConcurrency: Int {
+        min(max(transferConcurrency ?? 4, 1), 8)
+    }
+
     var remoteEditorURL: URL? {
         guard let path = remoteEditorPath, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)

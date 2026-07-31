@@ -19,7 +19,12 @@ advisory is published with credit unless you ask otherwise.
 
 - SSH transport is delegated to the system OpenSSH client; Portside does not
   implement its own cryptography.
-- Passwords and passphrases are stored in the macOS Keychain, never on disk.
+- Passwords and passphrases are stored in the macOS Keychain. One exception:
+  when a password must be handed to `ssh`, it is written to a mode-`0600`
+  file in a private temporary directory for the askpass helper to read, and
+  unlinked immediately afterwards. A crash or force-quit can leave that file
+  until the next launch, which purges any it finds. This is materially weaker
+  than the Keychain against another process running as you.
 - Session metadata lives in `~/Library/Application Support/Portside/` and is
   plain JSON by design (no secrets are written there).
 - Release binaries are Developer ID signed and notarized; updates are

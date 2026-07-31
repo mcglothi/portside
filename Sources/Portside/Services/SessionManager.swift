@@ -33,6 +33,95 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// Raised by Codex CLI in the 0.17 pre-release review.
     var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
 
+    // MARK: - Host-to-host drop target
+
+    /// A remote file was dropped on this terminal.
+    var onRemoteFileDrop: ((RemoteFileDragPayload) -> Void)?
+    /// Local files (from Finder, or anywhere else) were dropped here.
+    var onLocalFilesDrop: (([URL]) -> Void)?
+    /// A droppable remote file entered or left this terminal's bounds.
+    var onDropTargetChanged: ((Bool) -> Void)?
+
+    /// Drops are handled here, in AppKit, rather than with a SwiftUI
+    /// `onDrop`/`dropDestination` on the pane.
+    ///
+    /// The drag is an `NSFilePromiseProvider`, which writes its types lazily:
+    /// the pasteboard reports them (`NSPasteboard.types` lists ours) but the
+    /// `NSPasteboardItem`/`NSItemProvider` bridge that both SwiftUI drop APIs
+    /// match through exposes none of them. `dropDestination` therefore never
+    /// fired while the drag still *looked* accepted — the promise is what
+    /// draws the copy badge — and `onDrop`, registered for a type the bridge
+    /// could not see, rejected the drag outright. Reading the pasteboard
+    /// directly is the only path that sees the payload.
+    ///
+    /// This view is already the hit-test target over the terminal, so it
+    /// needs no overlay and cannot steal mouse handling from one.
+    func enableRemoteFileDrops() {
+        // `.fileURL` as well as our own type: a Finder drag onto a pane used
+        // to do nothing at all, so sending a local file to a broadcast group
+        // meant dropping it into the file browser (which uploaded it to that
+        // one host) and dragging it back out to the group.
+        registerForDraggedTypes([.portsideRemoteFile, .fileURL])
+    }
+
+    private func canAccept(_ sender: NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.data(forType: .portsideRemoteFile) != nil
+            || !localFileURLs(from: sender).isEmpty
+    }
+
+    private func localFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: options
+        ) as? [URL] ?? []
+        // Directories would need recursive upload; sftp `put` of one is not a
+        // thing here. Left out rather than half-working.
+        return urls.filter { url in
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            return exists && !isDir.boolValue
+        }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard canAccept(sender) else { return [] }
+        onDropTargetChanged?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canAccept(sender) ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargetChanged?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDropTargetChanged?(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        canAccept(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDropTargetChanged?(false)
+        guard let data = sender.draggingPasteboard.data(forType: .portsideRemoteFile) else {
+            let urls = localFileURLs(from: sender)
+            guard !urls.isEmpty else { return false }
+            onLocalFilesDrop?(urls)
+            return true
+        }
+        guard let payload = try? JSONDecoder().decode(
+            RemoteFileDragPayload.self, from: data
+        ) else {
+            return false
+        }
+        onRemoteFileDrop?(payload)
+        return true
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
         // The log and the command timeline get the bytes as they actually
@@ -278,13 +367,43 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// to keep the SFTP pane following `cd` in the terminal.
     @Published var currentDirectory: String?
 
+    /// Why a file dropped on this pane could not be copied here. Surfaced on
+    /// the pane itself rather than in the file browser, because the drop
+    /// target is what the user was looking at.
+    @Published var relayError: String?
+
+    /// A remote file is hovering over this pane and could land here.
+    @Published var dropTargeted = false
+    /// Local files dropped on this pane, awaiting the view's routing.
+    @Published var pendingLocalDrop: [URL]?
+    /// Set by the terminal view when a remote file is dropped; the pane view
+    /// picks it up, resolves the hosts against the store, and starts the
+    /// relay. Routed through here rather than handled in AppKit so the store
+    /// lookup and error presentation stay in SwiftUI where they belong.
+    @Published var pendingRemoteDrop: RemoteFileDragPayload?
+
+    /// True briefly after a copy lands on this host, so the pane can flash.
+    @Published var relayLanded = false
+
+    /// Flashes this pane to show a copy arrived. The only signal a fan-out
+    /// gets: the drag icon drops on one pane, but the file reaches many.
+    func flashRelayLanded() {
+        relayLanded = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            self.relayLanded = false
+        }
+    }
+
     private var _sftp: SFTPBrowserModel?
     /// Lazy per-session file browser; only for plain SSH hosts (not local
     /// shells or container/pod sessions).
     @MainActor var sftp: SFTPBrowserModel? {
         guard let entry, entry.supportsFileBrowser else { return nil }
         if _sftp == nil {
-            _sftp = SFTPBrowserModel(entry: entry)
+            // Seeded with what OSC 7 has already told us, so a browser opened
+            // after the shell moved opens where the shell actually is.
+            _sftp = SFTPBrowserModel(entry: entry, startingPath: currentDirectory)
         }
         return _sftp
     }
@@ -314,6 +433,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         view.logger = logger
         self.terminalView = view
         super.init()
+        wireRemoteFileDrops()
         terminalView.processDelegate = self
         apply(appearance: appearance)
         terminalView.startProcess(executable: executable, args: args, environment: environment)
@@ -341,6 +461,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         view.logger = logger
         self.terminalView = view
         super.init()
+        wireRemoteFileDrops()
         terminalView.processDelegate = self
         apply(appearance: appearance)
 
@@ -382,6 +503,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         view.logger = logger
         self.terminalView = view
         super.init()
+        wireRemoteFileDrops()
         terminalView.processDelegate = self
         apply(appearance: appearance)
 
@@ -567,6 +689,20 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// pane-navigation, so keystrokes land where the ring is).
     func focus() {
         terminalView.window?.makeFirstResponder(terminalView)
+    }
+
+    /// Lets a remote file dragged from the SFTP browser land on this pane.
+    private func wireRemoteFileDrops() {
+        terminalView.enableRemoteFileDrops()
+        terminalView.onDropTargetChanged = { [weak self] targeted in
+            Task { @MainActor in self?.dropTargeted = targeted }
+        }
+        terminalView.onRemoteFileDrop = { [weak self] payload in
+            Task { @MainActor in self?.pendingRemoteDrop = payload }
+        }
+        terminalView.onLocalFilesDrop = { [weak self] urls in
+            Task { @MainActor in self?.pendingLocalDrop = urls }
+        }
     }
 
     // MARK: - LocalProcessTerminalViewDelegate

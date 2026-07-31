@@ -29,7 +29,15 @@ struct SessionArea: View {
                     help: "Show the remote file browser for this session",
                     isOn: $sessions.filesPaneVisible
                 )
-                .disabled(armed || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
+                // Deliberately NOT disabled while MultiExec is armed. That gate
+                // arrived with the pane-tree refactor, when an armed tab was a
+                // separate grid mode with no single session to browse; a tab
+                // now has a well-defined active pane either way. It also made
+                // host-to-host copy unreachable for the case it most exists
+                // for — the file browser is the drag source, so disabling it
+                // while armed meant a fan-out could only be started by opening
+                // the browser first and arming afterwards.
+                .disabled(!(sessions.selected?.entry?.supportsFileBrowser ?? false))
             }
             ToolbarItem {
                 ToolbarToggleButton(
@@ -85,6 +93,7 @@ struct TabContentView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
     @ObservedObject var tab: Tab
+    @ObservedObject private var transfers = TransferCenter.shared
     @State private var commandInput = ""
 
     private var alert: Color { Color(nsColor: store.appearance.alert) }
@@ -117,6 +126,13 @@ struct TabContentView: View {
     /// The fallback matters: pinning nothing must not empty the bar for people
     /// who never favourite anything, and it keeps the feature discoverable —
     /// you see the bar, then find you can shorten it.
+    /// Transfers involving any host in this tab — the source of a fan-out is
+    /// as relevant here as its destinations.
+    private var tabTransfers: [TransferCenter.Transfer] {
+        let ids = Set(tab.leaves.compactMap { $0.entry?.id })
+        return transfers.transfers(forAny: ids)
+    }
+
     private var barMacros: [Macro] {
         store.favoriteMacros.isEmpty ? store.macros : store.favoriteMacros
     }
@@ -125,41 +141,84 @@ struct TabContentView: View {
         VStack(spacing: 0) {
             if tab.broadcastArmed {
                 let counts = sessions.multiExecInclusionCounts
-                HStack(spacing: 8) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("MultiExec is ON — keystrokes go to \(counts.included) of \(counts.total) panes in this tab")
-                            .fontWeight(.semibold)
-                        // The reminder: excluding a pane is the least
-                        // discoverable half of MultiExec, and the chips read as
-                        // labels until you know they're clickable.
-                        Text("\(toggleShortcut) excludes the focused pane; click a pane's chip to toggle it")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    // Every bulk action is its own button rather than items in a
-                    // menu: they're used mid-broadcast, between one command and
-                    // the next, where expanding a menu to reach them is a step
-                    // too many. Disabled rather than hidden so the row doesn't
-                    // reflow under the pointer as panes come and go.
-                    ForEach(MultiExecBulkAction.allCases, id: \.self) { action in
-                        bannerButton(action.label, key: action.shortcutAction) {
-                            sessions.applyBulkInclusion(action)
+                // Banner and any in-flight copies share one container so the
+                // alert background covers both. Adding the rows after the
+                // HStack instead moved `.padding`/`.background` onto them and
+                // left the banner itself unstyled.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        // Full-strength alert on the icon rather than the
+                        // background: the fill sits behind text, so matching
+                        // the pane rings' 0.8 there would cost legibility.
+                        // The glyph and the rule carry the colour instead.
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .foregroundStyle(alert)
+                            .font(.body.weight(.semibold))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("MultiExec is ON — keystrokes go to \(counts.included) of \(counts.total) panes in this tab")
+                                .fontWeight(.semibold)
+                            // The reminder: excluding a pane is the least
+                            // discoverable half of MultiExec, and the chips read as
+                            // labels until you know they're clickable.
+                            Text("\(toggleShortcut) excludes the focused pane; click a pane's chip to toggle it")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .disabled(!sessions.wouldChangeAnything(action))
-                        .help(action.help)
+                        Spacer()
+                        // Every bulk action is its own button rather than items in a
+                        // menu: they're used mid-broadcast, between one command and
+                        // the next, where expanding a menu to reach them is a step
+                        // too many. Disabled rather than hidden so the row doesn't
+                        // reflow under the pointer as panes come and go.
+                        ForEach(MultiExecBulkAction.allCases, id: \.self) { action in
+                            bannerButton(action.label, key: action.shortcutAction) {
+                                sessions.applyBulkInclusion(action)
+                            }
+                            .disabled(!sessions.wouldChangeAnything(action))
+                            .help(action.help)
+                        }
+                        // ⇧⌘M rather than a key of its own: Toggle MultiExec is
+                        // what turns the broadcast off, and this button is that.
+                        bannerButton("Disarm", key: .toggleMultiExec) {
+                            sessions.setBroadcastArmed(false)
+                        }
+                        .help("Turn MultiExec off for this tab")
                     }
-                    // ⇧⌘M rather than a key of its own: Toggle MultiExec is
-                    // what turns the broadcast off, and this button is that.
-                    bannerButton("Disarm", key: .toggleMultiExec) {
-                        sessions.setBroadcastArmed(false)
+                    // File copies to the group report here, where the banner
+                    // already is, rather than only inside the SFTP browser: that
+                    // list is filtered to the one host the browser is showing, and
+                    // dropping onto a pane moves focus away from the source.
+                    ForEach(tabTransfers) { transfer in
+                        HStack(spacing: 8) {
+                            if let fraction = transfer.fraction {
+                                ProgressView(value: fraction)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 120)
+                            } else {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .controlSize(.small)
+                            }
+                            Text(transfer.label)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                            Button("Cancel") { TransferCenter.shared.cancel(transfer.id) }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                        }
+                        .padding(.top, 2)
                     }
-                    .help("Turn MultiExec off for this tab")
                 }
                 .padding(8)
-                .background(alert.opacity(0.25))
-                Divider()
+                .background(alert.opacity(0.32))
+                // Matches the included panes' ring strength, so an armed tab
+                // reads as one thing rather than bright borders around a
+                // washed-out banner.
+                Rectangle()
+                    .fill(alert.opacity(0.8))
+                    .frame(height: 2)
             }
 
             HSplitView {

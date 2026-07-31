@@ -28,6 +28,17 @@ struct ConnectionSettingsView: View {
         )
     }
 
+    private var transferConcurrencyBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.defaults.resolvedTransferConcurrency) },
+            set: {
+                var d = store.defaults
+                d.transferConcurrency = Int($0)
+                store.updateDefaults(d)
+            }
+        )
+    }
+
     private var autoAcceptNewHostKeysBinding: Binding<Bool> {
         Binding(
             get: { store.defaults.autoAcceptNewHostKeys ?? false },
@@ -119,6 +130,21 @@ struct ConnectionSettingsView: View {
                 }
                 Button("Choose Another App…") { browseForEditor() }
                 Text("Used when you double-click a file in the SFTP browser. Right-click a file and use \"Edit With\" to override it for a single file.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("File Transfers") {
+                let cap = store.defaults.resolvedTransferConcurrency
+                Slider(value: transferConcurrencyBinding, in: 1...8, step: 1) {
+                    Text("Copy to \(cap) host\(cap == 1 ? "" : "s") at once")
+                } minimumValueLabel: {
+                    Text("1").font(.caption)
+                } maximumValueLabel: {
+                    Text("8").font(.caption)
+                }
+                Text(cap == 1
+                    ? "Hosts are copied to one at a time, so the first finishes soonest — but one unresponsive host holds up every host behind it."
+                    : "How many hosts a MultiExec file copy uploads to simultaneously. They share one uplink, so raising this mostly stops a slow host from holding up the group rather than making the whole copy faster.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
