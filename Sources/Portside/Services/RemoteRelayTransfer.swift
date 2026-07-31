@@ -158,11 +158,7 @@ enum RemoteRelayTransfer {
         operations: Operations = .live,
         onPhase: @Sendable (Phase) -> Void = { _ in }
     ) async throws {
-        let existing = try await operations.list(destination.entry, destination.directory)
-        try preflight(
-            source: source, destination: destination,
-            existingNames: Set(existing.map(\.name))
-        )
+        try await check(source: source, destination: destination, operations: operations)
 
         let staging = try makeStagingDirectory()
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -175,6 +171,94 @@ enum RemoteRelayTransfer {
         onPhase(.uploading)
         try await operations.upload(destination.entry, stagedFile, destination.directory)
         onPhase(.finished)
+    }
+
+    /// Lists the destination and runs `preflight` against it.
+    static func check(
+        source: Source, destination: Destination, operations: Operations = .live
+    ) async throws {
+        let existing = try await operations.list(destination.entry, destination.directory)
+        try preflight(
+            source: source, destination: destination,
+            existingNames: Set(existing.map(\.name))
+        )
+    }
+
+    // MARK: - Fan-out
+
+    /// What happened to one destination in a fan-out.
+    enum Outcome: Equatable {
+        case delivered
+        /// The file is already there, in that exact directory — dragging onto
+        /// a broadcast that includes the source's own pane is an ordinary way
+        /// to hit this, so it is a skip rather than a failure.
+        case skipped
+        case failed(String)
+    }
+
+    /// Copies one file to several hosts, downloading it **once**.
+    ///
+    /// The staging file is the whole reason this is worth having as its own
+    /// path: a broadcast to six hosts otherwise means six downloads of the
+    /// same bytes over the same link. One download feeds every upload.
+    ///
+    /// A destination that fails does not stop the others. Uploads run in
+    /// sequence rather than concurrently — each one is an `sftp` process, and
+    /// a fan-out to a large group would otherwise open that many at once,
+    /// against a link whose upstream they are all sharing anyway.
+    static func runFanOut(
+        source: Source,
+        destinations: [Destination],
+        operations: Operations = .live,
+        onPhase: @Sendable (Phase) -> Void = { _ in },
+        onDestination: @Sendable (Destination, Outcome) -> Void = { _, _ in }
+    ) async throws -> [(Destination, Outcome)] {
+        guard !destinations.isEmpty else { return [] }
+
+        // Preflight everything first, so a group where one host already has
+        // the file does not download megabytes before saying so.
+        var eligible: [Destination] = []
+        var results: [(Destination, Outcome)] = []
+        for destination in destinations {
+            do {
+                try await check(source: source, destination: destination, operations: operations)
+                eligible.append(destination)
+            } catch Failure.sameLocation {
+                results.append((destination, .skipped))
+                onDestination(destination, .skipped)
+            } catch {
+                let outcome = Outcome.failed(error.localizedDescription)
+                results.append((destination, outcome))
+                onDestination(destination, outcome)
+            }
+        }
+        guard !eligible.isEmpty else { return results }
+
+        let staging = try makeStagingDirectory()
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let stagedFile = staging.appendingPathComponent(source.name)
+
+        onPhase(.downloading)
+        try await operations.download(source.entry, source.remotePath, stagedFile)
+        try Task.checkCancellation()
+
+        onPhase(.uploading)
+        for destination in eligible {
+            do {
+                try Task.checkCancellation()
+                try await operations.upload(destination.entry, stagedFile, destination.directory)
+                results.append((destination, .delivered))
+                onDestination(destination, .delivered)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let outcome = Outcome.failed(error.localizedDescription)
+                results.append((destination, outcome))
+                onDestination(destination, outcome)
+            }
+        }
+        onPhase(.finished)
+        return results
     }
 
     enum Phase: Equatable {

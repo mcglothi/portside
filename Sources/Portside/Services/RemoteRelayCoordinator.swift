@@ -18,6 +18,92 @@ enum RemoteRelayCoordinator {
         var task: Task<Void, Never>?
     }
 
+    /// One pane a fan-out will deliver to.
+    struct Target {
+        let session: TerminalSession
+        let entry: SessionEntry
+    }
+
+    /// Copies one file to every pane in `targets`, downloading it once.
+    ///
+    /// Progress shows per host, on each destination's own pane, because that
+    /// is where `TransferCenter` files entries and where the user will look
+    /// to see whether their box got it. Failures are collected and reported
+    /// together on the pane the file was dropped on, rather than as one alert
+    /// per host — a broadcast to eight hosts where three are full should be
+    /// one message, not three dialogs.
+    static func startFanOut(
+        payload: RemoteFileDragPayload,
+        sourceEntry: SessionEntry,
+        droppedOn: TerminalSession,
+        targets: [Target],
+        operations: RemoteRelayTransfer.Operations = .live
+    ) {
+        let source = RemoteRelayTransfer.Source(
+            entry: sourceEntry, remotePath: payload.remotePath,
+            name: payload.name, size: payload.size
+        )
+        let reported = targets.map { ($0.entry, $0.session.currentDirectory) }
+
+        let box = TaskBox()
+        let id = TransferCenter.shared.begin(
+            entryID: sourceEntry.id,
+            remotePath: payload.remotePath,
+            label: "Reading \(payload.name) from \(sourceEntry.name)…",
+            total: payload.size,
+            cancel: { box.task?.cancel() }
+        )
+
+        box.task = Task { @MainActor in
+            defer { TransferCenter.shared.finish(id) }
+            do {
+                var destinations: [RemoteRelayTransfer.Destination] = []
+                var seen: Set<String> = []
+                for (entry, cwd) in reported {
+                    let directory = try await RemoteRelayTransfer.resolveDirectory(
+                        sessionCurrentDirectory: cwd, entry: entry, operations: operations
+                    )
+                    // Two panes on the same host in the same directory are one
+                    // destination; delivering twice would make the second a
+                    // spurious collision against the file just written.
+                    let key = "\(entry.id)|\(RemoteRelayTransfer.normalize(directory))"
+                    guard seen.insert(key).inserted else { continue }
+                    destinations.append(.init(entry: entry, directory: directory))
+                }
+                try Task.checkCancellation()
+
+                let results = try await RemoteRelayTransfer.runFanOut(
+                    source: source, destinations: destinations, operations: operations,
+                    onPhase: { phase in
+                        Task { @MainActor in
+                            guard phase == .uploading else { return }
+                            TransferCenter.shared.relabel(
+                                id, "Sending \(payload.name) to \(destinations.count) host(s)…"
+                            )
+                        }
+                    }
+                )
+
+                let failures = results.compactMap { destination, outcome -> String? in
+                    guard case .failed(let message) = outcome else { return nil }
+                    return "\(destination.entry.name): \(message)"
+                }
+                if !failures.isEmpty {
+                    let delivered = results.filter { $0.1 == .delivered }.count
+                    droppedOn.relayError = """
+                    Copied to \(delivered) of \(results.count) hosts.
+
+                    \(failures.joined(separator: "\n"))
+                    """
+                }
+            } catch is CancellationError {
+                // Nothing to report: the user asked for this.
+            } catch {
+                droppedOn.relayError = error.localizedDescription
+            }
+        }
+    }
+
     /// Starts a relay for a file dropped on `destinationSession`'s pane.
     ///
     /// Returns immediately; progress appears in the destination host's

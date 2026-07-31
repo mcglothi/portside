@@ -155,12 +155,44 @@ struct PaneLeafView: View {
                 + "host-to-host copy needs a plain SSH session."
             return
         }
+
+        // Dropping onto a pane that is currently broadcasting sends the file
+        // to the whole group, matching what typing into that pane would do.
+        // Dropping onto an *excluded* pane while armed copies only there —
+        // exclusion means "keystrokes don't reach this box", and a file is no
+        // different.
+        if let group = broadcastTargets(), group.count > 1 {
+            RemoteRelayCoordinator.startFanOut(
+                payload: payload, sourceEntry: sourceEntry,
+                droppedOn: session, targets: group
+            )
+            return
+        }
+
         RemoteRelayCoordinator.start(
             payload: payload,
             sourceEntry: sourceEntry,
             destinationSession: session,
             destinationEntry: destinationEntry
         )
+    }
+
+    /// Every pane the file should reach, or nil when this is an ordinary
+    /// single-pane drop.
+    ///
+    /// Panes with no file browser (containers, local shells, mosh) are left
+    /// out rather than reported: a mixed group is an ordinary way to work,
+    /// and a broadcast that half-fails by design should not raise an error
+    /// about it every time.
+    private func broadcastTargets() -> [RemoteRelayCoordinator.Target]? {
+        guard tab.broadcastArmed, session.includedInMultiExec else { return nil }
+        let targets = tab.leaves.compactMap { leaf -> RemoteRelayCoordinator.Target? in
+            guard leaf.includedInMultiExec,
+                  let entry = leaf.entry, entry.supportsFileBrowser
+            else { return nil }
+            return .init(session: leaf, entry: entry)
+        }
+        return targets.isEmpty ? nil : targets
     }
 
     /// Presented over the pane the manager raised the guard for — so ⌥⌘M on a

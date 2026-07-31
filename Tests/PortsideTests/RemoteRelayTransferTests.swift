@@ -349,3 +349,158 @@ final class RemoteFileDragPayloadTests: XCTestCase {
         )
     }
 }
+
+/// MultiExec fan-out: one file to every broadcasting host.
+final class RemoteRelayFanOutTests: XCTestCase {
+
+    private func makeEntry(_ name: String, kind: SessionKind = .host) -> SessionEntry {
+        SessionEntry(name: name, hostname: "\(name).internal", kind: kind)
+    }
+
+    private func source(_ entry: SessionEntry) -> RemoteRelayTransfer.Source {
+        RemoteRelayTransfer.Source(
+            entry: entry, remotePath: "/etc/hosts", name: "hosts", size: 512
+        )
+    }
+
+    private func remoteFile(_ name: String) -> RemoteFile {
+        RemoteFile(
+            name: name, isDirectory: false, isSymlink: false,
+            size: 1, dateText: "", permissions: "-rw-r--r--"
+        )
+    }
+
+    private final class Fake: @unchecked Sendable {
+        var downloads = 0
+        var uploads: [String] = []
+        /// host name -> what its directory already contains
+        var listings: [String: [RemoteFile]] = [:]
+        var failUploadsTo: Set<String> = []
+
+        func operations() -> RemoteRelayTransfer.Operations {
+            RemoteRelayTransfer.Operations(
+                pwd: { _ in "/home/deploy" },
+                list: { entry, _ in self.listings[entry.name] ?? [] },
+                download: { _, _, url in
+                    self.downloads += 1
+                    try Data("payload".utf8).write(to: url)
+                },
+                upload: { entry, _, _ in
+                    if self.failUploadsTo.contains(entry.name) {
+                        throw SFTPClientError.failed("no space left on device")
+                    }
+                    self.uploads.append(entry.name)
+                }
+            )
+        }
+    }
+
+    /// The reason fan-out is its own path: N hosts must not mean N downloads
+    /// of the same bytes.
+    func testDownloadsOnceRegardlessOfHostCount() async throws {
+        let fake = Fake()
+        let hosts = ["web-01", "web-02", "web-03", "web-04"].map { makeEntry($0) }
+        let results = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.downloads, 1, "one download should feed every upload")
+        XCTAssertEqual(fake.uploads.count, 4)
+        XCTAssertEqual(results.filter { $0.1 == .delivered }.count, 4)
+    }
+
+    /// One bad host must not cost the others their copy.
+    func testOneFailureDoesNotStopTheRest() async throws {
+        let fake = Fake()
+        fake.failUploadsTo = ["web-02"]
+        let hosts = ["web-01", "web-02", "web-03"].map { makeEntry($0) }
+        let results = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.uploads.sorted(), ["web-01", "web-03"])
+        let failed = results.filter { if case .failed = $0.1 { return true } else { return false } }
+        XCTAssertEqual(failed.count, 1)
+        XCTAssertEqual(failed.first?.0.entry.name, "web-02")
+    }
+
+    /// Dragging onto a broadcast that includes the file's own pane is
+    /// ordinary; that host is a skip, not an error.
+    func testSourcesOwnHostIsSkippedNotFailed() async throws {
+        let fake = Fake()
+        let build = makeEntry("build")
+        let results = try await RemoteRelayTransfer.runFanOut(
+            source: source(build),
+            destinations: [
+                .init(entry: build, directory: "/etc"),        // where the file already is
+                .init(entry: makeEntry("web-01"), directory: "/tmp"),
+            ],
+            operations: fake.operations()
+        )
+        XCTAssertEqual(results.first(where: { $0.0.entry.id == build.id })?.1, .skipped)
+        XCTAssertEqual(fake.uploads, ["web-01"])
+    }
+
+    /// A host that already has the file is reported, and the group still goes.
+    func testCollisionOnOneHostIsReportedWithoutBlockingOthers() async throws {
+        let fake = Fake()
+        fake.listings["web-02"] = [remoteFile("hosts")]
+        let hosts = ["web-01", "web-02"].map { makeEntry($0) }
+        let results = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.uploads, ["web-01"])
+        guard case .failed(let message)? = results.first(where: {
+            $0.0.entry.name == "web-02"
+        })?.1 else { return XCTFail("expected web-02 to report a collision") }
+        XCTAssertTrue(message.contains("already exists"), message)
+    }
+
+    /// Preflight runs before the download so a doomed group does not pull
+    /// bytes down first.
+    func testNothingIsDownloadedWhenEveryHostIsIneligible() async throws {
+        let fake = Fake()
+        fake.listings["web-01"] = [remoteFile("hosts")]
+        fake.listings["web-02"] = [remoteFile("hosts")]
+        let hosts = ["web-01", "web-02"].map { makeEntry($0) }
+        _ = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: fake.operations()
+        )
+        XCTAssertEqual(fake.downloads, 0)
+        XCTAssertTrue(fake.uploads.isEmpty)
+    }
+
+    func testEmptyDestinationListIsANoOp() async throws {
+        let fake = Fake()
+        let results = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")), destinations: [],
+            operations: fake.operations()
+        )
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(fake.downloads, 0)
+    }
+
+    func testStagingIsRemovedAfterAFanOut() async throws {
+        let fake = Fake()
+        var staged: URL?
+        var ops = fake.operations()
+        let inner = ops.download
+        ops.download = { entry, path, url in
+            staged = url
+            try await inner(entry, path, url)
+        }
+        _ = try await RemoteRelayTransfer.runFanOut(
+            source: source(makeEntry("build")),
+            destinations: [.init(entry: makeEntry("web-01"), directory: "/tmp")],
+            operations: ops
+        )
+        let dir = try XCTUnwrap(staged).deletingLastPathComponent()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+    }
+}
