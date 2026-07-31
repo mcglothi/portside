@@ -383,9 +383,15 @@ final class RemoteRelayFanOutTests: XCTestCase {
         )
     }
 
+    /// Uploads run concurrently now, so this is touched from several tasks at
+    /// once — it needs a lock, and every assertion about which hosts were
+    /// reached has to be order-insensitive.
     private final class Fake: @unchecked Sendable {
-        var downloads = 0
-        var uploads: [String] = []
+        private let lock = NSLock()
+        private var _downloads = 0
+        private var _uploads: [String] = []
+        var downloads: Int { lock.lock(); defer { lock.unlock() }; return _downloads }
+        var uploads: [String] { lock.lock(); defer { lock.unlock() }; return _uploads }
         /// host name -> what its directory already contains
         var listings: [String: [RemoteFile]] = [:]
         var failUploadsTo: Set<String> = []
@@ -393,16 +399,20 @@ final class RemoteRelayFanOutTests: XCTestCase {
         func operations() -> RemoteRelayTransfer.Operations {
             RemoteRelayTransfer.Operations(
                 pwd: { _ in "/home/deploy" },
-                list: { entry, _ in self.listings[entry.name] ?? [] },
+                list: { entry, _ in
+                    self.lock.lock(); defer { self.lock.unlock() }
+                    return self.listings[entry.name] ?? []
+                },
                 download: { _, _, url in
-                    self.downloads += 1
+                    self.lock.lock(); self._downloads += 1; self.lock.unlock()
                     try Data("payload".utf8).write(to: url)
                 },
                 upload: { entry, _, _ in
-                    if self.failUploadsTo.contains(entry.name) {
-                        throw SFTPClientError.failed("no space left on device")
-                    }
-                    self.uploads.append(entry.name)
+                    self.lock.lock()
+                    let shouldFail = self.failUploadsTo.contains(entry.name)
+                    self.lock.unlock()
+                    if shouldFail { throw SFTPClientError.failed("no space left on device") }
+                    self.lock.lock(); self._uploads.append(entry.name); self.lock.unlock()
                 }
             )
         }
@@ -453,7 +463,7 @@ final class RemoteRelayFanOutTests: XCTestCase {
             operations: fake.operations()
         )
         XCTAssertEqual(results.first(where: { $0.0.entry.id == build.id })?.1, .skipped)
-        XCTAssertEqual(fake.uploads, ["web-01"])
+        XCTAssertEqual(fake.uploads.sorted(), ["web-01"])
     }
 
     /// A host that already has the file is reported, and the group still goes.
@@ -466,7 +476,7 @@ final class RemoteRelayFanOutTests: XCTestCase {
             destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
             operations: fake.operations()
         )
-        XCTAssertEqual(fake.uploads, ["web-01"])
+        XCTAssertEqual(fake.uploads.sorted(), ["web-01"])
         guard case .failed(let message)? = results.first(where: {
             $0.0.entry.name == "web-02"
         })?.1 else { return XCTFail("expected web-02 to report a collision") }
@@ -623,22 +633,35 @@ final class RemoteRelayLocalFanOutTests: XCTestCase {
         )
     }
 
+    /// Uploads now run concurrently, so the recorder needs a lock and every
+    /// assertion about which hosts were reached has to be order-insensitive.
     private final class Fake: @unchecked Sendable {
-        var uploads: [(host: String, url: URL)] = []
+        private let lock = NSLock()
+        private var _uploads: [(host: String, url: URL)] = []
+        var uploads: [(host: String, url: URL)] {
+            lock.lock(); defer { lock.unlock() }; return _uploads
+        }
         var listings: [String: [RemoteFile]] = [:]
         var failUploadsTo: Set<String> = []
-        var downloads = 0
+        private var _downloads = 0
+        var downloads: Int { lock.lock(); defer { lock.unlock() }; return _downloads }
 
         func operations() -> RemoteRelayTransfer.Operations {
             RemoteRelayTransfer.Operations(
                 pwd: { _ in "/home/deploy" },
-                list: { entry, _ in self.listings[entry.name] ?? [] },
-                download: { _, _, _ in self.downloads += 1 },
+                list: { entry, _ in
+                    self.lock.lock(); defer { self.lock.unlock() }
+                    return self.listings[entry.name] ?? []
+                },
+                download: { _, _, _ in
+                    self.lock.lock(); self._downloads += 1; self.lock.unlock()
+                },
                 upload: { entry, url, _ in
-                    if self.failUploadsTo.contains(entry.name) {
-                        throw SFTPClientError.failed("no space left on device")
-                    }
-                    self.uploads.append((entry.name, url))
+                    self.lock.lock()
+                    let shouldFail = self.failUploadsTo.contains(entry.name)
+                    self.lock.unlock()
+                    if shouldFail { throw SFTPClientError.failed("no space left on device") }
+                    self.lock.lock(); self._uploads.append((entry.name, url)); self.lock.unlock()
                 }
             )
         }
@@ -697,7 +720,7 @@ final class RemoteRelayLocalFanOutTests: XCTestCase {
             },
             operations: fake.operations()
         )
-        XCTAssertEqual(fake.uploads.map(\.host), ["web-01"])
+        XCTAssertEqual(fake.uploads.map(\.host).sorted(), ["web-01"])
         guard case .failed(let message)? = results.first(where: {
             $0.0.entry.name == "web-02"
         })?.1 else { return XCTFail("expected a collision on web-02") }
@@ -717,13 +740,13 @@ final class RemoteRelayLocalFanOutTests: XCTestCase {
             ],
             operations: fake.operations()
         )
-        XCTAssertEqual(fake.uploads.map(\.host), ["web-01"])
+        XCTAssertEqual(fake.uploads.map(\.host).sorted(), ["web-01"])
         XCTAssertEqual(results.count, 2)
     }
 
-    /// The per-host label needs a 1-based index and the eligible count, so
-    /// "2 of 3" never counts hosts that were rejected before any upload.
-    func testDeliveryStartedReportsPositionAmongEligibleHostsOnly() async throws {
+    /// Only eligible hosts are ever started — a host rejected in preflight
+    /// must not appear as an upload in progress.
+    func testDeliveryStartedFiresOnlyForEligibleHosts() async throws {
         let fake = Fake()
         fake.listings["web-02"] = [remoteFile("deploy.sh")]   // ineligible
         let file = try tempFile(named: "deploy.sh")
@@ -736,11 +759,9 @@ final class RemoteRelayLocalFanOutTests: XCTestCase {
                 .init(entry: makeEntry($0), directory: "/tmp")
             },
             operations: fake.operations(),
-            onDeliveryStarted: { destination, index, total in
-                seen.record("\(destination.entry.name) \(index)/\(total)")
-            }
+            onDeliveryStarted: { seen.record($0.entry.name) }
         )
-        XCTAssertEqual(seen.recorded, ["web-01 1/2", "web-03 2/2"])
+        XCTAssertEqual(seen.recorded.sorted(), ["web-01", "web-03"])
     }
 }
 
@@ -779,5 +800,109 @@ final class RemoteRelayUploadPathTests: XCTestCase {
             RemoteRelayTransfer.remotePath(directory: "/tmp/", name: "testfile"),
             "/tmp/testfile"
         )
+    }
+}
+
+/// Uploads run concurrently, but capped: unbounded would open one ssh process
+/// per host against a single shared uplink.
+final class RemoteRelayConcurrencyTests: XCTestCase {
+
+    private func makeEntry(_ name: String) -> SessionEntry {
+        SessionEntry(name: name, hostname: "\(name).internal", kind: .host)
+    }
+
+    /// Counts how many uploads are in flight at once.
+    private final class ConcurrencyProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current = 0
+        private(set) var peak = 0
+        private(set) var completed = 0
+
+        func enter() {
+            lock.lock(); current += 1; peak = max(peak, current); lock.unlock()
+        }
+        func leave() {
+            lock.lock(); current -= 1; completed += 1; lock.unlock()
+        }
+    }
+
+    private func operations(probe: ConcurrencyProbe, hold: UInt64 = 30_000_000)
+        -> RemoteRelayTransfer.Operations {
+        RemoteRelayTransfer.Operations(
+            pwd: { _ in "/home/deploy" },
+            list: { _, _ in [] },
+            download: { _, _, url in try Data("payload".utf8).write(to: url) },
+            upload: { _, _, _ in
+                probe.enter()
+                try? await Task.sleep(nanoseconds: hold)
+                probe.leave()
+            }
+        )
+    }
+
+    func testNeverExceedsTheCap() async throws {
+        let probe = ConcurrencyProbe()
+        let hosts = (1...8).map { makeEntry("web-0\($0)") }
+        _ = try await RemoteRelayTransfer.runFanOut(
+            source: .init(
+                entry: makeEntry("build"), remotePath: "/etc/hosts",
+                name: "hosts", size: 10
+            ),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: operations(probe: probe),
+            concurrency: 3
+        )
+        XCTAssertEqual(probe.completed, 8, "every host should still be delivered to")
+        XCTAssertLessThanOrEqual(probe.peak, 3, "peak concurrency \(probe.peak) exceeded the cap")
+        XCTAssertGreaterThan(probe.peak, 1, "uploads should actually overlap")
+    }
+
+    /// A cap of 1 is serial — a legitimate choice for anyone who wants hosts
+    /// finishing one at a time.
+    func testCapOfOneIsSerial() async throws {
+        let probe = ConcurrencyProbe()
+        let hosts = (1...4).map { makeEntry("web-0\($0)") }
+        _ = try await RemoteRelayTransfer.runFanOut(
+            source: .init(
+                entry: makeEntry("build"), remotePath: "/etc/hosts",
+                name: "hosts", size: 10
+            ),
+            destinations: hosts.map { .init(entry: $0, directory: "/tmp") },
+            operations: operations(probe: probe),
+            concurrency: 1
+        )
+        XCTAssertEqual(probe.peak, 1)
+        XCTAssertEqual(probe.completed, 4)
+    }
+
+    /// Out-of-range values are clamped rather than trusted.
+    func testConcurrencyIsClamped() {
+        var defaults = ConnectionDefaults()
+        defaults.transferConcurrency = 0
+        XCTAssertEqual(defaults.resolvedTransferConcurrency, 1)
+        defaults.transferConcurrency = 99
+        XCTAssertEqual(defaults.resolvedTransferConcurrency, 8)
+        defaults.transferConcurrency = nil
+        XCTAssertEqual(defaults.resolvedTransferConcurrency, 4, "default")
+    }
+
+    /// A local fan-out uses the same cap.
+    func testLocalFanOutRespectsTheCap() async throws {
+        let probe = ConcurrencyProbe()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-cap-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("deploy.sh")
+        try Data("x".utf8).write(to: file)
+
+        _ = try await RemoteRelayTransfer.runLocalFanOut(
+            localURL: file, name: "deploy.sh",
+            destinations: (1...6).map { .init(entry: makeEntry("web-0\($0)"), directory: "/tmp") },
+            operations: operations(probe: probe),
+            concurrency: 2
+        )
+        XCTAssertLessThanOrEqual(probe.peak, 2)
+        XCTAssertEqual(probe.completed, 6)
     }
 }

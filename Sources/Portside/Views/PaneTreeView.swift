@@ -183,7 +183,8 @@ struct PaneLeafView: View {
         if let group = broadcastTargets(), group.count > 1 {
             RemoteRelayCoordinator.startFanOut(
                 payload: payload, sourceEntry: sourceEntry,
-                droppedOn: session, targets: group
+                droppedOn: session, targets: group,
+                concurrency: store.defaults.resolvedTransferConcurrency
             )
             return
         }
@@ -209,7 +210,8 @@ struct PaneLeafView: View {
         let group = broadcastTargets()
             ?? [RemoteRelayCoordinator.Target(session: session, entry: destinationEntry)]
         RemoteRelayCoordinator.startLocalFanOut(
-            urls: urls, droppedOn: session, targets: group
+            urls: urls, droppedOn: session, targets: group,
+            concurrency: store.defaults.resolvedTransferConcurrency
         )
     }
 

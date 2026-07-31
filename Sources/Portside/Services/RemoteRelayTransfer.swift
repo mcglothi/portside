@@ -232,8 +232,9 @@ enum RemoteRelayTransfer {
         source: Source,
         destinations: [Destination],
         operations: Operations = .live,
+        concurrency: Int = 4,
         onPhase: @Sendable (Phase) -> Void = { _ in },
-        onDeliveryStarted: @Sendable (Destination, Int, Int) -> Void = { _, _, _ in },
+        onDeliveryStarted: @Sendable (Destination) -> Void = { _ in },
         onDestination: @Sendable (Destination, Outcome) -> Void = { _, _ in }
     ) async throws -> [(Destination, Outcome)] {
         guard !destinations.isEmpty else { return [] }
@@ -266,21 +267,11 @@ enum RemoteRelayTransfer {
         try Task.checkCancellation()
 
         onPhase(.uploading)
-        for (index, destination) in eligible.enumerated() {
-            onDeliveryStarted(destination, index + 1, eligible.count)
-            do {
-                try Task.checkCancellation()
-                try await operations.upload(destination.entry, stagedFile, destination.directory)
-                results.append((destination, .delivered))
-                onDestination(destination, .delivered)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let outcome = Outcome.failed(error.localizedDescription)
-                results.append((destination, outcome))
-                onDestination(destination, outcome)
-            }
-        }
+        results += try await deliver(
+            stagedFile: stagedFile, to: eligible, concurrency: concurrency,
+            operations: operations,
+            onDeliveryStarted: onDeliveryStarted, onDestination: onDestination
+        )
         onPhase(.finished)
         return results
     }
@@ -297,7 +288,8 @@ enum RemoteRelayTransfer {
         name: String,
         destinations: [Destination],
         operations: Operations = .live,
-        onDeliveryStarted: @Sendable (Destination, Int, Int) -> Void = { _, _, _ in },
+        concurrency: Int = 4,
+        onDeliveryStarted: @Sendable (Destination) -> Void = { _ in },
         onDestination: @Sendable (Destination, Outcome) -> Void = { _, _ in }
     ) async throws -> [(Destination, Outcome)] {
         guard !destinations.isEmpty else { return [] }
@@ -323,19 +315,62 @@ enum RemoteRelayTransfer {
             }
         }
 
-        for (index, destination) in eligible.enumerated() {
-            onDeliveryStarted(destination, index + 1, eligible.count)
-            do {
-                try Task.checkCancellation()
-                try await operations.upload(destination.entry, localURL, destination.directory)
-                results.append((destination, .delivered))
-                onDestination(destination, .delivered)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let outcome = Outcome.failed(error.localizedDescription)
-                results.append((destination, outcome))
-                onDestination(destination, outcome)
+        results += try await deliver(
+            stagedFile: localURL, to: eligible, concurrency: concurrency,
+            operations: operations,
+            onDeliveryStarted: onDeliveryStarted, onDestination: onDestination
+        )
+        return results
+    }
+
+    /// Uploads `stagedFile` to every eligible destination, at most
+    /// `concurrency` at a time.
+    ///
+    /// Bounded rather than serial because one unresponsive host must not hold
+    /// up every host behind it — that is a correctness problem, not a speed
+    /// preference. Bounded rather than unbounded because the uploads share one
+    /// uplink: past a handful, more concurrency stops buying throughput and
+    /// starts costing ssh processes.
+    ///
+    /// A failure is per host and never stops the group.
+    private static func deliver(
+        stagedFile: URL,
+        to eligible: [Destination],
+        concurrency: Int,
+        operations: Operations,
+        onDeliveryStarted: @Sendable (Destination) -> Void,
+        onDestination: @Sendable (Destination, Outcome) -> Void
+    ) async throws -> [(Destination, Outcome)] {
+        var results: [(Destination, Outcome)] = []
+        let cap = min(max(concurrency, 1), 8)
+        var pending = eligible.makeIterator()
+
+        try await withThrowingTaskGroup(of: (Destination, Outcome).self) { group in
+            func addNext() -> Bool {
+                guard let destination = pending.next() else { return false }
+                onDeliveryStarted(destination)
+                group.addTask {
+                    do {
+                        try Task.checkCancellation()
+                        try await operations.upload(
+                            destination.entry, stagedFile, destination.directory
+                        )
+                        return (destination, .delivered)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        return (destination, .failed(error.localizedDescription))
+                    }
+                }
+                return true
+            }
+
+            for _ in 0..<cap where addNext() {}
+
+            while let result = try await group.next() {
+                results.append(result)
+                onDestination(result.0, result.1)
+                _ = addNext()
             }
         }
         return results

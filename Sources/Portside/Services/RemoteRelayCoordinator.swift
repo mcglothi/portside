@@ -39,6 +39,32 @@ enum RemoteRelayCoordinator {
         }
     }
 
+    /// Describes what is in flight when several uploads overlap.
+    ///
+    /// A strict "2 of 4" reads as one-at-a-time and stops being true the
+    /// moment uploads run concurrently, so the label names a host and says how
+    /// many others are alongside it. The completed count still comes from the
+    /// bar itself.
+    private static func inFlightLabel(
+        file: String, hosts: [String], done: Int, total: Int
+    ) -> String {
+        let progress = "(\(done) of \(total))"
+        guard let first = hosts.first else { return "Sending \(file) \(progress)…" }
+        if hosts.count == 1 { return "Sending \(file) to \(first) \(progress)…" }
+        return "Sending \(file) to \(first) +\(hosts.count - 1) more \(progress)…"
+    }
+
+    /// Tracks which hosts are mid-upload so the label can name them.
+    private final class InFlight {
+        private(set) var hosts: [String] = []
+        var done = 0
+        func started(_ name: String) { hosts.append(name) }
+        func finished(_ name: String) {
+            if let i = hosts.firstIndex(of: name) { hosts.remove(at: i) }
+            done += 1
+        }
+    }
+
     /// One pane a fan-out will deliver to.
     struct Target {
         let session: TerminalSession
@@ -58,6 +84,7 @@ enum RemoteRelayCoordinator {
         sourceEntry: SessionEntry,
         droppedOn: TerminalSession,
         targets: [Target],
+        concurrency: Int = 4,
         operations: RemoteRelayTransfer.Operations = .live
     ) {
         let source = RemoteRelayTransfer.Source(
@@ -76,7 +103,7 @@ enum RemoteRelayCoordinator {
         )
 
         var poll: Task<Void, Never>?
-        var delivered = 0
+        let inFlight = InFlight()
         box.task = Task { @MainActor in
             defer {
                 poll?.cancel()
@@ -103,6 +130,7 @@ enum RemoteRelayCoordinator {
                 )
                 let results = try await RemoteRelayTransfer.runFanOut(
                     source: source, destinations: destinations, operations: operations,
+                    concurrency: concurrency,
                     onPhase: { phase in
                         Task { @MainActor in
                             switch phase {
@@ -125,25 +153,28 @@ enum RemoteRelayCoordinator {
                             }
                         }
                     },
-                    onDeliveryStarted: { destination, index, total in
+                    onDeliveryStarted: { destination in
                         Task { @MainActor in
-                            // Naming the host in flight is what makes the
-                            // count legible: "3 of 8" alone says how far but
-                            // not what is happening, and on a slow box the
-                            // number sits still long enough to look stuck.
-                            TransferCenter.shared.relabel(
-                                id, "Sending \(payload.name) to \(destination.entry.name) (\(index) of \(total))…"
-                            )
+                            inFlight.started(destination.entry.name)
+                            TransferCenter.shared.relabel(id, inFlightLabel(
+                                file: payload.name, hosts: inFlight.hosts,
+                                done: inFlight.done, total: destinations.count
+                            ))
                         }
                     },
                     onDestination: { destination, outcome in
-                        guard outcome == .delivered else { return }
                         Task { @MainActor in
-                            sessionsByEntry[destination.entry.id]?.flashRelayLanded()
-                            delivered += 1
+                            inFlight.finished(destination.entry.name)
+                            if outcome == .delivered {
+                                sessionsByEntry[destination.entry.id]?.flashRelayLanded()
+                            }
                             TransferCenter.shared.rescale(
-                                id, transferred: delivered, total: destinations.count
+                                id, transferred: inFlight.done, total: destinations.count
                             )
+                            TransferCenter.shared.relabel(id, inFlightLabel(
+                                file: payload.name, hosts: inFlight.hosts,
+                                done: inFlight.done, total: destinations.count
+                            ))
                         }
                     }
                 )
@@ -189,6 +220,7 @@ enum RemoteRelayCoordinator {
         urls: [URL],
         droppedOn: TerminalSession,
         targets: [Target],
+        concurrency: Int = 4,
         operations: RemoteRelayTransfer.Operations = .live
     ) {
         guard !urls.isEmpty, !targets.isEmpty else { return }
@@ -208,6 +240,7 @@ enum RemoteRelayCoordinator {
             cancel: { box.task?.cancel() }
         )
 
+        let inFlight = InFlight()
         box.task = Task { @MainActor in
             defer { TransferCenter.shared.finish(id) }
             do {
@@ -230,18 +263,29 @@ enum RemoteRelayCoordinator {
                     let name = url.lastPathComponent
                     let results = try await RemoteRelayTransfer.runLocalFanOut(
                         localURL: url, name: name, destinations: destinations,
-                        operations: operations,
-                        onDeliveryStarted: { destination, index, total in
+                        operations: operations, concurrency: concurrency,
+                        onDeliveryStarted: { destination in
                             Task { @MainActor in
-                                TransferCenter.shared.relabel(
-                                    id, "Uploading \(name) to \(destination.entry.name) (\(index) of \(total))…"
-                                )
+                                inFlight.started(destination.entry.name)
+                                TransferCenter.shared.relabel(id, inFlightLabel(
+                                    file: name, hosts: inFlight.hosts,
+                                    done: inFlight.done, total: destinations.count
+                                ))
                             }
                         },
                         onDestination: { destination, outcome in
                             Task { @MainActor in
-                                guard outcome == .delivered else { return }
-                                sessionsByEntry[destination.entry.id]?.flashRelayLanded()
+                                inFlight.finished(destination.entry.name)
+                                if outcome == .delivered {
+                                    sessionsByEntry[destination.entry.id]?.flashRelayLanded()
+                                }
+                                TransferCenter.shared.rescale(
+                                    id, transferred: inFlight.done, total: destinations.count
+                                )
+                                TransferCenter.shared.relabel(id, inFlightLabel(
+                                    file: name, hosts: inFlight.hosts,
+                                    done: inFlight.done, total: destinations.count
+                                ))
                             }
                         }
                     )
