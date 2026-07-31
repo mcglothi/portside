@@ -1286,7 +1286,7 @@ final class SessionManager: ObservableObject {
     }
 
     /// Every armed tab, for events that invalidate all of them at once.
-    private func disarmAll(reason: MultiExecDisarmReason) {
+    func disarmAll(reason: MultiExecDisarmReason) {
         for tab in tabs where tab.broadcastArmed { disarm(tab, reason: reason) }
     }
 
@@ -1337,7 +1337,7 @@ final class SessionManager: ObservableObject {
     }
 
     @MainActor
-    private func networkPathChanged(interfaces: Set<String>, satisfied: Bool) {
+    func networkPathChanged(interfaces: Set<String>, satisfied: Bool) {
         defer { lastNetworkInterfaces = interfaces }
         guard NetworkChangeDecision.shouldDisarm(
             previous: lastNetworkInterfaces, current: interfaces, satisfied: satisfied

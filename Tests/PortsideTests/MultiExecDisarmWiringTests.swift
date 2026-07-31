@@ -99,3 +99,78 @@ final class MultiExecDisarmWiringTests: XCTestCase {
         XCTAssertNil(manager.disarmNotice)
     }
 }
+
+/// The lifecycle disarms that fire from system events. Their *decisions* are
+/// covered by `MultiExecLifecycleTests`; this is the wiring that connects a
+/// decision to an actually-disarmed tab, which is the part that can silently
+/// not be hooked up.
+@MainActor
+final class MultiExecSystemDisarmTests: XCTestCase {
+    private var manager: SessionManager!
+
+    override func setUp() {
+        super.setUp()
+        manager = SessionManager()
+    }
+
+    override func tearDown() {
+        for session in manager.sessions { session.shutdown() }
+        manager = nil
+        super.tearDown()
+    }
+
+    private func armedTabs(_ count: Int) -> [Tab] {
+        (0..<count).map { _ in
+            manager.openLocalShell()
+            let tab = manager.selectedTab!
+            tab.broadcastArmed = true
+            return tab
+        }
+    }
+
+    func testWakingDisarmsEveryArmedTabNotJustTheSelectedOne() {
+        // Sleep invalidates every connection at once, so a disarm that only
+        // covered the front tab would leave the others armed and unexplained.
+        let tabs = armedTabs(3)
+
+        manager.disarmAll(reason: .systemWoke)
+
+        XCTAssertTrue(tabs.allSatisfy { !$0.broadcastArmed })
+        XCTAssertEqual(manager.disarmNotice, .systemWoke)
+    }
+
+    func testANetworkMoveDisarms() {
+        let tabs = armedTabs(2)
+        // First path is the baseline, so prime it before the move.
+        manager.networkPathChanged(interfaces: ["utun3", "en0"], satisfied: true)
+        XCTAssertTrue(tabs.allSatisfy(\.broadcastArmed), "the baseline must not disarm")
+
+        manager.networkPathChanged(interfaces: ["en0"], satisfied: true)
+
+        XCTAssertTrue(tabs.allSatisfy { !$0.broadcastArmed })
+        XCTAssertEqual(manager.disarmNotice, .networkChanged)
+    }
+
+    func testNetworkChurnDoesNotDisarm() {
+        // The same interfaces reported again, and a momentary unsatisfied path,
+        // are both ordinary. Disarming on either is the noise that trains
+        // people to ignore the guardrail.
+        let tabs = armedTabs(1)
+        manager.networkPathChanged(interfaces: ["en0"], satisfied: true)
+        manager.networkPathChanged(interfaces: ["en0"], satisfied: true)
+        manager.networkPathChanged(interfaces: [], satisfied: false)
+
+        XCTAssertTrue(tabs.allSatisfy(\.broadcastArmed))
+        XCTAssertNil(manager.disarmNotice)
+    }
+
+    func testDisarmingLeavesUnarmedTabsAloneAndRaisesNoNotice() {
+        manager.openLocalShell()
+        let tab = manager.selectedTab!
+        XCTAssertFalse(tab.broadcastArmed)
+
+        manager.disarmAll(reason: .systemWoke)
+
+        XCTAssertNil(manager.disarmNotice, "nothing was disarmed, so there is nothing to explain")
+    }
+}
