@@ -15,6 +15,12 @@ enum MultiExecDisarmReason: Equatable {
     /// an `exit` is the literal word "exit", so naming it would produce
     /// "exit reconnected".
     case paneReconnected(host: String?)
+    /// The Mac changed network. A jump host or ProxyJump chain can resolve
+    /// somewhere else than it did when the group was armed — coming off a VPN,
+    /// or moving between office and home Wi-Fi, leaves `prod-db` pointing at a
+    /// different machine while the panes look untouched, because established
+    /// connections survive the change and only new ones follow the new route.
+    case networkChanged
     /// The machine slept. Everything on the other side of every connection had
     /// an unbounded amount of time to change while nobody was watching.
     case systemWoke
@@ -25,10 +31,39 @@ enum MultiExecDisarmReason: Equatable {
             let who = host.map { "\($0) reconnected" } ?? "a pane reconnected"
             return "MultiExec disarmed — \(who). Its shell is fresh, "
                  + "so the group is no longer in a known matching state."
+        case .networkChanged:
+            return "MultiExec disarmed — the network changed. Host names can "
+                 + "resolve somewhere else from here, so check the group still "
+                 + "points where you think before re-arming."
         case .systemWoke:
             return "MultiExec disarmed — the Mac slept. Re-arm once you've "
                  + "confirmed the sessions are still where you left them."
         }
+    }
+}
+
+/// Whether a new network path is a real change or ordinary churn.
+///
+/// `NWPathMonitor` fires for a great deal that isn't interesting: every
+/// transition through `.unsatisfied` and back as an interface renegotiates,
+/// every change in the expensive/constrained flags. A guardrail that fires
+/// during ordinary work is one people learn to route around, so this keys on
+/// the set of interfaces actually carrying traffic and nothing else.
+enum NetworkChangeDecision {
+    /// - Parameters:
+    ///   - previous: interfaces from the last path, nil before the first one.
+    ///   - current: interfaces from the path just reported.
+    ///   - satisfied: whether the new path can actually carry traffic.
+    static func shouldDisarm(previous: Set<String>?, current: Set<String>, satisfied: Bool) -> Bool {
+        // The first callback establishes the baseline; there is nothing to
+        // have changed *from* yet, and disarming on it would take the group
+        // down every launch.
+        guard let previous else { return false }
+        // A path that can't carry traffic isn't a move to somewhere else, it's
+        // a gap — usually a moment long, on the way to the same place. Waiting
+        // for it to settle avoids disarming on every brief drop.
+        guard satisfied else { return false }
+        return current != previous
     }
 }
 

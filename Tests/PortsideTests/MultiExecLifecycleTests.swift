@@ -76,13 +76,108 @@ final class MultiExecLifecycleTests: XCTestCase {
         XCTAssertEqual(lines, 3)
     }
 
+    func testAReconnectedHostIsNamedButALocalShellIsNot() {
+        // With twelve panes, "a pane reconnected" is not actionable — so name
+        // it when there's a name. An entry-less pane has only its title, which
+        // OSC sets to the last command, so naming that produced the nonsense
+        // "exit reconnected" after a shell was exited.
+        XCTAssertTrue(MultiExecDisarmReason.paneReconnected(host: "web-03")
+            .message.contains("web-03"))
+        XCTAssertTrue(MultiExecDisarmReason.paneReconnected(host: nil)
+            .message.contains("a pane reconnected"))
+    }
+
+    // MARK: - Target list
+
+    @MainActor
+    private func sessions(named names: [String?]) -> [TerminalSession] {
+        names.map { name in
+            guard let name else { return TerminalSession(title: "local", executable: "/bin/echo", args: []) }
+            let entry = SessionEntry(name: name, folder: "", hostname: "\(name).example.com")
+            return TerminalSession(title: name, executable: "/bin/echo", args: [], entry: entry)
+        }
+    }
+
+    @MainActor
+    func testRepeatedTargetsCollapseWithACount() {
+        // A grid of local shells listed the same string a dozen times, which
+        // reads as noise and hides the one entry that might differ.
+        let list = SessionManager.targetList(sessions(named: [nil, nil, nil]))
+        XCTAssertEqual(list, "local shell ×3")
+    }
+
+    @MainActor
+    func testDistinctHostsAreAllNamedInGridOrder() {
+        let list = SessionManager.targetList(sessions(named: ["web-01", "web-02", "db-01"]))
+        XCTAssertEqual(list, "web-01, web-02, db-01")
+    }
+
+    @MainActor
+    func testAMixedGridNamesHostsAndCollapsesTheRest() {
+        let list = SessionManager.targetList(sessions(named: ["web-01", nil, nil]))
+        XCTAssertEqual(list, "web-01, local shell ×2",
+                       "the named host must stay visible next to the collapsed shells")
+    }
+
+    @MainActor
+    func testAVeryLongListIsTruncatedSoTheButtonsStayOnScreen() {
+        let many = (1...20).map { Optional("host-\($0)") }
+        let list = SessionManager.targetList(sessions(named: many), limit: 12)
+        XCTAssertTrue(list.hasSuffix("and 8 more"), "got: \(list)")
+        XCTAssertTrue(list.hasPrefix("host-1, host-2"))
+    }
+
+    // MARK: - Network change
+
+    func testTheFirstPathIsABaselineNotAChange() {
+        // Disarming on the first callback would take the group down on every
+        // launch, and on every re-arm that happens to race one.
+        XCTAssertFalse(NetworkChangeDecision.shouldDisarm(
+            previous: nil, current: ["en0"], satisfied: true))
+    }
+
+    func testMovingBetweenInterfacesDisarms() {
+        // The hazard: off the VPN, `prod-db` resolves somewhere else, but the
+        // established connections look untouched.
+        XCTAssertTrue(NetworkChangeDecision.shouldDisarm(
+            previous: ["utun3", "en0"], current: ["en0"], satisfied: true))
+        XCTAssertTrue(NetworkChangeDecision.shouldDisarm(
+            previous: ["en0"], current: ["en1"], satisfied: true))
+    }
+
+    func testTheSameInterfacesAreNotAChange() {
+        // NWPathMonitor fires for flag changes (expensive, constrained) with
+        // no move at all. Those must not disarm.
+        XCTAssertFalse(NetworkChangeDecision.shouldDisarm(
+            previous: ["en0"], current: ["en0"], satisfied: true))
+    }
+
+    func testAnUnsatisfiedPathWaitsRatherThanDisarming() {
+        // A gap on the way back to the same network is not a move. Disarming
+        // on it would fire on every brief drop — exactly the noise that trains
+        // people to ignore a guardrail.
+        XCTAssertFalse(NetworkChangeDecision.shouldDisarm(
+            previous: ["en0"], current: [], satisfied: false))
+        XCTAssertFalse(NetworkChangeDecision.shouldDisarm(
+            previous: ["en0"], current: ["utun3"], satisfied: false))
+    }
+
+    func testInterfaceOrderIsNotAChange() {
+        // Set comparison, so the order the OS reports them in can't matter.
+        XCTAssertFalse(NetworkChangeDecision.shouldDisarm(
+            previous: ["en0", "utun3"], current: ["utun3", "en0"], satisfied: true))
+    }
+
     // MARK: - Disarm reasons
 
     func testEveryDisarmReasonExplainsItself() {
         // The banner vanishing is the signal that something changed; it's only
         // useful if followed by what. A reason that can't say why it disarmed
         // isn't a good enough reason to disarm.
-        let reasons: [MultiExecDisarmReason] = [.systemWoke]
+        let reasons: [MultiExecDisarmReason] = [
+            .paneReconnected(host: "web-03"), .paneReconnected(host: nil),
+            .networkChanged, .systemWoke,
+        ]
         for reason in reasons {
             XCTAssertTrue(reason.message.contains("MultiExec disarmed"),
                           "\(reason) must name what happened")

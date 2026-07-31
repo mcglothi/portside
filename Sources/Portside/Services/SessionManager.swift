@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Network
 import SwiftTerm
 
 /// A terminal view that tees the child process's output to a session log
@@ -814,9 +815,13 @@ final class SessionManager: ObservableObject {
     /// Per-session subscriptions to MultiExec-membership changes.
     private var membershipObservers: [UUID: AnyCancellable] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var networkMonitor: NWPathMonitor?
+    /// Interfaces seen on the last network path; nil until the first callback.
+    private var lastNetworkInterfaces: Set<String>?
 
     init() {
         observeSystemWake()
+        observeNetworkChanges()
         LoggingTerminalView.installSelectionAutoScrollMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -885,6 +890,14 @@ final class SessionManager: ObservableObject {
     deinit {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        // The wake observer was never torn down here. Harmless for the app's
+        // single long-lived manager, but a test that builds several leaves one
+        // live observer per instance, each holding a closure that fires on the
+        // next wake.
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
+        networkMonitor?.cancel()
     }
 
     /// Flat view of every live session (all leaves across all tabs), in tab and
@@ -1289,6 +1302,47 @@ final class SessionManager: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.disarmAll(reason: .systemWoke) }
         }
+    }
+
+    /// Disarms when the machine changes network.
+    ///
+    /// The hazard is a jump host or a `ProxyJump` chain resolving somewhere
+    /// else than it did when the group was armed. Coming off a VPN, or moving
+    /// between office and home Wi-Fi, can leave `prod-db` pointing at a
+    /// different machine — or at nothing — while the panes look untouched,
+    /// because an established SSH connection survives the change and only
+    /// *new* ones follow the new route.
+    ///
+    /// Deliberately keyed on the interface actually carrying traffic rather
+    /// than on reachability. `NWPathMonitor` fires for a great deal that isn't
+    /// interesting — every transition through `.unsatisfied` and back, every
+    /// change in expensive/constrained flags — and a guardrail that fires
+    /// constantly during ordinary work is one people learn to route around.
+    /// The first path is the baseline, not a change.
+    private func observeNetworkChanges() {
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            let interfaces = Set(path.availableInterfaces.map(\.name))
+            let satisfied = path.status == .satisfied
+            MainActor.assumeIsolated {
+                self?.networkPathChanged(interfaces: interfaces, satisfied: satisfied)
+            }
+        }
+        // Started on the main queue rather than a private one so the handler is
+        // already where the state it touches lives. The work is a set
+        // comparison; hopping to main from a background queue would only add a
+        // second closure — and a second capture of `self` — for nothing.
+        monitor.start(queue: .main)
+    }
+
+    @MainActor
+    private func networkPathChanged(interfaces: Set<String>, satisfied: Bool) {
+        defer { lastNetworkInterfaces = interfaces }
+        guard NetworkChangeDecision.shouldDisarm(
+            previous: lastNetworkInterfaces, current: interfaces, satisfied: satisfied
+        ) else { return }
+        disarmAll(reason: .networkChanged)
     }
 
     /// Keyboard equivalent of the Grid View toolbar toggle (⇧⌘G).
@@ -1789,26 +1843,48 @@ final class SessionManager: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = lineCount > 1
-            ? "Run \(lineCount) commands on \(targets.count) hosts?"
-            : "Paste \(characterCount) characters to \(targets.count) hosts?"
+            ? "Run \(lineCount) commands on \(targets.count) panes?"
+            : "Paste \(characterCount) characters to \(targets.count) panes?"
 
-        let hosts = targets.map { $0.entry?.name ?? $0.title }
-        // A long grid would push the buttons off-screen; the count carries the
-        // rest, and the panes themselves are on screen behind the alert.
-        let shownHosts = hosts.prefix(12)
-        var detail = shownHosts.joined(separator: ", ")
-        if hosts.count > shownHosts.count {
-            detail += " and \(hosts.count - shownHosts.count) more"
-        }
-        alert.informativeText = "This runs on: \(detail).\n\n\(previewLines(of: text))"
+        alert.informativeText = "This runs on: \(targetList(targets)).\n\n\(previewLines(of: text))"
 
-        alert.addButton(withTitle: "Run on \(targets.count) Hosts")
+        alert.addButton(withTitle: "Run on \(targets.count) Pane\(targets.count == 1 ? "" : "s")")
         alert.addButton(withTitle: "Cancel")
         // Enter is the first button by default; a confirmation for something
         // irreversible should not be dismissible by the reflex that got here.
         alert.buttons.first?.keyEquivalent = ""
         alert.buttons.last?.keyEquivalent = "\r"
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Names the panes a broadcast will reach, collapsing repeats.
+    ///
+    /// Naming every pane individually is the point — "12 panes" is not
+    /// something anyone can check and a host list is. But a grid of local
+    /// shells produced the same string a dozen times over, which reads as
+    /// noise and hides the one entry that might be different. Repeats collapse
+    /// to `name ×N`, in first-seen order so the list still tracks the grid.
+    ///
+    /// A pane with no library entry is described, not named: its title is
+    /// whatever the shell last reported through OSC, so a grid of local shells
+    /// was listing itself as three copies of the last command that ran.
+    static func targetList(_ targets: [TerminalSession], limit: Int = 12) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for target in targets {
+            let name = target.entry?.name ?? "local shell"
+            if counts[name] == nil { order.append(name) }
+            counts[name, default: 0] += 1
+        }
+        let labels = order.map { name -> String in
+            let n = counts[name] ?? 0
+            return n > 1 ? "\(name) ×\(n)" : name
+        }
+        // A long grid would push the alert's buttons off-screen; the count
+        // carries the rest, and the panes are on screen behind the alert.
+        var detail = labels.prefix(limit).joined(separator: ", ")
+        if labels.count > limit { detail += " and \(labels.count - limit) more" }
+        return detail
     }
 
     /// The first few lines of what's about to run, so the confirmation shows
