@@ -588,11 +588,47 @@ final class SessionStore: ObservableObject {
             || doc?.customThemes != nil || doc?.terminal != nil
             || doc?.logging != nil || doc?.recents != nil
         if hadLegacyLocal {
+            // Keep the pre-migration library, once, before anything is stripped.
+            //
+            // The migration is one-way and runs unattended on first launch, so
+            // this is the restore point if it turns out to be wrong — and the
+            // one a *downgrade* needs, which is the case that isn't obvious:
+            // an older Portside doesn't know about fields added since, so
+            // opening this library on one and letting it save would drop them
+            // silently. A copy taken before the change is the only thing that
+            // makes going back safe.
+            preserveLibraryBeforeMigrating()
             // Sidecar first, library second. If anything fails between them the
             // library still holds the originals, so the worst case is that the
             // migration runs again — never that the state is gone from both.
             saveLocal()
             needsLegacyLocalCleanup = true
+        }
+    }
+
+    /// Where the library was copied before the local split migrated it, if it
+    /// was. Nil on a library that never needed migrating.
+    private(set) var preMigrationLibraryPath: String?
+
+    /// Copies the library aside before the split rewrites it.
+    ///
+    /// Never overwrites an existing copy: if a first attempt migrated and
+    /// something later went wrong, the file worth keeping is the one from
+    /// *before* the first attempt, not from before the third.
+    private func preserveLibraryBeforeMigrating() {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let backup = fileURL.deletingPathExtension()
+            .appendingPathExtension("pre-local-split.json")
+        guard !FileManager.default.fileExists(atPath: backup.path) else {
+            preMigrationLibraryPath = backup.path
+            return
+        }
+        do {
+            try FileManager.default.copyItem(at: fileURL, to: backup)
+            preMigrationLibraryPath = backup.path
+            NSLog("Portside: library copied to \(backup.path) before the local-state split")
+        } catch {
+            NSLog("Portside: could not preserve the pre-split library — \(error)")
         }
     }
 

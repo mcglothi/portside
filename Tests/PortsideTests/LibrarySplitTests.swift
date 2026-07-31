@@ -18,8 +18,12 @@ final class LibrarySplitTests: XCTestCase {
             .appendingPathComponent("portside-split-\(UUID().uuidString).json")
     }
 
+    private var preSplitURL: URL {
+        tempURL.deletingPathExtension().appendingPathExtension("pre-local-split.json")
+    }
+
     override func tearDown() {
-        for url in [tempURL, localURL, historyURL] {
+        for url in [tempURL, localURL, historyURL, preSplitURL] {
             try? FileManager.default.removeItem(at: url!)
         }
         super.tearDown()
@@ -135,6 +139,46 @@ final class LibrarySplitTests: XCTestCase {
 
         let reloaded = SessionStore(fileURL: tempURL)
         XCTAssertEqual(reloaded.terminal.scrollbackLines, 777)
+    }
+
+    // MARK: - Rollback
+
+    func testTheLibraryIsPreservedBeforeMigrating() throws {
+        // The migration is one-way and runs unattended on first launch, so this
+        // is the restore point if it turns out to be wrong.
+        try writeCombinedLibrary()
+        let before = try String(contentsOf: tempURL, encoding: .utf8)
+
+        let store = SessionStore(fileURL: tempURL)
+
+        XCTAssertEqual(store.preMigrationLibraryPath, preSplitURL.path)
+        XCTAssertEqual(try String(contentsOf: preSplitURL, encoding: .utf8), before,
+                       "the copy must be the library exactly as it was")
+    }
+
+    func testThePreservedCopyIsNotOverwrittenByALaterRun() throws {
+        // If a first attempt migrated and something later went wrong, the file
+        // worth keeping is the one from before the *first* attempt.
+        try writeCombinedLibrary(entryName: "original")
+        _ = SessionStore(fileURL: tempURL)
+        let firstCopy = try String(contentsOf: preSplitURL, encoding: .utf8)
+
+        // Something puts the library back into the old shape and it migrates again.
+        try writeCombinedLibrary(entryName: "later")
+        _ = SessionStore(fileURL: tempURL)
+
+        XCTAssertEqual(try String(contentsOf: preSplitURL, encoding: .utf8), firstCopy,
+                       "the earliest copy is the one that matters")
+        XCTAssertTrue(firstCopy.contains("original"))
+    }
+
+    func testALibraryThatNeverNeededMigratingLeavesNoCopy() {
+        // No migration, no restore point to explain.
+        let store = SessionStore(fileURL: tempURL)
+        store.upsert(host("web-01"))
+
+        XCTAssertNil(store.preMigrationLibraryPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: preSplitURL.path))
     }
 
     // MARK: - Failure modes
