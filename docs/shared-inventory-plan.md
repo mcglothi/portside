@@ -271,16 +271,36 @@ boxes are protected together make a very good target-selection document.
 
 ## Sequencing
 
-| Phase | Depends on | Size | Ships alone? |
-|---|---|---|---|
-| 1. Host groups | — | S–M | Yes |
-| 2. Portable manifest | — | S | Yes (fixes export) |
-| 3. Library location + guard | 2 | M | Yes |
-| 4. Shared sources | 2, 3 | L | No |
+| Phase | Depends on | Size | Ships alone? | State |
+|---|---|---|---|---|
+| 1. Host groups | — | S–M | Yes | model, persistence, launch **done**; UI open |
+| 2. Portable manifest | — | S | Yes (fixes export) | profiles in exports **done**; library split open |
+| 3. Library location + guard | 2 | M | Yes | not started |
+| 4. Shared sources | 2, 3 | L | No | not started |
 
 Recommended order: **2 → 1 → 3 → 4.** The manifest fix is small, ships
 immediately, and repairs a real defect in export today. Groups follow because
 they're self-contained and wanted. Location and sharing build on the manifest.
+
+### What's left in 1 and 2
+
+**Groups — UI only.** The model, persistence, `launch(_:entryForID:)` and the
+write-back on tab close are in, with tests. Deliberately no UI yet: sidebar
+placement, the save flow ("Save Tab as Group…" vs a sidebar multi-select) and
+context-menu wording are the shapeable parts and want eyes on them. Worth
+deciding at the same time: how a partial launch reports itself ("Opened 6 of
+8 — web-07 and web-08 are no longer in your library").
+
+**Manifest — the library split.** Exports now carry credential profile
+definitions, which was the live defect. The portable/machine-local split
+described above is untouched, and it is what gates phase 3: `workspace`,
+`recents`, `connectionStats`, appearance and terminal settings should not
+travel, and today they all sit in the same file.
+
+One piece of that arrived early and by accident: `PORTSIDE_LIBRARY_DIR`
+already redirects the whole library, so the plumbing for "the library lives
+somewhere you choose" exists. What's missing is the split and the stale-read
+guard.
 
 ## Explicitly deferred
 
