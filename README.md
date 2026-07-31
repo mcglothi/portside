@@ -263,7 +263,12 @@ exists to fill that gap without giving up native speed and macOS polish.
 
 ## Building
 
-Requires Swift 6+ (Xcode Command Line Tools are enough):
+Requires the Swift 6 toolchain (Xcode Command Line Tools are enough). The
+package itself is still on `swift-tools-version: 5.9` and builds in Swift 5
+language mode — the Swift 6 concurrency migration hasn't happened yet. CI
+holds the line with a per-file ratchet
+(`Scripts/strict-concurrency-check.sh`) so the outstanding warning count can
+shrink but never grow:
 
 ```sh
 # Run for development

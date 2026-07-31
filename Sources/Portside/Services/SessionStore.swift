@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Portside's own session/macro library, persisted as JSON in Application
@@ -91,15 +92,45 @@ final class SessionStore: ObservableObject {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         fileURL = appSupport.appendingPathComponent("Portside/portside.json")
         seedsFromSSHConfig = true
+        coalescesHistoryWrites = true
         load()
+        observeTermination()
     }
 
     /// Test seam: an isolated library backed by `fileURL`, never touching the
     /// user's real library or ~/.ssh/config.
-    init(fileURL: URL, seedsFromSSHConfig: Bool = false) {
+    ///
+    /// History writes are synchronous here by default. The coalescing window
+    /// needs a main run loop to fire, which most tests don't spin, so
+    /// coalescing by default would turn every history assertion into a timing
+    /// race. Tests covering the window itself opt in — some driving it with
+    /// `flushHistory()`, some spinning the run loop to prove the timer lands
+    /// a write on its own.
+    init(fileURL: URL, seedsFromSSHConfig: Bool = false, coalescesHistoryWrites: Bool = false) {
         self.fileURL = fileURL
         self.seedsFromSSHConfig = seedsFromSSHConfig
+        self.coalescesHistoryWrites = coalescesHistoryWrites
         load()
+        observeTermination()
+    }
+
+    /// History writes are coalesced, so quitting has to settle the outstanding
+    /// one — otherwise the last few seconds of commands before a quit are the
+    /// ones that reliably go missing.
+    private func observeTermination() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.flushHistory()
+        }
+    }
+
+    private var terminationObserver: NSObjectProtocol?
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
     }
 
     /// Union of folders implied by sessions and standalone folders.
@@ -358,7 +389,7 @@ final class SessionStore: ObservableObject {
         if history.keepFullLog {
             connectionLog.append(ConnectionLogEntry(entryID: entry.id, at: now, outcome: outcome))
             connectionLog = ConnectionHistory.trimmed(connectionLog, to: history.logLimit)
-            saveHistory()
+            scheduleHistorySave()
         }
         guard outcome == .connected else { return }
         recordConnection(entry)
@@ -379,7 +410,7 @@ final class SessionStore: ObservableObject {
         connectionStats = ConnectionHistory.recording(
             entryID: entry.id, at: now, into: connectionStats
         )
-        saveHistory()
+        scheduleHistorySave()
         save()   // recents still live in the library
     }
 
@@ -396,7 +427,7 @@ final class SessionStore: ObservableObject {
         let stoppedCommands = wasKeepingCommands && !settings.keepCommandHistory
         if stoppedCommands { commandHistory = [] }
         if stoppedLog { connectionLog = [] }
-        if stoppedLog || stoppedCommands { saveHistory() }
+        if stoppedLog || stoppedCommands { flushHistory() }
         save()
     }
 
@@ -408,7 +439,7 @@ final class SessionStore: ObservableObject {
         connectionLog = []
         commandHistory = []
         recents = []
-        saveHistory()
+        flushHistory()
         save()
     }
 
@@ -448,7 +479,7 @@ final class SessionStore: ObservableObject {
         seedStatsFromRecentsIfNeeded()
         let hadLegacyHistory = !(connectionStats.isEmpty && connectionLog.isEmpty && commandHistory.isEmpty)
         if hadLegacyHistory {
-            saveHistory()
+            flushHistory()
             // Deliberately NOT save() here. This runs part-way through load(),
             // before workspace/keyBindings/credentialProfiles/defaultProfileID
             // have been read out of the document -- saving now would write
@@ -474,10 +505,63 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func saveHistory() {
+    /// How long a burst of history events is allowed to accumulate before the
+    /// file is rewritten.
+    ///
+    /// Every write re-encodes the whole document — stats, log, and up to
+    /// `commandLimit` (5,000) command events — then atomically replaces the
+    /// file. That was happening once *per recorded command*, so a MultiExec
+    /// grid with shell integration on turned one broadcast into one full
+    /// rewrite per included pane.
+    private static let historySaveWindow: TimeInterval = 0.75
+    private var pendingHistorySave: DispatchWorkItem?
+    private let coalescesHistoryWrites: Bool
+
+    /// Coalesces high-churn history writes (commands, connections).
+    ///
+    /// A fixed window, deliberately not a trailing-edge debounce. Cancelling
+    /// and rearming on every event reads as "write once the burst stops", but
+    /// a stream of events spaced closer than the window postpones the write
+    /// indefinitely — precisely under sustained activity, which is when
+    /// unwritten history is worth the most. The first event opens the window
+    /// and later ones join it, so the write lands a bounded
+    /// `historySaveWindow` after the first unsaved event no matter how long
+    /// the stream runs. It encodes live state when it fires, so joining the
+    /// window costs nothing.
+    ///
+    /// The bound is therefore real: killing the app loses at most this much
+    /// history, and every ordinary exit path flushes.
+    private func scheduleHistorySave() {
+        guard coalescesHistoryWrites else { return writeHistory() }
+        guard pendingHistorySave == nil else { return }   // window already open
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingHistorySave = nil
+            self.writeHistory()
+        }
+        pendingHistorySave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.historySaveWindow, execute: work)
+    }
+
+    /// Writes now, dropping any coalesced write still in flight.
+    ///
+    /// Used by the paths where the *point* is durability — clearing history,
+    /// and opting out of the log or command capture. A pending save holding
+    /// pre-clear data must not be allowed to land afterwards and resurrect it.
+    func flushHistory() {
+        pendingHistorySave?.cancel()
+        pendingHistorySave = nil
+        writeHistory()
+    }
+
+    private func writeHistory() {
         do {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // Not pretty-printed: this file is machine-written on every
+            // command and read back by the app, and the indentation was a
+            // large multiple on the bytes rewritten each time. `sortedKeys`
+            // stays — stable key order keeps diffs and backups sane.
+            encoder.outputFormatting = [.sortedKeys]
             try encoder.encode(HistoryDocument(
                 connectionStats: connectionStats,
                 connectionLog: connectionLog,
@@ -498,7 +582,7 @@ final class SessionStore: ObservableObject {
         if commandHistory.count > history.commandLimit {
             commandHistory.removeFirst(commandHistory.count - history.commandLimit)
         }
-        saveHistory()
+        scheduleHistorySave()
     }
 
     func commands(forEntry entryID: UUID? = nil, limit: Int = 500) -> [CommandEvent] {
@@ -718,20 +802,24 @@ final class SessionStore: ObservableObject {
             }
         }
 
-        let existingKeys = Set(entries.map { "\($0.folder)|\($0.name)|\($0.hostname)" })
+        // The key set grows as the batch is consumed. Snapshotting it only
+        // against the *existing* library deduped imports against what was
+        // already here but not against themselves, so a file listing the same
+        // host twice added it twice.
+        var knownKeys = Set(entries.map { importKey(for: $0) })
         var addedSessions = 0
         for var entry in importedEntries {
-            let key = "\(entry.folder)|\(entry.name)|\(entry.hostname)"
-            if existingKeys.contains(key) { continue }
+            guard knownKeys.insert(importKey(for: entry)).inserted else { continue }
             entry.id = UUID()
-            entry.savePassword = false
+            applyImportedCredentialPolicy(to: &entry)
             entries.append(entry)
             addedSessions += 1
         }
 
-        let existingMacroNames = Set(macros.map(\.name))
+        var knownMacroNames = Set(macros.map(\.name))
         var addedMacros = 0
-        for macro in importedMacros where !existingMacroNames.contains(macro.name) {
+        for macro in importedMacros {
+            guard knownMacroNames.insert(macro.name).inserted else { continue }
             var copy = macro
             copy.id = UUID()
             macros.append(copy)
@@ -742,19 +830,69 @@ final class SessionStore: ObservableObject {
         return (addedSessions, addedMacros)
     }
 
-    /// Adds imported entries, skipping exact duplicates (name + host + folder).
+    /// Adds imported entries, skipping exact duplicates (name + host + folder)
+    /// both against the library and within the incoming batch itself.
     @discardableResult
     func addImported(entries newEntries: [SessionEntry], macros newMacros: [Macro]) -> (sessions: Int, macros: Int) {
-        let existingKeys = Set(entries.map { "\($0.folder)|\($0.name)|\($0.hostname)" })
-        let fresh = newEntries.filter { !existingKeys.contains("\($0.folder)|\($0.name)|\($0.hostname)") }
+        var knownKeys = Set(entries.map { importKey(for: $0) })
+        let fresh = newEntries.filter { knownKeys.insert(importKey(for: $0)).inserted }
         entries.append(contentsOf: fresh)
 
-        let existingMacroNames = Set(macros.map(\.name))
-        let freshMacros = newMacros.filter { !existingMacroNames.contains($0.name) }
+        var knownMacroNames = Set(macros.map(\.name))
+        let freshMacros = newMacros.filter { knownMacroNames.insert($0.name).inserted }
         macros.append(contentsOf: freshMacros)
 
         if !fresh.isEmpty || !freshMacros.isEmpty { save() }
         return (fresh.count, freshMacros.count)
+    }
+
+    /// Identity for import dedup: two entries naming the same host, under the
+    /// same name, in the same folder are the same session.
+    ///
+    /// A struct rather than a joined string because folder and name are free
+    /// text: any separator character can appear inside them, so `a|b` + `c`
+    /// and `a` + `b|c` would collide and silently skip a distinct session.
+    private struct ImportKey: Hashable {
+        let folder: String
+        let name: String
+        let hostname: String
+    }
+
+    private func importKey(for entry: SessionEntry) -> ImportKey {
+        ImportKey(folder: entry.folder, name: entry.name, hostname: entry.hostname)
+    }
+
+    /// Decides what an imported entry may authenticate with.
+    ///
+    /// The two credential sources are keyed differently, and that's the whole
+    /// rule. A host-specific password is keyed by the entry's id — import
+    /// assigns a *fresh* id, so no such password can exist here and claiming
+    /// one would be a lie. A profile password is keyed by the profile, which
+    /// lives in this library: if the profile resolves locally, its secret is
+    /// genuinely available and the reference is worth keeping.
+    ///
+    /// So a resolvable profile keeps its id and switches `savePassword` on,
+    /// which is what makes restoring your own backup actually authenticate
+    /// rather than merely look right. Anything else clears the id and turns
+    /// saved-password use off, so an import can neither carry a dangling
+    /// reference nor quietly inherit this machine's default profile.
+    ///
+    /// Forcing the flag on normalises rather than overrides. "Profile
+    /// assigned, saved passwords off" is not a state the app can reach —
+    /// `applyCredentialProfile` and the editor's profile binding both set the
+    /// flag on assignment, and the editor hides the toggle entirely while a
+    /// profile is assigned. It's reachable only by hand-editing the JSON, and
+    /// carrying it through would be actively misleading: the editor reports
+    /// "password is set by the X profile" whenever a profile resolves, while
+    /// the resolver would return nothing.
+    private func applyImportedCredentialPolicy(to entry: inout SessionEntry) {
+        guard let id = entry.credentialProfileID,
+              credentialProfiles.contains(where: { $0.id == id }) else {
+            entry.credentialProfileID = nil
+            entry.savePassword = false
+            return
+        }
+        entry.savePassword = true
     }
 
     // MARK: - Persistence

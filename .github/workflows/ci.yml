@@ -12,6 +12,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build and test
         run: swift test
+      # Per-file ratchet on the Swift 6 migration. The package is still on
+      # swift-tools 5.9, so these are warnings rather than errors — the gate
+      # is that the count must not grow while the migration is pending.
+      # See Scripts/strict-concurrency-check.sh.
+      - name: Swift 6 strict concurrency ratchet
+        run: Scripts/strict-concurrency-check.sh
       - name: Verify bundled themes resource
         run: |
           python3 - <<'EOF'

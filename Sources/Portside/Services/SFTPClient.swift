@@ -104,18 +104,22 @@ struct SFTPClient {
     }
 
     func list(_ path: String) async throws -> [RemoteFile] {
-        let out = try await run(batch: ["ls -la \(quote(path))"])
+        let out = try await run(batch: ["ls -la \(try quote(path))"])
         return Self.parseListing(out)
     }
 
     func download(remotePath: String, to localURL: URL) async throws {
-        _ = try await run(batch: ["get \(quote(remotePath)) \(quote(localURL.path))"])
+        let remote = try quote(remotePath)
+        let local = try quote(localURL.path)
+        _ = try await run(batch: ["get \(remote) \(local)"])
     }
 
     func upload(localURL: URL, toDirectory remoteDir: String) async throws {
+        let directory = try quote(remoteDir)
+        let local = try quote(localURL.path)
         _ = try await run(batch: [
-            "cd \(quote(remoteDir))",
-            "put \(quote(localURL.path))",
+            "cd \(directory)",
+            "put \(local)",
         ])
     }
 
@@ -136,21 +140,22 @@ struct SFTPClient {
     func uploadReplacing(
         localURL: URL, remotePath: String, preservingModeFrom original: RemoteFile?
     ) async throws {
-        let directory = Self.directory(of: remotePath)
-        let finalName = (remotePath as NSString).lastPathComponent
-        let tempName = ".portside-upload-\(UUID().uuidString)"
+        let directory = try quote(Self.directory(of: remotePath))
+        let finalName = try quote((remotePath as NSString).lastPathComponent)
+        let local = try quote(localURL.path)
+        let tempName = try quote(".portside-upload-\(UUID().uuidString)")
         do {
             var batch = [
-                "cd \(quote(directory))",
-                "put \(quote(localURL.path)) \(quote(tempName))",
-                "rename \(quote(tempName)) \(quote(finalName))",
+                "cd \(directory)",
+                "put \(local) \(tempName)",
+                "rename \(tempName) \(finalName)",
             ]
             if let original, let mode = Self.octalMode(fromPermissionString: original.permissions) {
-                batch.append("chmod \(String(mode, radix: 8)) \(quote(finalName))")
+                batch.append("chmod \(String(mode, radix: 8)) \(finalName)")
             }
             _ = try await run(batch: batch)
         } catch {
-            _ = try? await run(batch: ["cd \(quote(directory))", "rm \(quote(tempName))"])
+            _ = try? await run(batch: ["cd \(directory)", "rm \(tempName)"])
             throw error
         }
     }
@@ -185,18 +190,42 @@ struct SFTPClient {
     }
 
     func mkdir(_ path: String) async throws {
-        _ = try await run(batch: ["mkdir \(quote(path))"])
+        _ = try await run(batch: ["mkdir \(try quote(path))"])
     }
 
     func delete(_ file: RemoteFile, in directory: String) async throws {
         let target = directory.hasSuffix("/") ? directory + file.name : directory + "/" + file.name
-        _ = try await run(batch: [(file.isDirectory ? "rmdir " : "rm ") + quote(target)])
+        _ = try await run(batch: [(file.isDirectory ? "rmdir " : "rm ") + (try quote(target))])
     }
 
     // MARK: - Plumbing
 
-    private func quote(_ path: String) -> String {
-        "\"" + path
+    /// Rejects the control characters that `sftp` batch mode cannot carry.
+    ///
+    /// Quoting protects the *argument*, but a batch is newline-delimited: a
+    /// name containing CR or LF splits one intended command into two, and the
+    /// second half is whatever the filename says. That's not shell injection —
+    /// it never reaches a shell — but it is command-stream injection into the
+    /// sftp client, and `rm` is one of the commands it can forge. NUL simply
+    /// truncates.
+    ///
+    /// Rejecting is the honest outcome rather than a limitation worth working
+    /// around: `parseListing` reads `ls -la` line by line, so a name with an
+    /// embedded newline can't survive a directory listing either. Failing at
+    /// the boundary beats corrupting quietly further in.
+    static func validateBatchPath(_ path: String) throws {
+        guard !path.unicodeScalars.contains(where: {
+            $0.value == 0x00 || $0.value == 0x0A || $0.value == 0x0D
+        }) else {
+            throw SFTPClientError.failed(
+                "Paths containing NUL, carriage return, or line feed are not supported over SFTP."
+            )
+        }
+    }
+
+    private func quote(_ path: String) throws -> String {
+        try Self.validateBatchPath(path)
+        return "\"" + path
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             + "\""
