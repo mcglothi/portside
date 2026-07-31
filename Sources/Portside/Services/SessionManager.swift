@@ -1169,12 +1169,18 @@ final class SessionManager: ObservableObject {
         // the disarm and broken after, so it is the disarm and not the
         // reconnect. Deferring it a runloop turn does not help.
         //
-        // Prime suspect is teardown rather than the disarm itself: `SessionArea`
-        // renders `WelcomeView` when there are no sessions and `TabContentView`
-        // when there's a selected tab, with no branch for "sessions exist but
-        // selectedTab is nil" — which is reachable while a tab is being torn
-        // down, and would leave exactly these stale views on screen. Fix that
-        // hole first, then re-land this with a test.
+        // Narrowed since: it is not the disarm, it is the *notice*. Dropping
+        // the banner during a reconnect is clean; setting `disarmNotice` is
+        // what breaks it, because that inserts a new sibling above the pane
+        // tree at the moment that tree is being restructured, re-parenting the
+        // persistent terminal views. Removal during the swap is fine,
+        // insertion is not. (The earlier suspicion that `SessionArea`'s
+        // missing branch was to blame was wrong — that hole was real and is
+        // fixed, and this still reproduced behind it.)
+        //
+        // So re-landing this needs the notice to stop being a child of that
+        // VStack — an overlay, or somewhere outside the pane container — and
+        // then a test.
 
         let replacement = session.entry.map { makeSession(for: $0) } ?? makeLocalShellSession()
         prepare(replacement)
