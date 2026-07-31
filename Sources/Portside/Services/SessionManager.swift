@@ -1347,12 +1347,35 @@ final class SessionManager: ObservableObject {
         monitor.start(queue: .main)
     }
 
+    /// Set PORTSIDE_NETWORK_DEBUG=1 to log every path update and the decision
+    /// it produced to Console.app.
+    ///
+    /// This rule fires unprompted and takes a broadcast down, so "did that do
+    /// the right thing?" deserves a better answer than watching for a banner to
+    /// vanish. A machine with a VPN and half a dozen `utun` interfaces has
+    /// plenty of churn that isn't a network *move*, and the way this rule fails
+    /// is by crying wolf until people stop trusting it — which is invisible
+    /// unless you can see what it saw.
+    private static let networkDebugLogging =
+        ProcessInfo.processInfo.environment["PORTSIDE_NETWORK_DEBUG"] != nil
+
     @MainActor
     func networkPathChanged(interfaces: Set<String>, satisfied: Bool) {
         defer { lastNetworkInterfaces = interfaces }
-        guard NetworkChangeDecision.shouldDisarm(
+        let disarming = NetworkChangeDecision.shouldDisarm(
             previous: lastNetworkInterfaces, current: interfaces, satisfied: satisfied
-        ) else { return }
+        )
+        if Self.networkDebugLogging {
+            let was = lastNetworkInterfaces.map { $0.sorted().joined(separator: ",") }
+                ?? "(first path — baseline)"
+            NSLog("Portside network: [%@] -> [%@] satisfied=%@ decision=%@ armedTabs=%d",
+                  was,
+                  interfaces.sorted().joined(separator: ","),
+                  satisfied ? "yes" : "no",
+                  disarming ? "DISARM" : "ignore",
+                  tabs.filter(\.broadcastArmed).count)
+        }
+        guard disarming else { return }
         disarmAll(reason: .networkChanged)
     }
 
