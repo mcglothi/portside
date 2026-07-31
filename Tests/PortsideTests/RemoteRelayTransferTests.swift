@@ -750,3 +750,34 @@ private final class LocalDeliveryLog: @unchecked Sendable {
     func record(_ entry: String) { lock.lock(); entries.append(entry); lock.unlock() }
     var recorded: [String] { lock.lock(); defer { lock.unlock() }; return entries }
 }
+
+/// A failed upload must not leave anything at the destination that looks like
+/// the real file — the collision preflight would then refuse the retry,
+/// reporting "already exists" for the remains of the failed attempt. The live
+/// operations are wired to `uploadReplacing` (temp name, then rename) rather
+/// than plain `upload`, which puts straight to the final filename.
+final class RemoteRelayUploadPathTests: XCTestCase {
+
+    func testJoinsDirectoryAndName() {
+        XCTAssertEqual(
+            RemoteRelayTransfer.remotePath(directory: "/tmp/TEST", name: "testfile"),
+            "/tmp/TEST/testfile"
+        )
+    }
+
+    /// Naive concatenation yields `//testfile`, which some servers treat as a
+    /// different path.
+    func testRootDirectoryDoesNotDoubleTheSlash() {
+        XCTAssertEqual(
+            RemoteRelayTransfer.remotePath(directory: "/", name: "testfile"),
+            "/testfile"
+        )
+    }
+
+    func testTrailingSlashIsNotDoubled() {
+        XCTAssertEqual(
+            RemoteRelayTransfer.remotePath(directory: "/tmp/", name: "testfile"),
+            "/tmp/testfile"
+        )
+    }
+}

@@ -75,7 +75,20 @@ enum RemoteRelayTransfer {
             pwd: { try await SFTPClient(entry: $0).pwd() },
             list: { try await SFTPClient(entry: $0).list($1) },
             download: { try await SFTPClient(entry: $0).download(remotePath: $1, to: $2) },
-            upload: { try await SFTPClient(entry: $0).upload(localURL: $1, toDirectory: $2) }
+            // `uploadReplacing`, not `upload`: the plain one `put`s straight
+            // to the final filename, so an interrupted transfer leaves a
+            // partial file at the destination wearing the real name. The
+            // collision preflight would then refuse the retry, reporting
+            // "already exists" for the corpse of the failed attempt. This
+            // writes to a hidden temp name and renames it into place, so a
+            // failure leaves nothing that looks like the file.
+            upload: { entry, localURL, directory in
+                try await SFTPClient(entry: entry).uploadReplacing(
+                    localURL: localURL,
+                    remotePath: remotePath(directory: directory, name: localURL.lastPathComponent),
+                    preservingModeFrom: nil
+                )
+            }
         )
     }
 
@@ -117,6 +130,15 @@ enum RemoteRelayTransfer {
         if existingNames.contains(source.name) {
             throw Failure.nameCollision(source.name)
         }
+    }
+
+    /// Joins a remote directory and filename into one path.
+    ///
+    /// Root is the case that bites: naive concatenation turns `/` plus
+    /// `testfile` into `//testfile`, which some servers treat as a different
+    /// path entirely.
+    static func remotePath(directory: String, name: String) -> String {
+        directory.hasSuffix("/") ? directory + name : directory + "/" + name
     }
 
     /// Trailing slashes are not a difference; `/tmp` and `/tmp/` are one place.
