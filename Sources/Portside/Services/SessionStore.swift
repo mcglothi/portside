@@ -88,10 +88,33 @@ final class SessionStore: ObservableObject {
     /// file and disable seeding so they start from an empty, isolated library.
     private let seedsFromSSHConfig: Bool
 
+    /// Runs the app against a throwaway library instead of the real one.
+    ///
+    /// A build started with `swift run` otherwise shares everything with the
+    /// installed app: the same hosts, the same saved workspace, the same
+    /// history. That makes driving a dev build a small risk to real data every
+    /// time, and it means every launch stops to ask whether to restore the
+    /// session you left open in the *other* copy.
+    ///
+    ///     PORTSIDE_LIBRARY_DIR=/tmp/portside-test swift run
+    ///
+    /// Seeding from `~/.ssh/config` is deliberately off in this mode. An
+    /// isolated library is for testing, and quietly filling it with the
+    /// developer's real infrastructure defeats most of the point — including
+    /// keeping real hostnames out of screenshots.
+    static let libraryDirectoryOverrideKey = "PORTSIDE_LIBRARY_DIR"
+
     init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        fileURL = appSupport.appendingPathComponent("Portside/portside.json")
-        seedsFromSSHConfig = true
+        let override = ProcessInfo.processInfo.environment[Self.libraryDirectoryOverrideKey]
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+        if let override {
+            NSLog("Portside: using library at \(override.path) (\(Self.libraryDirectoryOverrideKey))")
+        }
+        let directory = override
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Portside")
+        fileURL = directory.appendingPathComponent("portside.json")
+        seedsFromSSHConfig = (override == nil)
         coalescesHistoryWrites = true
         load()
         observeTermination()

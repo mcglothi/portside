@@ -21,9 +21,25 @@ final class UpdaterViewModel: ObservableObject {
     }
     @Published private(set) var lastUpdateCheckDate: Date?
 
+    /// Whether this build has an update feed to check at all.
+    ///
+    /// `SUFeedURL` and `SUPublicEDKey` are written into Info.plist by
+    /// `Scripts/make_app.sh`, so a packaged build has them and a bare
+    /// `swift run` — which has no Info.plist whatsoever — does not. Starting
+    /// the updater without a feed can only fail, and it fails loudly: an error
+    /// dialog on every single launch, in front of whatever you were doing.
+    ///
+    /// That is a papercut for anyone building from source, not just for
+    /// automation. No feed configured, no updater started, no dialog; the
+    /// "Check for Updates…" item disables itself because `canCheckForUpdates`
+    /// stays false. Packaged builds are unaffected — they have the key.
+    static var hasUpdateFeed: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil
+    }
+
     init() {
         controller = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: Self.hasUpdateFeed, updaterDelegate: nil, userDriverDelegate: nil)
         automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
         updateCheckInterval = controller.updater.updateCheckInterval
         lastUpdateCheckDate = controller.updater.lastUpdateCheckDate
