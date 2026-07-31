@@ -892,7 +892,23 @@ final class SessionManager: ObservableObject {
     /// works on this set; the tree only governs layout.
     var sessions: [TerminalSession] { tabs.flatMap(\.leaves) }
 
-    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
+    /// The active tab, falling back to the last one when `selectedTabID` names
+    /// a tab that is no longer here.
+    ///
+    /// The fallback is not decoration. Every tab-scoped command — arm
+    /// MultiExec, broadcast, split, close, zoom — reads through this and does
+    /// nothing at all when it's nil, so a stale id turns the whole app into a
+    /// window that ignores input while looking perfectly normal. `SessionArea`
+    /// had the matching hole: it drew `WelcomeView` for no sessions and a tab
+    /// for a selected one, and *nothing* in between, which leaves the previous
+    /// frame's AppKit views on screen with no owner.
+    ///
+    /// Removal paths do reassign the id, so this should be unreachable; it is
+    /// here because "should be" is doing a lot of work in a teardown sequence,
+    /// and the cost of being wrong is a window that has to be force-quit.
+    /// Deliberately pure — healing `selectedTabID` from a getter would mutate
+    /// during a view update.
+    var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } ?? tabs.last }
 
     /// The focused terminal — the active leaf of the selected tab. Drives find,
     /// zoom, the SFTP pane, and single-session close.

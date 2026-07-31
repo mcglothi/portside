@@ -6,10 +6,22 @@ struct SessionArea: View {
     private var armed: Bool { sessions.selectedTab?.broadcastArmed ?? false }
 
     var body: some View {
+        // Total by construction: every state renders something.
+        //
+        // This was `if no sessions { welcome } else if let tab { tab }` with no
+        // final else, so "sessions exist but no tab is selected" drew nothing
+        // at all. SwiftUI removing the content doesn't remove the AppKit views
+        // underneath it, so that state left the previous frame's sidebar,
+        // toolbar and terminal panes on screen with nothing owning their
+        // layout — a window that looks half-erased and doesn't recover on
+        // resize. Reachable during tab teardown, and the reason
+        // disarm-on-reconnect had to be pulled back out.
+        //
+        // Inverted rather than given an `else` branch: with `selectedTab`
+        // falling back to the last tab, an added branch would be unreachable
+        // and read as dead code, while this shape simply cannot have a gap.
         Group {
-            if sessions.sessions.isEmpty {
-                WelcomeView()
-            } else if let tab = sessions.selectedTab {
+            if !sessions.sessions.isEmpty, let tab = sessions.selectedTab {
                 VStack(spacing: 0) {
                     TabBar()
                     Divider()
@@ -19,6 +31,8 @@ struct SessionArea: View {
                         TabContentView(tab: tab)
                     }
                 }
+            } else {
+                WelcomeView()
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
