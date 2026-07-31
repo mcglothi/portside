@@ -29,7 +29,15 @@ struct SessionArea: View {
                     help: "Show the remote file browser for this session",
                     isOn: $sessions.filesPaneVisible
                 )
-                .disabled(armed || !(sessions.selected?.entry?.supportsFileBrowser ?? false))
+                // Deliberately NOT disabled while MultiExec is armed. That gate
+                // arrived with the pane-tree refactor, when an armed tab was a
+                // separate grid mode with no single session to browse; a tab
+                // now has a well-defined active pane either way. It also made
+                // host-to-host copy unreachable for the case it most exists
+                // for — the file browser is the drag source, so disabling it
+                // while armed meant a fan-out could only be started by opening
+                // the browser first and arming afterwards.
+                .disabled(!(sessions.selected?.entry?.supportsFileBrowser ?? false))
             }
             ToolbarItem {
                 ToolbarToggleButton(
