@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// Renders a tab's pane tree: leaves are terminals, interior nodes are
@@ -71,8 +72,6 @@ struct PaneLeafView: View {
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
     @State private var hovering = false
-    /// A remote file is hovering over this pane and could land here.
-    @State private var dropTargeted = false
 
     private var armed: Bool { tab.broadcastArmed }
     private var included: Bool { session.includedInMultiExec }
@@ -101,13 +100,18 @@ struct PaneLeafView: View {
             }
             // Host-to-host copy: a file dragged from the SFTP pane lands in
             // whatever directory *this* pane's shell is sitting in.
-            .dropDestination(for: RemoteFileDragPayload.self) { payloads, _ in
-                acceptRelayDrop(payloads)
-            } isTargeted: { targeted in
-                dropTargeted = targeted
+            //
+            // The drop itself is caught in AppKit by `LoggingTerminalView`
+            // (see `enableRemoteFileDrops` for why neither SwiftUI drop API
+            // can see this drag); it lands here for the store lookup and any
+            // error presentation.
+            .onChange(of: session.pendingRemoteDrop) { _, payload in
+                guard let payload else { return }
+                session.pendingRemoteDrop = nil
+                acceptRelayDrop(payload)
             }
             .overlay {
-                if dropTargeted {
+                if session.dropTargeted {
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(Color.accentColor, lineWidth: 3)
                         .background(Color.accentColor.opacity(0.08))
@@ -141,14 +145,15 @@ struct PaneLeafView: View {
     /// The source entry is resolved from the store at drop time rather than
     /// trusted from the pasteboard, so a drag that started before a host was
     /// edited or deleted cannot act on stale connection details.
-    private func acceptRelayDrop(_ payloads: [RemoteFileDragPayload]) -> Bool {
-        guard let payload = payloads.first,
-              let sourceEntry = store.entry(id: payload.entryID)
-        else { return false }
+    private func acceptRelayDrop(_ payload: RemoteFileDragPayload) {
+        guard let sourceEntry = store.entry(id: payload.entryID) else {
+            session.relayError = "That host is no longer in your session library."
+            return
+        }
         guard let destinationEntry = session.entry else {
-            session.relayError =
-                "This pane has no host to copy to — host-to-host copy needs a plain SSH session."
-            return false
+            session.relayError = "This pane has no host to copy to — "
+                + "host-to-host copy needs a plain SSH session."
+            return
         }
         RemoteRelayCoordinator.start(
             payload: payload,
@@ -156,7 +161,6 @@ struct PaneLeafView: View {
             destinationSession: session,
             destinationEntry: destinationEntry
         )
-        return true
     }
 
     /// Presented over the pane the manager raised the guard for — so ⌥⌘M on a
