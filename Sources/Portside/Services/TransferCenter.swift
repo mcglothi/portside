@@ -37,6 +37,18 @@ final class TransferCenter: ObservableObject {
         transfers.filter { $0.entryID == entryID }
     }
 
+    /// Transfers filed against any of `entryIDs`.
+    ///
+    /// A fan-out is filed under the host the file came *from*, and the only
+    /// place transfers were ever rendered is inside the SFTP browser, filtered
+    /// to whichever host that browser happens to be showing. Dropping onto
+    /// another pane moves focus, which rebinds the browser to the
+    /// destination — so a broadcast copy reported its progress somewhere
+    /// nothing was looking.
+    func transfers(forAny entryIDs: Set<UUID>) -> [Transfer] {
+        transfers.filter { entryIDs.contains($0.entryID) }
+    }
+
     /// True when this exact file is already being fetched for this host.
     /// Dragging the same 18GB model out twice should not start a second
     /// download competing with the first for the same pipe.

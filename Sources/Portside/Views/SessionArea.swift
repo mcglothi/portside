@@ -93,6 +93,7 @@ struct TabContentView: View {
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
     @ObservedObject var tab: Tab
+    @ObservedObject private var transfers = TransferCenter.shared
     @State private var commandInput = ""
 
     private var alert: Color { Color(nsColor: store.appearance.alert) }
@@ -125,6 +126,13 @@ struct TabContentView: View {
     /// The fallback matters: pinning nothing must not empty the bar for people
     /// who never favourite anything, and it keeps the feature discoverable —
     /// you see the bar, then find you can shorten it.
+    /// Transfers involving any host in this tab — the source of a fan-out is
+    /// as relevant here as its destinations.
+    private var tabTransfers: [TransferCenter.Transfer] {
+        let ids = Set(tab.leaves.compactMap { $0.entry?.id })
+        return transfers.transfers(forAny: ids)
+    }
+
     private var barMacros: [Macro] {
         store.favoriteMacros.isEmpty ? store.macros : store.favoriteMacros
     }
@@ -164,6 +172,32 @@ struct TabContentView: View {
                         sessions.setBroadcastArmed(false)
                     }
                     .help("Turn MultiExec off for this tab")
+                }
+                // File copies to the group report here, where the banner
+                // already is, rather than only inside the SFTP browser: that
+                // list is filtered to the one host the browser is showing, and
+                // dropping onto a pane moves focus away from the source.
+                ForEach(tabTransfers) { transfer in
+                    HStack(spacing: 8) {
+                        if let fraction = transfer.fraction {
+                            ProgressView(value: fraction)
+                                .progressViewStyle(.linear)
+                                .frame(width: 120)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .controlSize(.small)
+                        }
+                        Text(transfer.label)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Button("Cancel") { TransferCenter.shared.cancel(transfer.id) }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                    .padding(.top, 2)
                 }
                 .padding(8)
                 .background(alert.opacity(0.25))
