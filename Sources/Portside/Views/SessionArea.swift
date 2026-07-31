@@ -147,7 +147,13 @@ struct TabContentView: View {
                 // left the banner itself unstyled.
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
+                        // Full-strength alert on the icon rather than the
+                        // background: the fill sits behind text, so matching
+                        // the pane rings' 0.8 there would cost legibility.
+                        // The glyph and the rule carry the colour instead.
                         Image(systemName: "dot.radiowaves.left.and.right")
+                            .foregroundStyle(alert)
+                            .font(.body.weight(.semibold))
                         VStack(alignment: .leading, spacing: 1) {
                             Text("MultiExec is ON — keystrokes go to \(counts.included) of \(counts.total) panes in this tab")
                                 .fontWeight(.semibold)
@@ -206,8 +212,13 @@ struct TabContentView: View {
                     }
                 }
                 .padding(8)
-                .background(alert.opacity(0.25))
-                Divider()
+                .background(alert.opacity(0.32))
+                // Matches the included panes' ring strength, so an armed tab
+                // reads as one thing rather than bright borders around a
+                // washed-out banner.
+                Rectangle()
+                    .fill(alert.opacity(0.8))
+                    .frame(height: 2)
             }
 
             HSplitView {
