@@ -212,6 +212,19 @@ struct SidebarView: View {
         } message: {
             Text(importMessage ?? "")
         }
+        .alert("Your library changed outside Portside",
+               isPresented: .constant(store.externalChange)) {
+            Button("Reload") { store.reloadAfterExternalChange() }
+            Button("Keep Mine and Overwrite", role: .destructive) {
+                store.overwriteExternalChange()
+            }
+        } message: {
+            Text("Something else wrote to your session library since Portside "
+                 + "read it — another copy of Portside, or a sync client "
+                 + "bringing down changes made elsewhere. Saving now would "
+                 + "discard them.\n\nReload takes the version on disk. "
+                 + "Portside has not saved anything in the meantime.")
+        }
         .modifier(GroupAlerts(
             savingGroup: $savingGroup, newGroupName: $newGroupName,
             renamingGroup: $renamingGroup, renameGroupName: $renameGroupName,

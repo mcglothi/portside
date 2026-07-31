@@ -1021,6 +1021,7 @@ final class SessionStore: ObservableObject {
     private(set) var quarantinedLibraryPath: String?
 
     private func load() {
+        knownModificationDate = currentModificationDate
         let existingData = try? Data(contentsOf: fileURL)
         if let existingData {
             do {
@@ -1087,11 +1088,46 @@ final class SessionStore: ObservableObject {
             }
     }
 
+    /// The library file's modification date as of the last read or write we
+    /// did. Anything else on disk means someone changed the file underneath us.
+    private var knownModificationDate: Date?
+
+    /// Set when the file on disk changed outside this app since we last read
+    /// or wrote it, so saving would silently discard whatever that change was.
+    /// Cleared by `reloadAfterExternalChange()` or `overwriteExternalChange()`.
+    @Published private(set) var externalChange: Bool = false
+
+    private var currentModificationDate: Date? {
+        try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date
+    }
+
     private func save() {
         // A library we couldn't read must never be written over by the empty
         // state that failure left us in.
         guard loadFailure == nil else {
             NSLog("Portside: refusing to save over an unreadable library")
+            return
+        }
+        // The same principle, one case further along. `save()` writes the whole
+        // library, so if the file changed since we read it — another Portside,
+        // a sync client bringing down a copy edited on a second Mac, a hand
+        // edit — writing now discards that change with no trace. It matters
+        // more now that PORTSIDE_LIBRARY_DIR can point the library at a synced
+        // folder, where two machines really can hold it open at once.
+        //
+        //     a bad read can never become a bad write
+        //   → a stale read can never become a clobbering write
+        //
+        // Deliberately compares against the date of *our* last read or write
+        // rather than a timestamp of when we started: our own atomic writes
+        // replace the file and move the date forward every time, so anything
+        // else would refuse to save after the first one.
+        if let known = knownModificationDate, let onDisk = currentModificationDate,
+           onDisk != known {
+            if !externalChange {
+                NSLog("Portside: library changed on disk since it was read — not saving over it")
+            }
+            externalChange = true
             return
         }
         do {
@@ -1111,8 +1147,34 @@ final class SessionStore: ObservableObject {
                                         connectionStats: connectionStats, connectionLog: connectionLog,
                                         history: history))
                 .write(to: fileURL, options: .atomic)
+            // Our own write moved the date on; adopt it so the next save
+            // compares against this one rather than refusing.
+            knownModificationDate = currentModificationDate
         } catch {
             NSLog("Portside: failed to save library: \(error)")
         }
+    }
+
+    /// Takes the on-disk copy, discarding whatever is in memory.
+    ///
+    /// The safe answer to an external change: their edit is on disk and ours
+    /// is not, so re-reading loses the least. Everything in memory that
+    /// matters has already been saved — the conflict only blocks writes made
+    /// *after* the file moved.
+    func reloadAfterExternalChange() {
+        externalChange = false
+        knownModificationDate = currentModificationDate
+        load()
+    }
+
+    /// Writes over the newer file on disk, on purpose.
+    ///
+    /// Offered because refusing forever is its own failure mode — a stale
+    /// timestamp from a sync client that never settles would otherwise leave
+    /// the library permanently read-only.
+    func overwriteExternalChange() {
+        externalChange = false
+        knownModificationDate = currentModificationDate
+        save()
     }
 }
