@@ -366,6 +366,24 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// Guards against the connection attempt being resolved twice.
     var resolvedConnectionOutcome = false
 
+    /// Whether something on the other end is currently reading a secret.
+    ///
+    /// Password prompts, key passphrases, `sudo`, and MFA challenges all work
+    /// the same way: turn off terminal echo, read a line, turn it back on. The
+    /// pty master reports the slave's termios, so a clear `ECHO` bit is a
+    /// direct reading of "a secret is being typed right now" rather than a
+    /// guess from output text — which would have to keep up with every prompt
+    /// wording, in every language, from ssh, sudo, and every PAM module.
+    ///
+    /// False for transports with no child process (serial, telnet) and for a
+    /// session that has already exited: nothing to read, nothing to protect.
+    var isReadingSecret: Bool {
+        guard isRunning, let process = terminalView.process, process.running else { return false }
+        var settings = termios()
+        guard tcgetattr(process.childfd, &settings) == 0 else { return false }
+        return settings.c_lflag & tcflag_t(ECHO) == 0
+    }
+
     /// Positive evidence the session actually came up.
     ///
     /// For ssh and mosh, being alive isn't enough — a connection to a host that
@@ -1048,17 +1066,58 @@ final class SessionManager: ObservableObject {
     /// nothing to observe.
     private static let connectionGracePeriod: TimeInterval = 4
 
+    /// How long to keep waiting for an authentication prompt to finish before
+    /// giving up on the post-connect command. Generous on purpose: it has to
+    /// cover a push notification being approved on a phone, or a hardware key
+    /// being touched.
+    private static let postConnectAuthTimeout: TimeInterval = 90
+    private static let postConnectPollInterval: TimeInterval = 0.15
+
     private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
         if let command = entry.postConnectCommand {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak session] in
-                session?.sendText(command + "\r")
-            }
+            sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout)
         }
         // Logged immediately so a failure leaves a trace, but deliberately not
         // counted: only a confirmed connection updates the totals that drive
         // Quick Connect's ranking and stale-host detection.
         onConnectionAttempt?(entry, .attempted)
         confirmConnection(session, entry: entry)
+    }
+
+    /// Sends a post-connect command once nothing is reading a secret.
+    ///
+    /// This used to fire on a flat 1.2-second timer, which is long enough for a
+    /// fast local shell and nowhere near long enough for a password prompt, a
+    /// slow `ProxyJump` chain, or MFA. When it lost that race the command was
+    /// typed *into the prompt*: echo is off, so nothing appears, the newline
+    /// submits it as the password, and the command — which may be anything —
+    /// goes to the server as a failed credential and into its auth log.
+    ///
+    /// The signal is exact rather than heuristic. Anything reading a secret —
+    /// ssh, sudo, an MFA prompt — turns off `ECHO` on the tty, and the pty
+    /// master reports the slave's termios, so "echo is off" *is* "someone is
+    /// asking for a secret right now". Waiting for it to come back is precisely
+    /// the condition that was missing.
+    ///
+    /// No settle delay once it does: shells buffer stdin, so a command arriving
+    /// a moment before the prompt is drawn still runs at it. The old comment
+    /// here was right about that, and wrong only about the prompt it might land
+    /// in instead.
+    ///
+    /// Transports with no child process (serial, telnet) have no termios to
+    /// read and send immediately, exactly as before.
+    private func sendWhenNotPrompting(_ command: String, to session: TerminalSession,
+                                      deadline: DispatchTime) {
+        guard session.isRunning else { return }   // died during auth; nothing to send to
+        guard session.isReadingSecret, DispatchTime.now() < deadline else {
+            session.sendText(command + "\r")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.postConnectPollInterval) {
+            [weak self, weak session] in
+            guard let self, let session else { return }
+            self.sendWhenNotPrompting(command, to: session, deadline: deadline)
+        }
     }
 
     /// Resolves the attempt once the grace period has passed, or as soon as the
