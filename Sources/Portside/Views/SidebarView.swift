@@ -439,13 +439,15 @@ struct SidebarView: View {
                 if let doc = LibraryTransfer.decode(data) {
                     let added = store.importExport(entries: doc.entries ?? [],
                                                    folders: doc.folders ?? [],
-                                                   macros: doc.macros ?? [])
-                    importMessage = summary(sessions: added.sessions, macros: added.macros, skipped: 0)
+                                                   macros: doc.macros ?? [],
+                                                   credentialProfiles: doc.credentialProfiles ?? [])
+                    importMessage = summary(sessions: added.sessions, macros: added.macros,
+                                            profiles: added.profiles, skipped: 0)
                 } else {
                     let parsed = try MobaXtermImporter.importFile(at: url)
                     let added = store.addImported(entries: parsed.entries, macros: parsed.macros)
                     importMessage = summary(sessions: added.sessions, macros: added.macros,
-                                            skipped: parsed.skippedNonSSH)
+                                            profiles: 0, skipped: parsed.skippedNonSSH)
                 }
             } catch {
                 importMessage = "Import failed: \(error.localizedDescription)"
@@ -453,16 +455,27 @@ struct SidebarView: View {
         }
     }
 
-    private func summary(sessions: Int, macros: Int, skipped: Int) -> String {
-        if sessions == 0 && macros == 0 {
+    private func summary(sessions: Int, macros: Int, profiles: Int, skipped: Int) -> String {
+        if sessions == 0 && macros == 0 && profiles == 0 {
             return "Nothing new to import — everything was already in the library."
         }
         var parts: [String] = []
         if sessions > 0 { parts.append("\(sessions) session\(sessions == 1 ? "" : "s")") }
         if macros > 0 { parts.append("\(macros) macro\(macros == 1 ? "" : "s")") }
-        var message = "Imported " + parts.joined(separator: " and ")
+        if profiles > 0 {
+            parts.append("\(profiles) credential profile\(profiles == 1 ? "" : "s")")
+        }
+        var message = "Imported " + parts.joined(separator: ", ")
         if skipped > 0 { message += ", skipped \(skipped) non-SSH entries" }
-        return message + "."
+        message += "."
+        if profiles > 0 {
+            // The one thing that doesn't travel, said plainly at the moment
+            // it matters — otherwise the hosts look restored and simply fail
+            // to authenticate later, with nothing connecting the two events.
+            message += " Passwords aren't included in an export — set them in "
+                     + "Settings ▸ Profiles and every host using them will work."
+        }
+        return message
     }
 
     private func exportSessions() {
@@ -472,7 +485,8 @@ struct SidebarView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try LibraryTransfer.encodeSessions(entries: store.entries,
-                                                          folders: store.explicitFolders)
+                                                          folders: store.explicitFolders,
+                                                          credentialProfiles: store.credentialProfiles)
             try data.write(to: url)
             let n = store.entries.count
             importMessage = "Exported \(n) session\(n == 1 ? "" : "s") to \(url.lastPathComponent)."

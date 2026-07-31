@@ -416,6 +416,19 @@ struct CredentialProfile: Codable, Identifiable, Equatable {
     var identityFile: String?
 }
 
+extension String {
+    /// Whether two profile names refer to the same credential for import
+    /// purposes. Case and surrounding whitespace differ freely between a
+    /// profile typed on one Mac and the same one typed on another; "Ops " and
+    /// "ops" are not two different credentials to anyone but a byte
+    /// comparison.
+    func matchesProfileName(_ other: String) -> Bool {
+        trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(
+            other.trimmingCharacters(in: .whitespaces)
+        ) == .orderedSame
+    }
+}
+
 /// One entry in the "jump back in" history: which host, connected when.
 struct RecentConnection: Codable, Hashable {
     var entryID: UUID

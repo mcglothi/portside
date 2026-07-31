@@ -788,13 +788,25 @@ final class SessionStore: ObservableObject {
         return new.count
     }
 
-    /// Merges a Portside export. Entries get fresh ids and no saved-password
-    /// flag (Keychain secrets never travel in an export), standalone folders
+    /// Merges a Portside export. Entries get fresh ids, standalone folders
     /// merge by path, and macros dedupe by name. Returns what was added.
+    ///
+    /// Credential profile definitions are merged *first*, deliberately: the
+    /// per-entry credential policy decides what an imported host may
+    /// authenticate with by asking whether its profile resolves locally, so a
+    /// profile arriving in the same file has to already be present by the time
+    /// the entries are walked. Merging them afterwards would clear every
+    /// reference and then restore the profiles they pointed at — the exact
+    /// failure this phase exists to fix.
     @discardableResult
     func importExport(entries importedEntries: [SessionEntry],
                       folders importedFolders: [String],
-                      macros importedMacros: [Macro]) -> (sessions: Int, macros: Int) {
+                      macros importedMacros: [Macro],
+                      credentialProfiles importedProfiles: [CredentialProfile] = [])
+        -> (sessions: Int, macros: Int, profiles: Int)
+    {
+        let (addedProfiles, profileRemapping) = mergeImportedProfiles(importedProfiles)
+
         for folder in importedFolders {
             let clean = normalize(folder)
             if !clean.isEmpty, !explicitFolders.contains(clean) {
@@ -811,6 +823,9 @@ final class SessionStore: ObservableObject {
         for var entry in importedEntries {
             guard knownKeys.insert(importKey(for: entry)).inserted else { continue }
             entry.id = UUID()
+            if let old = entry.credentialProfileID, let new = profileRemapping[old] {
+                entry.credentialProfileID = new
+            }
             applyImportedCredentialPolicy(to: &entry)
             entries.append(entry)
             addedSessions += 1
@@ -827,7 +842,42 @@ final class SessionStore: ObservableObject {
         }
 
         save()
-        return (addedSessions, addedMacros)
+        return (addedSessions, addedMacros, addedProfiles)
+    }
+
+    /// Merges incoming profile definitions, returning how many were added and
+    /// any id remapping imported entries need to follow.
+    ///
+    /// Three cases, and the middle one is the reason this returns a mapping:
+    ///
+    /// - **Same id already here.** Keep the local profile untouched. It may
+    ///   hold a Keychain secret the incoming definition can't carry, so
+    ///   overwriting it with the same fields minus the password would be a
+    ///   pure loss.
+    /// - **Same name, different id.** The library was rebuilt by hand on this
+    ///   Mac — "Ops" exists, just not as the same record. Adding a second
+    ///   "Ops" gives two identical-looking profiles where only one holds the
+    ///   password, which is worse than either merging or refusing. Point the
+    ///   imported entries at the local one instead; the name is a deliberate
+    ///   user choice and the strongest signal available that these are meant
+    ///   to be the same credential.
+    /// - **Neither.** Genuinely new — take it, id and all, so a future import
+    ///   from the same source lines up on the first case rather than drifting.
+    private func mergeImportedProfiles(
+        _ imported: [CredentialProfile]
+    ) -> (added: Int, remapping: [UUID: UUID]) {
+        var remapping: [UUID: UUID] = [:]
+        var added = 0
+        for profile in imported {
+            if credentialProfiles.contains(where: { $0.id == profile.id }) { continue }
+            if let local = credentialProfiles.first(where: { $0.name.matchesProfileName(profile.name) }) {
+                remapping[profile.id] = local.id
+                continue
+            }
+            credentialProfiles.append(profile)
+            added += 1
+        }
+        return (added, remapping)
     }
 
     /// Adds imported entries, skipping exact duplicates (name + host + folder)
