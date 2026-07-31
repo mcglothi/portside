@@ -504,3 +504,51 @@ final class RemoteRelayFanOutTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
     }
 }
+
+/// The fan-out summary has to account for every host. "Copied to 2 of 4" with
+/// a single failure listed sends the reader hunting for a fourth host that was
+/// only ever skipped — which is exactly what happened in live testing.
+final class RemoteRelayReportingTests: XCTestCase {
+
+    private func entry(_ name: String) -> SessionEntry {
+        SessionEntry(name: name, hostname: "\(name).internal", kind: .host)
+    }
+
+    /// Mirrors the arithmetic the coordinator does when building its message.
+    private func summary(for results: [RemoteRelayTransfer.Outcome]) -> String {
+        let delivered = results.filter { $0 == .delivered }.count
+        let skipped = results.filter { $0 == .skipped }.count
+        var text = "Copied to \(delivered) of \(results.count) hosts."
+        if skipped > 0 { text += " \(skipped) already had it." }
+        return text
+    }
+
+    func testSkippedHostsAreAccountedForInTheSummary() {
+        // The live case: 4 panes, source's own skipped, hopper unwritable.
+        let outcomes: [RemoteRelayTransfer.Outcome] = [
+            .delivered, .delivered, .skipped, .failed("Permission denied"),
+        ]
+        XCTAssertEqual(
+            summary(for: outcomes),
+            "Copied to 2 of 4 hosts. 1 already had it."
+        )
+    }
+
+    func testNoSkipClauseWhenNothingWasSkipped() {
+        let outcomes: [RemoteRelayTransfer.Outcome] = [
+            .delivered, .failed("Permission denied"),
+        ]
+        XCTAssertEqual(summary(for: outcomes), "Copied to 1 of 2 hosts.")
+    }
+
+    /// Numbers must always reconcile: delivered + skipped + failed == total.
+    func testEveryOutcomeIsCountedExactlyOnce() {
+        let outcomes: [RemoteRelayTransfer.Outcome] = [
+            .delivered, .skipped, .skipped, .failed("a"), .failed("b"), .delivered,
+        ]
+        let delivered = outcomes.filter { $0 == .delivered }.count
+        let skipped = outcomes.filter { $0 == .skipped }.count
+        let failed = outcomes.filter { if case .failed = $0 { return true } else { return false } }.count
+        XCTAssertEqual(delivered + skipped + failed, outcomes.count)
+    }
+}

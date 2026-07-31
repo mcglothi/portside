@@ -72,6 +72,9 @@ enum RemoteRelayCoordinator {
                 }
                 try Task.checkCancellation()
 
+                let sessionsByEntry = Dictionary(
+                    targets.map { ($0.entry.id, $0.session) }, uniquingKeysWith: { first, _ in first }
+                )
                 let results = try await RemoteRelayTransfer.runFanOut(
                     source: source, destinations: destinations, operations: operations,
                     onPhase: { phase in
@@ -80,6 +83,12 @@ enum RemoteRelayCoordinator {
                             TransferCenter.shared.relabel(
                                 id, "Sending \(payload.name) to \(destinations.count) host(s)…"
                             )
+                        }
+                    },
+                    onDestination: { destination, outcome in
+                        guard outcome == .delivered else { return }
+                        Task { @MainActor in
+                            sessionsByEntry[destination.entry.id]?.flashRelayLanded()
                         }
                     }
                 )
@@ -90,8 +99,17 @@ enum RemoteRelayCoordinator {
                 }
                 if !failures.isEmpty {
                     let delivered = results.filter { $0.1 == .delivered }.count
+                    let skipped = results.filter { $0.1 == .skipped }.count
+                    // Every host has to be accounted for. Reporting "2 of 4"
+                    // with one failure listed leaves the reader hunting for a
+                    // fourth host that was only ever skipped because it is
+                    // where the file came from.
+                    var summary = "Copied to \(delivered) of \(results.count) hosts."
+                    if skipped > 0 {
+                        summary += " \(skipped) already had it."
+                    }
                     droppedOn.relayError = """
-                    Copied to \(delivered) of \(results.count) hosts.
+                    \(summary)
 
                     \(failures.joined(separator: "\n"))
                     """

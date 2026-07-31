@@ -111,13 +111,27 @@ struct PaneLeafView: View {
                 acceptRelayDrop(payload)
             }
             .overlay {
-                if session.dropTargeted {
+                if showsDropHighlight {
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(Color.accentColor, lineWidth: 3)
                         .background(Color.accentColor.opacity(0.08))
                         .allowsHitTesting(false)
+                        .animation(.easeOut(duration: 0.12), value: showsDropHighlight)
                 }
             }
+            // A pane flashes when the copy actually lands on it, so a fan-out
+            // is visible as several panes lighting up in turn. The drag icon
+            // can only ever drop on one of them.
+            .overlay {
+                if session.relayLanded {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(.green, lineWidth: 3)
+                        .background(Color.green.opacity(0.10))
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: session.relayLanded)
             .alert(
                 "Could not copy here",
                 isPresented: Binding(
@@ -175,6 +189,20 @@ struct PaneLeafView: View {
             destinationSession: session,
             destinationEntry: destinationEntry
         )
+    }
+
+    /// Highlights this pane while a droppable file hovers anywhere in the
+    /// group it would be copied to — not just over this pane.
+    ///
+    /// The drag icon can only sit over one pane, so without this a fan-out
+    /// looks identical to a single-host copy right up until the file appears
+    /// on hosts you did not visibly aim at. Lighting the whole group during
+    /// the hover answers "where is this going?" before the drop rather than
+    /// after it.
+    private var showsDropHighlight: Bool {
+        if session.dropTargeted { return true }
+        guard tab.broadcastArmed, session.includedInMultiExec else { return false }
+        return tab.leaves.contains { $0.dropTargeted && $0.includedInMultiExec }
     }
 
     /// Every pane the file should reach, or nil when this is an ordinary

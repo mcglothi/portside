@@ -356,6 +356,19 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// lookup and error presentation stay in SwiftUI where they belong.
     @Published var pendingRemoteDrop: RemoteFileDragPayload?
 
+    /// True briefly after a copy lands on this host, so the pane can flash.
+    @Published var relayLanded = false
+
+    /// Flashes this pane to show a copy arrived. The only signal a fan-out
+    /// gets: the drag icon drops on one pane, but the file reaches many.
+    func flashRelayLanded() {
+        relayLanded = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            self.relayLanded = false
+        }
+    }
+
     private var _sftp: SFTPBrowserModel?
     /// Lazy per-session file browser; only for plain SSH hosts (not local
     /// shells or container/pod sessions).
