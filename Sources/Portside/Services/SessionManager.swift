@@ -1846,9 +1846,25 @@ final class SessionManager: ObservableObject {
 
         if tab.zoomedPaneID == session.id { tab.zoomedPaneID = nil }
         if let newRoot = root.removingLeaf(session.id) {
+            // Where the closed pane sat, before the tree loses it.
+            let closedIndex = tab.leaves.firstIndex { $0.id == session.id }
             tab.root = newRoot
             if tab.activePaneID == session.id {
-                tab.activePaneID = tab.leaves.first?.id ?? tab.activePaneID
+                // The pane that slid into its place, or the last one if it was
+                // at the end — not `leaves.first`, which threw focus back to
+                // the far side of the grid on every close.
+                let survivors = tab.leaves
+                let successor = closedIndex.flatMap {
+                    survivors.indices.contains($0) ? survivors[$0] : survivors.last
+                } ?? survivors.first
+                tab.activePaneID = successor?.id
+                // And the responder has to follow the model. It didn't, so
+                // closing a pane left first responder on a detached view — and
+                // ⌃D, which only closes a dead pane when that pane *is* first
+                // responder, silently stopped working partway through clearing
+                // a grid. The muscle memory is to hold ⌃D down; it has to keep
+                // landing on whatever is in front of you.
+                DispatchQueue.main.async { [weak successor] in successor?.focus() }
             }
             notifyWorkspaceChanged()
         } else {

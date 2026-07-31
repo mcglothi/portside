@@ -725,8 +725,21 @@ private struct SidebarRowLabel: View {
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Never let a row be compressed below the height its text needs. The
+        // outline sizes rows from this view's intrinsic height, and a row whose
+        // content is *only* two lines of text — a group — measured shorter than
+        // a host row, which carries transport and environment badges in the
+        // same HStack. The result was a clipped descender on the second line:
+        // "5 panes" with the bottom shaved off, while the host beneath it sat
+        // comfortably.
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, minHeight: Self.minimumRowHeight, alignment: .leading)
     }
+
+    /// Keeps every row kind the same height regardless of what it carries, so
+    /// the list reads as one list rather than three that happen to be adjacent.
+    /// Two lines of text plus the container's own padding.
+    private static let minimumRowHeight: CGFloat = 38
 
     private var primary: Color { model.emphasized ? .white : .primary }
     private var secondary: Color { model.emphasized ? .white.opacity(0.85) : .secondary }
