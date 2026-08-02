@@ -103,11 +103,22 @@ week.
 
 ### 3. Tunnels supervise themselves, or the docs say plainly that they don't
 
-**Where it stands:** they don't, and the docs don't say so.
+**Where it stands:** partly fixed, the rest still open.
 
-No sleep/wake recovery, no restart with backoff, `terminate()` with no SIGKILL
-escalation, no warning on a non-loopback bind. A feature that can silently stop
-working is a `0.x` posture; either fix it or document it as best-effort.
+**Done:** teardown now escalates. `terminate()` is SIGTERM, and an ssh wedged
+mid-handshake or blocked on a stuck ProxyCommand can sit through it — leaving
+the local port bound by a process Portside believes it stopped, so restarting
+the same forward fails with "address already in use" and the only way out is
+Activity Monitor. It now SIGKILLs the process *group* after a grace period,
+which also takes a ProxyCommand child with it. Quit does the same thing
+synchronously, because a deferred kill never runs once the app is on its way
+out and the tunnel would outlive Portside still holding the port.
+
+**Still open:** no sleep/wake recovery, no restart with backoff, no warning on
+a non-loopback bind. Each is a behaviour decision as much as a fix — how eager
+should a restart be, does a bind to `0.0.0.0` warn or refuse — so they want
+deciding rather than guessing. Until then this gate is unmet: a feature that
+can silently stop working is a `0.x` posture, and the docs still don't say so.
 
 ### 4. MultiExec has mileage beyond one person
 
