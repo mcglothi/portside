@@ -73,9 +73,25 @@ so bytes go in and the buffer is readable — and the first slice
 sequences, random bytes, and volume. Twelve cases in under half a second, so it
 runs on every build rather than being a thing someone remembers to do.
 
-Still to cover: vttest, tmux, vim/neovim, ncurses, mouse reporting, OSC 52,
-Sixel, Kitty graphics, iTerm2 inline images. Those need either a real child
-process or fixture captures, which is a bigger lift than the byte-level cases.
+Extended since with character width (`TerminalUnicodeTests`) and the OSC
+contracts Portside's own features are built on (`TerminalOSCTests`) — OSC 7 for
+the SFTP browser's directory tracking, OSC 133 for command history and the
+post-connect gate, bracketed paste for the MultiExec paste confirmation, and
+mouse mode. Those are pinned separately from general correctness because they
+break *Portside* quietly rather than looking wrong on screen. 31 cases, still
+under a second.
+
+**Known limitation found by the suite:** ZWJ emoji sequences render as their
+separate components with the joiner drawn literally as `<200d>` — `👨‍👩‍👧`
+comes out as three emoji and two visible placeholders. The buffer accounts the
+cluster as two columns while the view paints roughly eight, so this is not
+cosmetic: everything after a ZWJ emoji on that line sits in the wrong place,
+and a shell prompt carrying one will corrupt. Upstream in SwiftTerm. The suite
+pins the column accounting so a bump that changes it is noticed.
+
+Still to cover: vttest, tmux, vim/neovim, ncurses, OSC 52, Sixel, Kitty
+graphics, iTerm2 inline images. Those need either a real child process or
+fixture captures, which is a bigger lift than the byte-level cases.
 
 **What would satisfy it:** an executable suite — vttest, tmux, vim/neovim,
 ncurses, Unicode width, combining marks, CJK, emoji/ZWJ, bracketed paste, mouse
