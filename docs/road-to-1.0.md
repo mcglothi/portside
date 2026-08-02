@@ -66,6 +66,17 @@ and `SixelStreamGuard` is a workaround being carried in-tree.
 A terminal at 1.0 that can't point at a compatibility suite is claiming
 something it hasn't checked.
 
+**Started at 0.20.** `Tests/PortsideTests/TerminalHarness.swift` drives a real
+SwiftTerm parser with no window — `Terminal` is separable from `TerminalView`,
+so bytes go in and the buffer is readable — and the first slice
+(`TerminalStreamIntegrityTests`) covers chunk-boundary splitting, unterminated
+sequences, random bytes, and volume. Twelve cases in under half a second, so it
+runs on every build rather than being a thing someone remembers to do.
+
+Still to cover: vttest, tmux, vim/neovim, ncurses, mouse reporting, OSC 52,
+Sixel, Kitty graphics, iTerm2 inline images. Those need either a real child
+process or fixture captures, which is a bigger lift than the byte-level cases.
+
 **What would satisfy it:** an executable suite — vttest, tmux, vim/neovim,
 ncurses, Unicode width, combining marks, CJK, emoji/ZWJ, bracketed paste, mouse
 reporting, OSC 52/7/133, Sixel, Kitty graphics, iTerm2 inline images, malformed
