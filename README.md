@@ -153,6 +153,10 @@ exists to fill that gap without giving up native speed and macOS polish.
   saved, and a protected host asks before the file is opened.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
+  Best-effort by design: the status tracks the `ssh` process, not whether
+  traffic still flows, and nothing restarts a tunnel that dies. See
+  [docs/port-forwarding.md](docs/port-forwarding.md) — worth two minutes before
+  you depend on one.
 - **A welcome screen that searches** — the tab bar's + button opens a
   "welcome aboard" tab with a live host search bar, arrow-key navigation and
   Enter to launch, focused automatically so you can type right away (picking

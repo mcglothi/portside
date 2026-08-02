@@ -114,11 +114,24 @@ which also takes a ProxyCommand child with it. Quit does the same thing
 synchronously, because a deferred kill never runs once the app is on its way
 out and the tunnel would outlive Portside still holding the port.
 
-**Still open:** no sleep/wake recovery, no restart with backoff, no warning on
-a non-loopback bind. Each is a behaviour decision as much as a fix — how eager
-should a restart be, does a bind to `0.0.0.0` warn or refuse — so they want
-deciding rather than guessing. Until then this gate is unmet: a feature that
-can silently stop working is a `0.x` posture, and the docs still don't say so.
+**Documented instead of built** — `docs/port-forwarding.md`, linked from the
+README. The gate offered either, and documenting is the honest option here:
+neither maintainer library contains a single saved forward, so supervision
+would be designed on speculation with no way to tell whether the behaviour is
+right.
+
+The doc is blunt about the gap that matters — "Running" means the ssh process
+is alive, not that traffic flows — and about the fact that Portside sets no
+`ServerAliveInterval`, so a half-open connection can sit there looking healthy
+indefinitely unless the user's own `~/.ssh/config` says otherwise.
+
+One reason for restraint is worth keeping even if this is built later:
+automatic retry against a host requiring a password or MFA means repeated
+failed authentications, and enough of those lock the account. A tunnel that
+gives up loudly beats one that quietly locks you out of the estate.
+
+**Reopen this if** someone starts using forwards in anger. What they expect
+after a lid closes is the missing input, not the missing code.
 
 ### 4. MultiExec has mileage beyond one person
 
