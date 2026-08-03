@@ -112,6 +112,21 @@ final class ClosedTabRingTests: XCTestCase {
         XCTAssertEqual(makeTab("hopper", paneCount: 3).menuLabel, "hopper — 3 panes")
     }
 
+    /// `closedAt` was recorded on every close and read by nothing, which left
+    /// two same-named tabs in the menu still telling you nothing about which is
+    /// which — the very problem the pane count was added to solve.
+    func testTheMenuEntryAlsoSaysWhenItWasClosed() {
+        let now = Date()
+        let tab = makeTab("hopper", closedAt: now.addingTimeInterval(-3600))
+        XCTAssertEqual(tab.menuEntry(now: now), "hopper · 1 hour ago")
+    }
+
+    func testAPaneCountAndATimeCanAppearTogether() {
+        let now = Date()
+        let tab = makeTab("hopper", paneCount: 3, closedAt: now.addingTimeInterval(-120))
+        XCTAssertEqual(tab.menuEntry(now: now), "hopper — 3 panes · 2 minutes ago")
+    }
+
     /// A renamed tab must come back under the name it was closed under, but a
     /// tab that never had one must not get its host's live title pinned as a
     /// custom name — that would stop it following the terminal.

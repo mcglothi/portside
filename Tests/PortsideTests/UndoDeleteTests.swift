@@ -74,6 +74,24 @@ final class DeletedItemRingTests: XCTestCase {
 
     // MARK: - Menu wording
 
+    func testAMenuEntryNamesTheItemAndWhenItWent() {
+        // `deletedAt` was recorded from the start and read by nothing, which is
+        // how two deletes of hosts with the same name became indistinguishable.
+        let now = Date()
+        let batch = DeletedItems(hosts: [host("web-01")],
+                                 deletedAt: now.addingTimeInterval(-120))
+        XCTAssertEqual(batch.menuEntry(now: now), "web-01 · 2 minutes ago")
+    }
+
+    func testAJustHappenedDeleteIsNotDescribedInTheFuture() {
+        // Rounding a few milliseconds the wrong way otherwise produces
+        // "in 0 seconds" for something that already happened.
+        let now = Date()
+        let batch = DeletedItems(hosts: [host("web-01")],
+                                 deletedAt: now.addingTimeInterval(0.4))
+        XCTAssertEqual(batch.menuEntry(now: now), "web-01 · just now")
+    }
+
     func testASingleItemIsNamed() {
         XCTAssertEqual(DeletedItems(hosts: [host("web-01")]).menuLabel, "web-01")
     }

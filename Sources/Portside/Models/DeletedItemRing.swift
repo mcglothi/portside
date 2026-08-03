@@ -36,6 +36,14 @@ struct DeletedItems: Identifiable {
         ].compactMap { $0 }
         return parts.joined(separator: " and ")
     }
+
+    /// What the menu shows: what would come back, and when it went.
+    ///
+    /// Two deletes of hosts with the same name are otherwise indistinguishable,
+    /// and picking the wrong one restores something you meant to leave deleted.
+    func menuEntry(now: Date = Date()) -> String {
+        "\(menuLabel) · \(RelativeTime.phrase(for: deletedAt, now: now))"
+    }
 }
 
 /// A bounded, most-recent-last ring of deletions.

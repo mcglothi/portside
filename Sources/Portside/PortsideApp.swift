@@ -141,7 +141,7 @@ struct PortsideApp: App {
                             .disabled(true)
                     } else {
                         ForEach(sessions.closedTabRing.mostRecentFirst) { closed in
-                            Button(closed.menuLabel) { sessions.reopenClosedTab(id: closed.id) }
+                            Button(closed.menuEntry()) { sessions.reopenClosedTab(id: closed.id) }
                         }
                         Divider()
                         Button("Clear Recently Closed") { sessions.clearClosedTabs() }
@@ -181,7 +181,7 @@ struct PortsideApp: App {
                             .disabled(true)
                     } else {
                         ForEach(store.deletedItems.mostRecentFirst) { batch in
-                            Button(batch.menuLabel) { store.undoDelete(id: batch.id) }
+                            Button(batch.menuEntry()) { store.undoDelete(id: batch.id) }
                         }
                     }
                 }

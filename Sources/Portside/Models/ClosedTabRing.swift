@@ -23,6 +23,13 @@ struct ClosedTab: Identifiable {
     var menuLabel: String {
         paneCount > 1 ? "\(title) — \(paneCount) panes" : title
     }
+
+    /// The same, plus when it was closed — which is the other half of telling
+    /// two entries apart, and what `closedAt` was recorded for. It was written
+    /// on every close and read by nothing.
+    func menuEntry(now: Date = Date()) -> String {
+        "\(menuLabel) · \(RelativeTime.phrase(for: closedAt, now: now))"
+    }
 }
 
 /// A bounded, most-recent-last ring of closed tabs.
