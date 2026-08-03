@@ -253,4 +253,27 @@ final class GroupRelaunchTests: XCTestCase {
         XCTAssertTrue(result.isComplete)
         XCTAssertTrue(result.missing.isEmpty)
     }
+    func testAPartialLaunchSaysSoWhereverItWasOpenedFrom() {
+        // The wording used to live inside SidebarView, so opening a group from
+        // the welcome screen would have opened six of eight panes in silence.
+        let gone = UUID()
+        var group = SessionGroup(name: "Splunk", layout: WorkspaceSnapshot.TabSnapshot(
+            root: .split(orientation: .horizontal, children: [UUID(), gone].map {
+                .leaf(WorkspaceSnapshot.Leaf(kind: .host($0), includedInMultiExec: true))
+            })
+        ))
+        group.isFavorite = true
+
+        let partial = SessionManager.GroupLaunchResult(opened: 1, missing: [gone])
+        let message = partial.notice(for: group) { _ in "web-04" }
+        XCTAssertEqual(message, "Opened 1 of 2 in “Splunk”. No longer in the library: web-04.")
+
+        let none = SessionManager.GroupLaunchResult(opened: 0, missing: [gone])
+        XCTAssertTrue(none.notice(for: group) { _ in nil }?.contains("couldn't open") == true)
+
+        let whole = SessionManager.GroupLaunchResult(opened: 2, missing: [])
+        XCTAssertNil(whole.notice(for: group) { _ in nil },
+                     "a group that opened whole has nothing to explain")
+    }
+
 }

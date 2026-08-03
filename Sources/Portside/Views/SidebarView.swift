@@ -444,14 +444,7 @@ struct SidebarView: View {
         let result = sessions.launch(group) { id in
             store.entry(id: id).map(store.resolved)
         }
-        guard !result.isComplete else { return }
-        let names = result.missing
-            .map { store.entry(id: $0)?.name ?? "a deleted host" }
-            .joined(separator: ", ")
-        groupLaunchNotice = result.opened == 0
-            ? "“\(group.name)” couldn't open — none of its hosts are in the library any more."
-            : "Opened \(result.opened) of \(group.paneCount) in “\(group.name)”. "
-              + "No longer in the library: \(names)."
+        groupLaunchNotice = result.notice(for: group) { store.entry(id: $0)?.name }
     }
 
     /// The filter field's first arrow-key press while searching: pick an

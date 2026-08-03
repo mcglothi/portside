@@ -777,6 +777,30 @@ struct WelcomeView: View {
         store.favoriteEntries
     }
 
+    private var favoriteGroups: [SessionGroup] {
+        store.favoriteGroups
+    }
+
+    /// A partial group launch, shown here for the same reason the sidebar
+    /// shows it: opening most of a group without saying so is how you run a
+    /// command believing it reached the whole platform.
+    @State private var groupNotice: String?
+
+    private func launch(_ group: SessionGroup) {
+        let result = sessions.launch(group) { id in
+            store.entry(id: id).map(store.resolved)
+        }
+        let notice = result.notice(for: group) { store.entry(id: $0)?.name }
+        groupNotice = notice
+        // A group always opens as its own tab, so a start page opened with +
+        // would otherwise be left behind — unlike picking a host here, which
+        // morphs it in place. Kept when there's a notice: this view hosts the
+        // alert, and closing the tab takes the warning down with it.
+        if notice == nil, let replacingTab, replacingTab.isStartPage {
+            sessions.closeTab(replacingTab)
+        }
+    }
+
     /// Fuzzy matches while searching, reusing QuickConnectView's ranking
     /// rather than a second scoring implementation.
     private var searchResults: [SessionEntry] {
@@ -869,7 +893,7 @@ struct WelcomeView: View {
                 }
                 .frame(maxWidth: 400)
                 .padding(.top, 24)
-            } else if !favorites.isEmpty || !recents.isEmpty {
+            } else if !favorites.isEmpty || !favoriteGroups.isEmpty || !recents.isEmpty {
                 VStack(alignment: .leading, spacing: 16) {
                     if !favorites.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
@@ -882,6 +906,18 @@ struct WelcomeView: View {
                                 RecentConnectionRow(entry: entry) {
                                     connect(entry)
                                 }
+                            }
+                        }
+                    }
+                    if !favoriteGroups.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Groups")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .textCase(.uppercase)
+                                .padding(.leading, 10)
+                            ForEach(favoriteGroups, id: \.id) { group in
+                                FavoriteGroupRow(group: group) { launch(group) }
                             }
                         }
                     }
@@ -907,6 +943,50 @@ struct WelcomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { searchFocused = true }
         .onChange(of: query) { _, _ in selectedIndex = 0 }
+        .alert(
+            "Group opened incomplete",
+            isPresented: Binding(get: { groupNotice != nil }, set: { if !$0 { groupNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) { groupNotice = nil }
+        } message: {
+            Text(groupNotice ?? "")
+        }
+    }
+}
+
+/// One favorited group on the welcome screen. Deliberately the same shape as
+/// `RecentConnectionRow` — from here a group is just another thing you open,
+/// and the two sections should read as one list.
+struct FavoriteGroupRow: View {
+    let group: SessionGroup
+    let launch: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: launch) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2.fill")
+                    .foregroundStyle(.secondary)
+                Text(group.name)
+                    .lineLimit(1)
+                Text("\(group.paneCount) pane\(group.paneCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(hovering ? Color.primary.opacity(0.07) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open “\(group.name)”")
     }
 }
 

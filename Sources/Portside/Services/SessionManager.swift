@@ -1643,6 +1643,23 @@ final class SessionManager: ObservableObject {
         /// The group already had a tab, which was brought forward instead.
         var wasAlreadyOpen = false
         var isComplete: Bool { missing.isEmpty }
+
+        /// What to tell the user, or nil when the group opened whole.
+        ///
+        /// Shared by every launch site — the sidebar, the welcome screen —
+        /// because a group that opened six of eight panes has to say so
+        /// wherever it was opened from. Silently opening most of a group is how
+        /// you run a command believing it reached the whole platform.
+        func notice(for group: SessionGroup, nameForID: (UUID) -> String?) -> String? {
+            guard !isComplete else { return nil }
+            let names = missing
+                .map { nameForID($0) ?? "a deleted host" }
+                .joined(separator: ", ")
+            return opened == 0
+                ? "“\(group.name)” couldn't open — none of its hosts are in the library any more."
+                : "Opened \(opened) of \(group.paneCount) in “\(group.name)”. "
+                  + "No longer in the library: \(names)."
+        }
     }
 
     /// Captures the selected tab's arrangement as a named group.

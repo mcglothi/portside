@@ -305,7 +305,9 @@ struct HostOutlineView: NSViewRepresentable {
             let id = NSUserInterfaceItemIdentifier("row")
             let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? HostRowCell) ?? HostRowCell()
             cell.identifier = id
-            let toggleFavorite: (() -> Void)? = node.entryID.map { entryID in
+            let toggleFavorite: (() -> Void)? = node.group.map { group in
+                { [weak self] in self?.parent.store.toggleFavorite(groupID: group.id) }
+            } ?? node.entryID.map { entryID in
                 { [weak self] in self?.parent.store.toggleFavorite(entryID) }
             }
             cell.configure(node: node, hostCount: node.isFolder ? parent.store.entriesInFolder(node.folderPath ?? "").count : 0,
@@ -480,6 +482,10 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Rename…") { rename(group) })
             addGroupMoveMenu(menu, group: group)
+            let store = parent.store
+            menu.addItem(ClosureMenuItem(
+                title: group.isFavorite ? "Remove from Favorites" : "Add to Favorites"
+            ) { store.toggleFavorite(groupID: group.id) })
             menu.addItem(ClosureMenuItem(title: "Delete Group") { remove(group) })
         }
 
@@ -810,7 +816,17 @@ private struct SidebarRowLabel: View {
                     .font(.caption).foregroundStyle(secondary)
             }
             Spacer(minLength: 4)
+            if group.isFavorite || hoveringEntry {
+                Button { model.toggleFavorite?() } label: {
+                    Image(systemName: group.isFavorite ? "star.fill" : "star")
+                }
+                .buttonStyle(.plain)
+                .font(.caption2)
+                .foregroundStyle(group.isFavorite ? .yellow : (model.emphasized ? .white.opacity(0.7) : .secondary))
+                .help(group.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+            }
         }
+        .onHover { hoveringEntry = $0 }
     }
 
     private func folderRow(_ folder: FolderNode) -> some View {

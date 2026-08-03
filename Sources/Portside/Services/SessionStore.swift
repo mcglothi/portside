@@ -252,6 +252,18 @@ final class SessionStore: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Favorited groups, alphabetical — the welcome screen's Groups section.
+    var favoriteGroups: [SessionGroup] {
+        groups.filter(\.isFavorite)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func toggleFavorite(groupID: UUID) {
+        guard let i = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[i].isFavorite.toggle()
+        save()
+    }
+
     func toggleFavorite(_ id: UUID) {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
         entries[i].isFavorite.toggle()

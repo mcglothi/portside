@@ -286,6 +286,57 @@ final class SessionGroupTests: XCTestCase {
             .group(id: group.id)?.folder, "prod")
     }
 
+    // MARK: - Favorites
+
+    /// `isFavorite` shipped on the model and was read by nothing but the
+    /// sidebar's cache key — no way to set it, nowhere it changed anything.
+    func testAFavoritedGroupReachesTheWelcomeScreen() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        let plain = SessionGroup(name: "Scratch", layout: grid([UUID()]))
+        let starred = SessionGroup(name: "Splunk", layout: grid([UUID()]))
+        store.upsert(plain)
+        store.upsert(starred)
+        XCTAssertTrue(store.favoriteGroups.isEmpty)
+
+        store.toggleFavorite(groupID: starred.id)
+
+        XCTAssertEqual(store.favoriteGroups.map(\.name), ["Splunk"])
+    }
+
+    func testFavoritesAreAlphabeticalAndToggleBack() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        for name in ["zeta", "Alpha", "mid"] {
+            var g = SessionGroup(name: name, layout: grid([UUID()]))
+            g.isFavorite = true
+            store.upsert(g)
+        }
+        XCTAssertEqual(store.favoriteGroups.map(\.name), ["Alpha", "mid", "zeta"])
+
+        let alpha = try? XCTUnwrap(store.groups.first { $0.name == "Alpha" })
+        store.toggleFavorite(groupID: alpha!.id)
+
+        XCTAssertEqual(store.favoriteGroups.map(\.name), ["mid", "zeta"])
+    }
+
+    func testFavoritingPersists() {
+        let group = SessionGroup(name: "Splunk", layout: grid([UUID()]))
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(group)
+        store.toggleFavorite(groupID: group.id)
+
+        XCTAssertEqual(SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+            .favoriteGroups.map(\.name), ["Splunk"])
+    }
+
+    func testTogglingAnUnknownGroupWritesNothing() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionGroup(name: "Splunk", layout: grid([UUID()])))
+
+        store.toggleFavorite(groupID: UUID())
+
+        XCTAssertTrue(store.favoriteGroups.isEmpty)
+    }
+
 }
 
 /// Saving and updating a group from the tab, rather than only the File menu.
