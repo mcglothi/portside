@@ -15,6 +15,8 @@ Quick Connect: ⌘K now searches groups as well as hosts, showing the pane count
 
 **Deleting is undoable.** Edit ▸ Undo Delete (⌥⌘Z) takes back the last delete — a host, a group, a macro, or a whole mixed selection as one action — and Recently Deleted reaches past it to a specific one. Both name what would come back. A restored host returns to the folder it was in, even if deleting it was what emptied that folder.
 
+Recently Deleted and Recently Closed now say *when* — "web-01 · 2 minutes ago" — since a name alone doesn't tell you which of two identically-named entries you're about to bring back. Clear Recently Deleted forgets the undoable deletes, which is also how you finish one off immediately rather than waiting for it to age out.
+
 A deleted host keeps its saved password for as long as the delete can still be taken back. Removing it immediately would mean undo restored a host that looked right and then couldn't authenticate; holding the plaintext somewhere to write back later would move a secret out of the Keychain. Instead the Keychain item simply outlives the delete by exactly the undo window, and Portside sweeps up any left behind by a crash at the next launch.
 
 **Opening a group you already have open** brings that tab forward instead of opening a second copy. Two tabs for one group didn't just clutter the bar: closing a group tab writes its arrangement back, so duplicates competed and whichever you closed last silently overwrote the other's layout.
