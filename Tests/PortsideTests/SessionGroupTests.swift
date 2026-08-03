@@ -365,6 +365,57 @@ final class SessionGroupTests: XCTestCase {
         XCTAssertFalse(store.folders.contains(""), "the top level is not a folder")
     }
 
+    // MARK: - The sidebar's folder badge
+
+    /// The badge counted hosts only, so a folder made to hold groups showed no
+    /// number at all — indistinguishable from an empty folder.
+    func testAFolderOfGroupsIsCounted() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionGroup(name: "Splunk", folder: "runbooks", layout: grid([UUID()])))
+        store.upsert(SessionGroup(name: "Edge", folder: "runbooks", layout: grid([UUID()])))
+
+        XCTAssertEqual(store.itemCount(inFolder: "runbooks"), 2)
+    }
+
+    func testHostsAndGroupsAreCountedTogether() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionEntry(name: "web-01", folder: "prod", hostname: "w.example.com"))
+        store.upsert(SessionEntry(name: "web-02", folder: "prod", hostname: "w2.example.com"))
+        store.upsert(SessionGroup(name: "Splunk", folder: "prod", layout: grid([UUID()])))
+
+        XCTAssertEqual(store.itemCount(inFolder: "prod"), 3)
+    }
+
+    /// Hosts already counted through subfolders; groups have to match, or a
+    /// parent's number would disagree with what expanding it shows.
+    func testSubfoldersCountTowardsTheParent() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionEntry(name: "web-01", folder: "prod/web", hostname: "w.example.com"))
+        store.upsert(SessionGroup(name: "Splunk", folder: "prod/observability", layout: grid([UUID()])))
+        store.upsert(SessionGroup(name: "Top", folder: "prod", layout: grid([UUID()])))
+
+        XCTAssertEqual(store.itemCount(inFolder: "prod"), 3)
+        XCTAssertEqual(store.itemCount(inFolder: "prod/observability"), 1)
+    }
+
+    /// "prod" must not swallow "production" — the reason the prefix carries a
+    /// trailing slash.
+    func testASimilarlyNamedSiblingIsNotCounted() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionGroup(name: "A", folder: "prod", layout: grid([UUID()])))
+        store.upsert(SessionGroup(name: "B", folder: "production", layout: grid([UUID()])))
+        store.upsert(SessionEntry(name: "web", folder: "production", hostname: "w.example.com"))
+
+        XCTAssertEqual(store.itemCount(inFolder: "prod"), 1)
+        XCTAssertEqual(store.itemCount(inFolder: "production"), 2)
+    }
+
+    func testAnEmptyFolderCountsZero() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.createFolder("lab")
+        XCTAssertEqual(store.itemCount(inFolder: "lab"), 0)
+    }
+
 }
 
 /// Saving and updating a group from the tab, rather than only the File menu.

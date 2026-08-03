@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.21.1
+
+**Folders count their groups.** A folder's badge in the sidebar counted hosts only, so a folder created to hold groups showed no number at all — indistinguishable from an empty one. It now counts everything a folder holds, hosts and groups alike, through its subfolders as before.
+
 ## 0.21.0
 
 **Groups grow up.** Saved groups can now live in folders, be starred, and be opened from ⌘K — three gaps that didn't matter with two groups and matter a great deal with a dozen.

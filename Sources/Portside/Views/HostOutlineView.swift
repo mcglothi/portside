@@ -324,7 +324,9 @@ struct HostOutlineView: NSViewRepresentable {
             } ?? node.entryID.map { entryID in
                 { [weak self] in self?.parent.store.toggleFavorite(entryID) }
             }
-            cell.configure(node: node, hostCount: node.isFolder ? parent.store.entriesInFolder(node.folderPath ?? "").count : 0,
+            cell.configure(node: node,
+                           itemCount: node.isFolder
+                               ? parent.store.itemCount(inFolder: node.folderPath ?? "") : 0,
                            toggleFavorite: toggleFavorite)
             return cell
         }
@@ -825,7 +827,7 @@ final class SidebarNode {
 /// with an emphasized (selected) background.
 private final class RowModel: ObservableObject {
     @Published var node: SidebarNode?
-    @Published var hostCount = 0
+    @Published var itemCount = 0
     @Published var emphasized = false
     @Published var toggleFavorite: (() -> Void)?
 }
@@ -852,9 +854,9 @@ private final class HostRowCell: NSTableCellView {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(node: SidebarNode, hostCount: Int, toggleFavorite: (() -> Void)? = nil) {
+    func configure(node: SidebarNode, itemCount: Int, toggleFavorite: (() -> Void)? = nil) {
         model.node = node
-        model.hostCount = hostCount
+        model.itemCount = itemCount
         model.toggleFavorite = toggleFavorite
     }
 
@@ -954,8 +956,8 @@ private struct SidebarRowLabel: View {
             Image(systemName: "folder").foregroundStyle(model.emphasized ? .white : .secondary)
             Text(folder.name).foregroundStyle(primary)
             Spacer(minLength: 4)
-            if model.hostCount > 0 {
-                Text("\(model.hostCount)").font(.caption).foregroundStyle(secondary)
+            if model.itemCount > 0 {
+                Text("\(model.itemCount)").font(.caption).foregroundStyle(secondary)
             }
         }
     }

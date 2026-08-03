@@ -610,6 +610,23 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// How much a folder holds, including everything in its subfolders.
+    ///
+    /// Hosts *and* groups. The sidebar's folder badge answers "how much is in
+    /// here", and counting only hosts meant a folder made to hold groups showed
+    /// nothing at all — which reads as an empty folder rather than a folder the
+    /// badge doesn't know about.
+    ///
+    /// Counts rather than reusing `entriesInFolder`, which resolves every host
+    /// against its credential profile on the way out — real work, repeated for
+    /// every folder row on every redraw, to produce a number.
+    func itemCount(inFolder path: String) -> Int {
+        let prefix = path + "/"
+        func isInside(_ folder: String) -> Bool { folder == path || folder.hasPrefix(prefix) }
+        return entries.count(where: { isInside($0.folder) })
+             + groups.count(where: { isInside($0.folder) })
+    }
+
     /// Groups whose folder is `folder`, name-sorted for the sidebar.
     func groups(inFolder folder: String) -> [SessionGroup] {
         groups.filter { $0.folder == folder }
