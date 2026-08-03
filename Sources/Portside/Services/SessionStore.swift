@@ -398,6 +398,14 @@ final class SessionStore: ObservableObject {
     func upsert(_ group: SessionGroup) {
         var copy = group
         copy.updatedAt = Date()
+        // The folder arrives as typed. Normalizing here means a stray "/prod/"
+        // files under the same folder hosts use rather than a near-duplicate,
+        // and registering it keeps the folder in the sidebar when the group is
+        // the only thing in it.
+        copy.folder = normalize(copy.folder)
+        if !copy.folder.isEmpty, !explicitFolders.contains(copy.folder) {
+            explicitFolders.append(copy.folder)
+        }
         if let i = groups.firstIndex(where: { $0.id == group.id }) {
             groups[i] = copy
         } else {
@@ -412,6 +420,21 @@ final class SessionStore: ObservableObject {
     }
 
     func group(id: UUID) -> SessionGroup? { groups.first { $0.id == id } }
+
+    /// Files a group under `folder` — "" for the top level.
+    ///
+    /// `SessionGroup.folder` and the sidebar's folder rendering both existed
+    /// from the start, but nothing could set it: the save sheet passed only a
+    /// name and groups aren't draggable, so every group was stuck at the root
+    /// however many you made.
+    func move(groupID: UUID, toFolder folder: String) {
+        guard let i = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        let clean = normalize(folder)
+        guard groups[i].folder != clean else { return }
+        groups[i].folder = clean
+        if !clean.isEmpty, !explicitFolders.contains(clean) { explicitFolders.append(clean) }
+        save()
+    }
 
     /// Replaces a group's saved arrangement, leaving its name and folder alone.
     ///
@@ -947,6 +970,16 @@ final class SessionStore: ObservableObject {
             if f.hasPrefix(prefix) { return newPath + "/" + String(f.dropFirst(prefix.count)) }
             return f
         }
+        // Groups live in folders too. Without this a rename left them behind in
+        // a path nothing else referenced, so the old folder stayed in the
+        // sidebar containing only orphans.
+        for i in groups.indices {
+            if groups[i].folder == path {
+                groups[i].folder = newPath
+            } else if groups[i].folder.hasPrefix(prefix) {
+                groups[i].folder = newPath + "/" + String(groups[i].folder.dropFirst(prefix.count))
+            }
+        }
         save()
     }
 
@@ -957,6 +990,9 @@ final class SessionStore: ObservableObject {
         let prefix = path + "/"
         for i in entries.indices where entries[i].folder == path || entries[i].folder.hasPrefix(prefix) {
             entries[i].folder = parent
+        }
+        for i in groups.indices where groups[i].folder == path || groups[i].folder.hasPrefix(prefix) {
+            groups[i].folder = parent
         }
         explicitFolders.removeAll { $0 == path || $0.hasPrefix(prefix) }
         save()

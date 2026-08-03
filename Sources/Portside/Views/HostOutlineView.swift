@@ -479,7 +479,34 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(title: "Open “\(group.name)”") { launch(group) })
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Rename…") { rename(group) })
+            addGroupMoveMenu(menu, group: group)
             menu.addItem(ClosureMenuItem(title: "Delete Group") { remove(group) })
+        }
+
+        /// "Move to ▸" for a group. Groups aren't draggable — the outline view
+        /// declines to write a pasteboard item for them — so this menu is the
+        /// only way to file one, and without it every group stayed at the root
+        /// no matter how many you saved.
+        private func addGroupMoveMenu(_ menu: NSMenu, group: SessionGroup) {
+            let store = parent.store
+            let targets = store.folders.filter { $0 != group.folder }
+            guard !targets.isEmpty || !group.folder.isEmpty else { return }
+
+            let submenu = NSMenu()
+            if !group.folder.isEmpty {
+                submenu.addItem(ClosureMenuItem(title: "Top Level") {
+                    store.move(groupID: group.id, toFolder: "")
+                })
+                if !targets.isEmpty { submenu.addItem(.separator()) }
+            }
+            for target in targets {
+                submenu.addItem(ClosureMenuItem(title: target) {
+                    store.move(groupID: group.id, toFolder: target)
+                })
+            }
+            let item = NSMenuItem(title: "Move to", action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            menu.addItem(item)
         }
 
         private func buildEntryMenu(_ menu: NSMenu, clicked entry: SessionEntry) {

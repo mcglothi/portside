@@ -221,6 +221,71 @@ final class SessionGroupTests: XCTestCase {
         manager.openStartTab()
         XCTAssertNil(manager.groupFromSelectedTab(named: "Nothing"))
     }
+
+    // MARK: - Folders
+
+    /// `SessionGroup.folder` and the sidebar's folder rendering both shipped,
+    /// but nothing could write the field: the save sheet passed a name only,
+    /// and groups aren't draggable. Every group sat at the root regardless.
+    func testAGroupCanBeFiledInAFolder() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        let group = SessionGroup(name: "Splunk", layout: grid([UUID(), UUID()]))
+        store.upsert(group)
+        XCTAssertEqual(store.group(id: group.id)?.folder, "")
+
+        store.move(groupID: group.id, toFolder: "prod/observability")
+
+        XCTAssertEqual(store.group(id: group.id)?.folder, "prod/observability")
+        XCTAssertTrue(store.folders.contains("prod/observability"),
+                      "the folder must exist even when a group is the only thing in it")
+    }
+
+    func testSavingIntoAFolderNormalizesAndRegistersIt() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        // As typed into the save sheet by someone who thinks in paths.
+        store.upsert(SessionGroup(name: "Splunk", folder: "/prod/web/", layout: grid([UUID()])))
+
+        XCTAssertEqual(store.groups.first?.folder, "prod/web",
+                       "a stray slash must not fork a near-duplicate folder")
+        XCTAssertTrue(store.folders.contains("prod/web"))
+    }
+
+    /// Renaming a folder rewrote hosts and the folder list but never groups,
+    /// so the group was left pointing at a path nothing else referenced — the
+    /// old folder stayed in the sidebar containing only orphans.
+    func testGroupsFollowAFolderRename() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionGroup(name: "Splunk", folder: "prod/web", layout: grid([UUID()])))
+        store.upsert(SessionGroup(name: "Nested", folder: "prod/web/edge", layout: grid([UUID()])))
+
+        store.renameFolder("prod/web", to: "frontend")
+
+        XCTAssertEqual(store.groups.first { $0.name == "Splunk" }?.folder, "prod/frontend")
+        XCTAssertEqual(store.groups.first { $0.name == "Nested" }?.folder, "prod/frontend/edge",
+                       "subfolders below the renamed one must move with it")
+    }
+
+    func testGroupsSurviveTheirFolderBeingDeleted() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(SessionGroup(name: "Splunk", folder: "prod/web", layout: grid([UUID()])))
+
+        store.deleteFolder("prod/web")
+
+        XCTAssertEqual(store.groups.count, 1, "deleting a folder must not delete its groups")
+        XCTAssertEqual(store.groups.first?.folder, "prod",
+                       "they move up to the parent, as hosts do")
+    }
+
+    func testAFiledGroupPersists() {
+        let group = SessionGroup(name: "Splunk", layout: grid([UUID()]))
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        store.upsert(group)
+        store.move(groupID: group.id, toFolder: "prod")
+
+        XCTAssertEqual(SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+            .group(id: group.id)?.folder, "prod")
+    }
+
 }
 
 /// Saving and updating a group from the tab, rather than only the File menu.

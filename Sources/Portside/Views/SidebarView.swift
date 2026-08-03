@@ -45,6 +45,7 @@ struct SidebarView: View {
     @State private var groupToDelete: SessionGroup?
     @State private var savingGroup = false
     @State private var newGroupName = ""
+    @State private var newGroupFolder = ""
     /// Set when a launch couldn't open every member, so the user is told
     /// which hosts are gone rather than silently getting a smaller grid.
     @State private var groupLaunchNotice: String?
@@ -149,6 +150,9 @@ struct SidebarView: View {
                 newGroupName = tab?.customTitle
                     ?? tab?.groupID.flatMap { store.group(id: $0)?.name }
                     ?? tab?.activeLeaf?.title ?? ""
+                // Re-saving a group offers its current folder, so the common
+                // case of overwriting one doesn't quietly move it to the root.
+                newGroupFolder = tab?.groupID.flatMap { store.group(id: $0)?.folder } ?? ""
                 savingGroup = true
             }
         ))
@@ -230,6 +234,7 @@ struct SidebarView: View {
         }
         .modifier(GroupAlerts(
             savingGroup: $savingGroup, newGroupName: $newGroupName,
+            newGroupFolder: $newGroupFolder,
             renamingGroup: $renamingGroup, renameGroupName: $renameGroupName,
             groupToDelete: $groupToDelete, launchNotice: $groupLaunchNotice,
             store: store, sessions: sessions))
@@ -743,6 +748,7 @@ private struct LibraryCommandRouter: ViewModifier {
 private struct GroupAlerts: ViewModifier {
     @Binding var savingGroup: Bool
     @Binding var newGroupName: String
+    @Binding var newGroupFolder: String
     @Binding var renamingGroup: SessionGroup?
     @Binding var renameGroupName: String
     @Binding var groupToDelete: SessionGroup?
@@ -754,15 +760,19 @@ private struct GroupAlerts: ViewModifier {
         content
     .alert("Save Tab as Group", isPresented: $savingGroup) {
         TextField("Name", text: $newGroupName)
+        TextField("Folder", text: $newGroupFolder,
+                  prompt: Text("e.g. prod/web — empty for top level"))
         Button("Save") {
             let name = newGroupName.trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty, let group = sessions.groupFromSelectedTab(named: name) {
+            if !name.isEmpty,
+               let group = sessions.groupFromSelectedTab(named: name, folder: newGroupFolder) {
                 store.upsert(group)
                 sessions.selectedTab?.groupID = group.id
             }
             newGroupName = ""
+            newGroupFolder = ""
         }
-        Button("Cancel", role: .cancel) { newGroupName = "" }
+        Button("Cancel", role: .cancel) { newGroupName = ""; newGroupFolder = "" }
     } message: {
         Text("Saves the panes in this tab and how they're arranged. "
              + "Opening it later brings the whole grid back, disarmed.")
