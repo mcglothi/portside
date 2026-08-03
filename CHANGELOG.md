@@ -13,6 +13,10 @@ Favorites: star a group from its sidebar row or its context menu and it appears 
 
 Quick Connect: ⌘K now searches groups as well as hosts, showing the pane count and folder. Hosts and groups compete on the same score, but with an empty query groups sit below the recents — ⌘K then Return is still the fast reconnect it was.
 
+**Deleting is undoable.** Edit ▸ Undo Delete (⌥⌘Z) takes back the last delete — a host, a group, a macro, or a whole mixed selection as one action — and Recently Deleted reaches past it to a specific one. Both name what would come back. A restored host returns to the folder it was in, even if deleting it was what emptied that folder.
+
+A deleted host keeps its saved password for as long as the delete can still be taken back. Removing it immediately would mean undo restored a host that looked right and then couldn't authenticate; holding the plaintext somewhere to write back later would move a secret out of the Keychain. Instead the Keychain item simply outlives the delete by exactly the undo window, and Portside sweeps up any left behind by a crash at the next launch.
+
 **Opening a group you already have open** brings that tab forward instead of opening a second copy. Two tabs for one group didn't just clutter the bar: closing a group tab writes its arrangement back, so duplicates competed and whichever you closed last silently overwrote the other's layout.
 
 **The MultiExec disarm notice belongs to the tab that disarmed.** It used to be app-wide, so one tab going down put "MultiExec disarmed" on every tab — including ones that had never been armed. A tab you were nowhere near announcing something that didn't happen to you is worse than no notice at all. Re-arming clears it, too.
