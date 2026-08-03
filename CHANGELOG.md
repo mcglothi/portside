@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## 0.21.1
 
+**Moving hosts between folders always redraws the sidebar.** Moving a selection into a folder sometimes left the sidebar showing them where they used to be, until a relaunch — the library on disk was already correct. The outline skips rebuilding when a fingerprint of the tree hasn't changed, and that fingerprint didn't record which folder a row was in: dragging hosts from a folder into an empty subfolder of it, or out to the top level, produced a byte-identical fingerprint and so no redraw. The transport badge (mosh, serial, unencrypted) had the same gap and would have gone stale the same way.
+
 **Folders count their groups.** A folder's badge in the sidebar counted hosts only, so a folder created to hold groups showed no number at all — indistinguishable from an empty one. It now counts everything a folder holds, hosts and groups alike, through its subfolders as before.
 
 ## 0.21.0

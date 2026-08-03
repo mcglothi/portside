@@ -487,6 +487,52 @@ struct SidebarTree {
     var root: [SessionEntry] = []
     var rootGroups: [SessionGroup] = []
     var folders: [FolderNode] = []
+
+    /// A fingerprint of everything the sidebar draws, used to skip rebuilding
+    /// the outline when nothing visible changed.
+    ///
+    /// **Every field the sidebar renders — and every field that decides *where*
+    /// a row is drawn — has to be in here.** A miss doesn't fail loudly; the
+    /// outline just keeps showing the old state until some unrelated edit
+    /// happens to force a rebuild, which looks like a move that didn't take.
+    ///
+    /// `folder` is in the row lines for exactly that reason. Without it,
+    /// dragging hosts from a folder into an empty subfolder of that same folder
+    /// produced a byte-identical fingerprint: the flattened sequence walks
+    /// subfolders before their parent's own rows, so the entries left the parent
+    /// and arrived in the child at precisely the position they already
+    /// occupied. The library on disk was right and the sidebar was wrong, until
+    /// the next relaunch.
+    ///
+    /// Lives here rather than in the coordinator so it can be tested against a
+    /// tree without an `NSOutlineView`.
+    var signature: String {
+        var parts: [String] = []
+        func line(_ entry: SessionEntry) {
+            // kind and preferMosh drive TransportBadge, which is drawn from
+            // neither the name nor the subtitle: flipping a host to mosh, or to
+            // telnet, changes the badge and nothing else the fingerprint saw.
+            parts.append("e:\(entry.id):\(entry.name):\(entry.folder):\(entry.subtitle)"
+                         + ":\(entry.kind.rawValue):\(entry.preferMosh)"
+                         + ":\(entry.environment.rawValue):\(entry.isProtected):\(entry.isFavorite)")
+        }
+        func groupLine(_ group: SessionGroup) {
+            parts.append("g:\(group.id):\(group.name):\(group.folder)"
+                         + ":\(group.paneCount):\(group.isFavorite)")
+        }
+        func walk(_ folders: [FolderNode]) {
+            for folder in folders {
+                parts.append("f:\(folder.path)")
+                walk(folder.subfolders)
+                folder.groups.forEach(groupLine)
+                folder.entries.forEach(line)
+            }
+        }
+        walk(folders)
+        rootGroups.forEach(groupLine)
+        root.forEach(line)
+        return parts.joined(separator: "|")
+    }
 }
 
 enum FolderTree {

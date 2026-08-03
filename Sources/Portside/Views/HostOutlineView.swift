@@ -187,14 +187,14 @@ struct HostOutlineView: NSViewRepresentable {
             roots = tree.folders.map(SidebarNode.folder)
                 + tree.rootGroups.map(SidebarNode.group)
                 + tree.root.map(SidebarNode.entry)
-            lastSignature = Self.signature(of: tree)
+            lastSignature = tree.signature
             outline?.reloadData()
             expandAfterReload()
         }
 
         /// Reload only when the tree actually changed; always reconcile selection.
         func sync(tree: SidebarTree, selection: Set<UUID>) {
-            let signature = Self.signature(of: tree)
+            let signature = tree.signature
             if signature != lastSignature {
                 let previouslyExpanded = expandedPaths
                 roots = tree.folders.map(SidebarNode.folder)
@@ -266,31 +266,6 @@ struct HostOutlineView: NSViewRepresentable {
             }
             walk(roots)
             return map
-        }
-
-        private static func signature(of tree: SidebarTree) -> String {
-            var parts: [String] = []
-            func line(_ entry: SessionEntry) {
-                parts.append("e:\(entry.id):\(entry.name):\(entry.subtitle):\(entry.environment.rawValue):\(entry.isProtected):\(entry.isFavorite)")
-            }
-            // Groups belong in the signature too, or renaming, refiling or
-            // deleting one leaves the outline showing the old state until some
-            // unrelated change happens to force a rebuild.
-            func groupLine(_ group: SessionGroup) {
-                parts.append("g:\(group.id):\(group.name):\(group.paneCount):\(group.isFavorite)")
-            }
-            func walk(_ folders: [FolderNode]) {
-                for folder in folders {
-                    parts.append("f:\(folder.path)")
-                    walk(folder.subfolders)
-                    folder.groups.forEach(groupLine)
-                    folder.entries.forEach(line)
-                }
-            }
-            walk(tree.folders)
-            tree.rootGroups.forEach(groupLine)
-            tree.root.forEach(line)
-            return parts.joined(separator: "|")
         }
 
         // MARK: NSOutlineViewDataSource
