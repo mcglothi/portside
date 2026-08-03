@@ -53,7 +53,7 @@ final class MultiExecDisarmWiringTests: XCTestCase {
 
         manager.reconnect(session)
 
-        let notice = try XCTUnwrap(manager.disarmNotice)
+        let notice = try XCTUnwrap(manager.selectedTab?.disarmNotice)
         XCTAssertTrue(notice.message.contains("MultiExec disarmed"))
     }
 
@@ -66,7 +66,7 @@ final class MultiExecDisarmWiringTests: XCTestCase {
 
         manager.reconnect(session)
 
-        let notice = try XCTUnwrap(manager.disarmNotice)
+        let notice = try XCTUnwrap(manager.selectedTab?.disarmNotice)
         XCTAssertFalse(notice.message.contains("exit reconnected"),
                        "a local shell must not be named by whatever it last ran")
         XCTAssertTrue(notice.message.contains("a pane reconnected"))
@@ -96,7 +96,7 @@ final class MultiExecDisarmWiringTests: XCTestCase {
 
         manager.reconnect(session)
 
-        XCTAssertNil(manager.disarmNotice)
+        XCTAssertNil(tab.disarmNotice)
     }
 }
 
@@ -136,7 +136,7 @@ final class MultiExecSystemDisarmTests: XCTestCase {
         manager.disarmAll(reason: .systemWoke)
 
         XCTAssertTrue(tabs.allSatisfy { !$0.broadcastArmed })
-        XCTAssertEqual(manager.disarmNotice, .systemWoke)
+        XCTAssertEqual(tabs.first?.disarmNotice, .systemWoke)
     }
 
     func testANetworkMoveDisarms() {
@@ -148,7 +148,7 @@ final class MultiExecSystemDisarmTests: XCTestCase {
         manager.networkPathChanged(interfaces: ["en0"], satisfied: true)
 
         XCTAssertTrue(tabs.allSatisfy { !$0.broadcastArmed })
-        XCTAssertEqual(manager.disarmNotice, .networkChanged)
+        XCTAssertEqual(tabs.first?.disarmNotice, .networkChanged)
     }
 
     func testNetworkChurnDoesNotDisarm() {
@@ -161,7 +161,7 @@ final class MultiExecSystemDisarmTests: XCTestCase {
         manager.networkPathChanged(interfaces: [], satisfied: false)
 
         XCTAssertTrue(tabs.allSatisfy(\.broadcastArmed))
-        XCTAssertNil(manager.disarmNotice)
+        XCTAssertTrue(tabs.allSatisfy { $0.disarmNotice == nil })
     }
 
     func testDisarmingLeavesUnarmedTabsAloneAndRaisesNoNotice() {
@@ -171,6 +171,45 @@ final class MultiExecSystemDisarmTests: XCTestCase {
 
         manager.disarmAll(reason: .systemWoke)
 
-        XCTAssertNil(manager.disarmNotice, "nothing was disarmed, so there is nothing to explain")
+        XCTAssertNil(tab.disarmNotice, "nothing was disarmed, so there is nothing to explain")
     }
 }
+
+/// The notice belongs to the tab that disarmed, not to the app.
+@MainActor
+final class DisarmNoticeScopeTests: XCTestCase {
+
+    func testATabThatWasNeverArmedShowsNoNotice() throws {
+        // It used to live on the manager, so disarming one tab announced it on
+        // every tab — including ones that were never armed, which reads as the
+        // app reporting something that didn't happen to you.
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        manager.openLocalShell()
+        let armed = try XCTUnwrap(manager.selectedTab)
+        armed.broadcastArmed = true
+        manager.openLocalShell()
+        let untouched = try XCTUnwrap(manager.selectedTab)
+
+        manager.disarmAll(reason: .systemWoke)
+
+        XCTAssertNotNil(armed.disarmNotice, "the tab that was armed explains itself")
+        XCTAssertNil(untouched.disarmNotice, "the one that wasn't says nothing")
+    }
+
+    func testRearmingClearsTheNotice() throws {
+        // Otherwise the tab keeps explaining a state it is no longer in.
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        manager.openLocalShell()
+        let tab = try XCTUnwrap(manager.selectedTab)
+        tab.broadcastArmed = true
+        manager.disarmAll(reason: .systemWoke)
+        XCTAssertNotNil(tab.disarmNotice)
+
+        manager.setBroadcastArmed(true)
+
+        XCTAssertNil(tab.disarmNotice)
+    }
+}
+

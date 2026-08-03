@@ -170,13 +170,13 @@ struct TabContentView: View {
     /// tree never learns it exists. Styled as a floating card rather than a
     /// full-width bar to read as something covering the panes, which it is.
     @ViewBuilder private var disarmNotice: some View {
-        if let reason = sessions.disarmNotice {
+        if let reason = tab.disarmNotice {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(alert)
                 Text(reason.message)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Dismiss") { sessions.disarmNotice = nil }
+                Button("Dismiss") { tab.disarmNotice = nil }
                     .buttonStyle(.plain)
                     .font(.callout.weight(.medium))
             }

@@ -103,6 +103,13 @@ final class Tab: Identifiable, ObservableObject {
     /// The saved group this tab was opened from, if any. Set so closing the
     /// tab can write the arrangement back to that group.
     var groupID: UUID?
+    /// Why *this tab* disarmed itself, if it did.
+    ///
+    /// Per-tab rather than app-wide: it used to live on the manager, so
+    /// disarming one tab put the notice on every tab — including ones that
+    /// were never armed, which reads as the app announcing something that
+    /// didn't happen to you.
+    @Published var disarmNotice: MultiExecDisarmReason?
 
     init(session: TerminalSession) {
         root = .leaf(session)

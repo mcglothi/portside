@@ -801,10 +801,6 @@ final class SessionManager: ObservableObject {
     /// A restore plan awaiting the user's yes/no (restoreMode == .ask). The UI
     /// presents a prompt while this is non-nil.
     @Published var pendingRestore: RestorePlan?
-    /// Set when the app took an armed broadcast down by itself. The banner
-    /// vanishing is what the user notices; this is what tells them why, and
-    /// the UI clears it once shown.
-    @Published var disarmNotice: MultiExecDisarmReason?
     var appearance: TerminalAppearance = .default
     var loggingSettings = LoggingSettings()
     var terminalSettings = TerminalSettings()
@@ -1310,6 +1306,10 @@ final class SessionManager: ObservableObject {
         guard let tab = selectedTab else { return }
         objectWillChange.send()
         tab.broadcastArmed = armed
+        // Re-arming answers the notice: you've seen why it went down and put it
+        // back. Leaving it up would have the tab explaining a state it is no
+        // longer in.
+        if armed { tab.disarmNotice = nil }
     }
 
     /// Arms/disarms MultiExec, gathering every open tab into Grid View first
@@ -1340,7 +1340,7 @@ final class SessionManager: ObservableObject {
         guard tab.broadcastArmed else { return }
         objectWillChange.send()
         tab.broadcastArmed = false
-        disarmNotice = reason
+        tab.disarmNotice = reason
         notifyWorkspaceChanged()
     }
 
