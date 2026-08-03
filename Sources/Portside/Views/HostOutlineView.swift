@@ -236,10 +236,18 @@ struct HostOutlineView: NSViewRepresentable {
 
         private func applySelection(_ selection: Set<UUID>) {
             guard let outline else { return }
-            let rows = IndexSet(selection.compactMap { id in
+            var rows = IndexSet(selection.compactMap { id in
                 let row = outline.row(forItem: nodesByEntryID[id])
                 return row >= 0 ? row : nil
             })
+            // `selection` is the SwiftUI binding, which carries hosts only —
+            // the sidebar's actions are all host actions. Selected group rows
+            // aren't in it and would be cleared by the next unrelated redraw,
+            // so carry them through.
+            for row in outline.selectedRowIndexes
+            where (outline.item(atRow: row) as? SidebarNode)?.group != nil {
+                rows.insert(row)
+            }
             let current = outline.selectedRowIndexes
             guard rows != current else { return }
             applyingSelection = true
@@ -322,9 +330,16 @@ struct HostOutlineView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-            // Hosts only: folders expand/collapse and right-click, but never join
-            // the multi-selection.
-            (item as? SidebarNode)?.isEntry ?? false
+            // Hosts and groups. Folders still don't select — they expand,
+            // collapse and right-click.
+            //
+            // Groups were excluded when they were read-only rows you
+            // double-clicked. Now that they can be dragged between folders,
+            // being unselectable meant a group couldn't be shift- or
+            // ⌘-clicked into a drag with anything else, and worse, clicking one
+            // gave no highlight at all — the row simply didn't respond.
+            guard let node = item as? SidebarNode else { return false }
+            return node.isEntry || node.group != nil
         }
 
         func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -368,7 +383,11 @@ struct HostOutlineView: NSViewRepresentable {
             guard let outline, !outline.selectedRowIndexes.isEmpty else { return false }
             switch event.keyCode {
             case 36, 76: // Return, keypad Enter
-                parent.connectSelected(false)
+                // A highlighted row has to do something on Return, and for a
+                // group that means opening it — the same thing double-clicking
+                // it does.
+                for group in selectedGroups { parent.launchGroup(group) }
+                if !selectedEntries.isEmpty { parent.connectSelected(false) }
                 return true
             case 51, 117: // Delete, forward-delete
                 deleteSelection()
@@ -385,27 +404,48 @@ struct HostOutlineView: NSViewRepresentable {
             }
         }
 
-        private func deleteSelection() {
-            let entries = selectedEntries
-            guard !entries.isEmpty else { return }
-            if entries.count == 1 {
-                parent.store.delete(entries[0])
-            } else if confirmDelete(count: entries.count) {
-                parent.store.delete(ids: Set(entries.map(\.id)))
+        private var selectedGroups: [SessionGroup] {
+            guard let outline else { return [] }
+            return outline.selectedRowIndexes.compactMap {
+                (outline.item(atRow: $0) as? SidebarNode)?.group
             }
         }
 
-        private func confirmDelete(count: Int) -> Bool {
+        private func deleteSelection() {
+            let entries = selectedEntries
+            let groups = selectedGroups
+            guard !entries.isEmpty || !groups.isEmpty else { return }
+            // One prompt covering the whole selection. Deleting a group throws
+            // away an arrangement, not the hosts in it, which is why a lone
+            // group deletes as quietly as a lone host.
+            if entries.count + groups.count == 1 {
+                if let entry = entries.first { parent.store.delete(entry) }
+                if let group = groups.first { parent.store.delete(group) }
+                return
+            }
+            guard confirmDelete(hosts: entries.count, groups: groups.count) else { return }
+            if !entries.isEmpty { parent.store.delete(ids: Set(entries.map(\.id))) }
+            for group in groups { parent.store.delete(group) }
+        }
+
+        private func confirmDelete(hosts: Int, groups: Int) -> Bool {
+            let parts = [
+                hosts > 0 ? "\(hosts) host\(hosts == 1 ? "" : "s")" : nil,
+                groups > 0 ? "\(groups) group\(groups == 1 ? "" : "s")" : nil,
+            ].compactMap { $0 }
             let alert = NSAlert()
-            alert.messageText = "Delete \(count) hosts?"
-            alert.informativeText = "This removes them from your library. This can't be undone."
+            alert.messageText = "Delete \(parts.joined(separator: " and "))?"
+            alert.informativeText = groups > 0
+                ? "This removes them from your library. Deleting a group discards "
+                  + "the saved arrangement, not the hosts in it. This can't be undone."
+                : "This removes them from your library. This can't be undone."
             alert.addButton(withTitle: "Delete")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
             return alert.runModal() == .alertFirstButtonReturn
         }
 
-        // MARK: Drag & drop (host → folder only)
+        // MARK: Drag & drop (host or group → folder)
 
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
             guard let node = item as? SidebarNode else { return nil }
@@ -565,7 +605,7 @@ struct HostOutlineView: NSViewRepresentable {
                 })
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
-                    if self.confirmDelete(count: selected.count) { store.delete(ids: selected) }
+                    if self.confirmDelete(hosts: selected.count, groups: 0) { store.delete(ids: selected) }
                 })
                 return
             }
