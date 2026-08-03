@@ -156,18 +156,19 @@ struct PortsideApp: App {
                     .disabled(store.macros.isEmpty)
                 Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
             }
-            CommandGroup(after: .textEditing) {
-                Button("Find…") { sessions.selected?.toggleFind() }
-                    .keyboardShortcut(shortcut(.find))
-                    .disabled(sessions.selected == nil)
-                Divider()
+            // Directly under AppKit's own Undo/Redo, which is where an undo
+            // belongs and — more to the point — the only place it reads
+            // correctly. Those two are greyed out unless a text field has focus,
+            // because Portside has no document undo manager; with the library
+            // undo parked further down the menu past Find…, the greyed "Undo"
+            // looked like the only one there was, while ⌥⌘Z plainly worked.
+            CommandGroup(after: .undoRedo) {
                 // Named rather than a bare "Undo Delete", so you can see which
                 // delete you're about to take back before you take it back.
                 //
-                // Deliberately not ⌘Z: the store is shared by every window, and
-                // ⌘Z already means something in a focused text field or
-                // terminal — a library-wide undo answering it would fire at
-                // moments nobody intended.
+                // Deliberately not ⌘Z: that belongs to whatever text field has
+                // focus, and taking it would trade a working per-field undo for
+                // a library-wide one firing at moments nobody intended.
                 Button(store.deletedItems.mostRecent.map { "Undo Delete \($0.menuLabel)" }
                        ?? "Undo Delete") {
                     store.undoLastDelete()
@@ -184,6 +185,11 @@ struct PortsideApp: App {
                         }
                     }
                 }
+            }
+            CommandGroup(after: .textEditing) {
+                Button("Find…") { sessions.selected?.toggleFind() }
+                    .keyboardShortcut(shortcut(.find))
+                    .disabled(sessions.selected == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }
