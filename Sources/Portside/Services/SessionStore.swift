@@ -440,10 +440,19 @@ final class SessionStore: ObservableObject {
     /// name and groups aren't draggable, so every group was stuck at the root
     /// however many you made.
     func move(groupID: UUID, toFolder folder: String) {
-        guard let i = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        move(groupIDs: [groupID], toFolder: folder)
+    }
+
+    /// Batch form, for a drag carrying more than one group — one write rather
+    /// than one per group.
+    func move(groupIDs ids: Set<UUID>, toFolder folder: String) {
         let clean = normalize(folder)
-        guard groups[i].folder != clean else { return }
-        groups[i].folder = clean
+        var changed = false
+        for i in groups.indices where ids.contains(groups[i].id) && groups[i].folder != clean {
+            groups[i].folder = clean
+            changed = true
+        }
+        guard changed else { return }
         if !clean.isEmpty, !explicitFolders.contains(clean) { explicitFolders.append(clean) }
         save()
     }

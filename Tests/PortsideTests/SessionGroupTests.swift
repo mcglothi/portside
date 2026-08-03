@@ -337,6 +337,34 @@ final class SessionGroupTests: XCTestCase {
         XCTAssertTrue(store.favoriteGroups.isEmpty)
     }
 
+    /// Drag drops several rows at once, so the batch form must be one write
+    /// and must leave alone whatever wasn't dragged.
+    func testMovingSeveralGroupsAtOnce() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        let a = SessionGroup(name: "A", layout: grid([UUID()]))
+        let b = SessionGroup(name: "B", layout: grid([UUID()]))
+        let untouched = SessionGroup(name: "C", folder: "lab", layout: grid([UUID()]))
+        for g in [a, b, untouched] { store.upsert(g) }
+
+        store.move(groupIDs: [a.id, b.id], toFolder: "staging")
+
+        XCTAssertEqual(store.group(id: a.id)?.folder, "staging")
+        XCTAssertEqual(store.group(id: b.id)?.folder, "staging")
+        XCTAssertEqual(store.group(id: untouched.id)?.folder, "lab")
+        XCTAssertTrue(store.folders.contains("staging"))
+    }
+
+    func testDraggingAGroupToTheTopLevelDoesNotInventAFolder() {
+        let store = SessionStore(fileURL: tempURL, seedsFromSSHConfig: false)
+        let group = SessionGroup(name: "A", folder: "lab", layout: grid([UUID()]))
+        store.upsert(group)
+
+        store.move(groupIDs: [group.id], toFolder: "")
+
+        XCTAssertEqual(store.group(id: group.id)?.folder, "")
+        XCTAssertFalse(store.folders.contains(""), "the top level is not a folder")
+    }
+
 }
 
 /// Saving and updating a group from the tab, rather than only the File menu.

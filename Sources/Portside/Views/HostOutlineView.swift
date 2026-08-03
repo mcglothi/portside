@@ -7,9 +7,10 @@ import SwiftUI
 /// click handling, which is why the old list managed selection by hand. AppKit
 /// handles all of that; this view bridges it back to the SwiftUI world.
 ///
-/// Scope (see docs/host-sidebar-outline-plan.md): drag moves hosts between
-/// folders only (no manual reordering — the tree is alphabetical), and only
-/// hosts are selectable (folders expand/collapse and have their own menu).
+/// Scope (see docs/host-sidebar-outline-plan.md): drag moves hosts and saved
+/// groups between folders (no manual reordering — the tree is alphabetical),
+/// and folders themselves aren't draggable; they expand/collapse and have
+/// their own menu.
 struct HostOutlineView: NSViewRepresentable {
     let tree: SidebarTree
     @Binding var selection: Set<UUID>
@@ -43,6 +44,11 @@ struct HostOutlineView: NSViewRepresentable {
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
     static let dragType = NSPasteboard.PasteboardType("net.timmcg.portside.host")
+    /// Groups drag on their own type rather than sharing the host one: a drop
+    /// has to know which store collection an id belongs to, and a bare UUID
+    /// doesn't say. Two types keeps that unambiguous and lets a mixed
+    /// selection — some hosts, a group — move in one drag.
+    static let groupDragType = NSPasteboard.PasteboardType("net.timmcg.portside.group")
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -67,7 +73,7 @@ struct HostOutlineView: NSViewRepresentable {
         outline.target = context.coordinator
         outline.doubleAction = #selector(Coordinator.handleDoubleClick(_:))
 
-        outline.registerForDraggedTypes([Self.dragType])
+        outline.registerForDraggedTypes([Self.dragType, Self.groupDragType])
         outline.setDraggingSourceOperationMask(.move, forLocal: true)
 
         let menu = NSMenu()
@@ -402,15 +408,23 @@ struct HostOutlineView: NSViewRepresentable {
         // MARK: Drag & drop (host → folder only)
 
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-            guard let id = (item as? SidebarNode)?.entryID else { return nil } // folders aren't draggable
+            guard let node = item as? SidebarNode else { return nil }
             let pb = NSPasteboardItem()
-            pb.setString(id.uuidString, forType: HostOutlineView.dragType)
+            if let group = node.group {
+                pb.setString(group.id.uuidString, forType: HostOutlineView.groupDragType)
+            } else if let id = node.entryID {
+                pb.setString(id.uuidString, forType: HostOutlineView.dragType)
+            } else {
+                return nil // folders aren't draggable
+            }
             return pb
         }
 
         func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
                          proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
-            guard draggedIDs(from: info).isEmpty == false else { return [] }
+            guard !draggedIDs(from: info).isEmpty || !draggedGroupIDs(from: info).isEmpty else {
+                return []
+            }
             // Always retarget to a drop *onto* a folder (or the whole outline for
             // top level) — we don't reorder, so between-row drops make no sense.
             let node = item as? SidebarNode
@@ -418,9 +432,9 @@ struct HostOutlineView: NSViewRepresentable {
                 outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .move
             }
-            if let node, let entry = node.entry {
-                // Dropping on a host means "into that host's folder".
-                if let folderNode = folderNode(forPath: entry.folder) {
+            // Dropping on a host or a group means "into that row's folder".
+            if let node, let folder = node.entry?.folder ?? node.group?.folder {
+                if let folderNode = folderNode(forPath: folder) {
                     outlineView.setDropItem(folderNode, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 } else {
                     outlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)
@@ -435,9 +449,11 @@ struct HostOutlineView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
                          item: Any?, childIndex index: Int) -> Bool {
             let ids = draggedIDs(from: info)
-            guard !ids.isEmpty else { return false }
+            let groupIDs = draggedGroupIDs(from: info)
+            guard !ids.isEmpty || !groupIDs.isEmpty else { return false }
             let target = (item as? SidebarNode)?.folderPath ?? ""
-            parent.store.move(entryIDs: ids, toFolder: target)
+            if !ids.isEmpty { parent.store.move(entryIDs: ids, toFolder: target) }
+            if !groupIDs.isEmpty { parent.store.move(groupIDs: groupIDs, toFolder: target) }
             return true
         }
 
@@ -445,6 +461,13 @@ struct HostOutlineView: NSViewRepresentable {
             let items = info.draggingPasteboard.pasteboardItems ?? []
             return Set(items.compactMap { item -> UUID? in
                 item.string(forType: HostOutlineView.dragType).flatMap(UUID.init)
+            })
+        }
+
+        private func draggedGroupIDs(from info: NSDraggingInfo) -> Set<UUID> {
+            let items = info.draggingPasteboard.pasteboardItems ?? []
+            return Set(items.compactMap { item -> UUID? in
+                item.string(forType: HostOutlineView.groupDragType).flatMap(UUID.init)
             })
         }
 
