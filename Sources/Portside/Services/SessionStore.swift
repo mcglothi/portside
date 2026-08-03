@@ -151,8 +151,35 @@ final class SessionStore: ObservableObject {
         fileURL = directory.appendingPathComponent("portside.json")
         seedsFromSSHConfig = (override == nil)
         coalescesHistoryWrites = true
+        usesDefaultLibraryLocation = (override == nil)
         load()
         observeTermination()
+        purgeOrphanedCredentials()
+    }
+
+    /// Whether this store is the user's real library at its real location.
+    ///
+    /// Gates the Keychain sweep, and nothing else. The sweep deletes every
+    /// password whose host it cannot see, so pointing it at a throwaway library
+    /// would wipe the passwords for the user's actual hosts — and
+    /// `PORTSIDE_LIBRARY_DIR` runs through the same initialiser as the real
+    /// thing, so "which initialiser was called" is not the distinction that
+    /// matters here.
+    private let usesDefaultLibraryLocation: Bool
+
+    /// Cleans up Keychain passwords left behind by a delete that was still
+    /// undoable when the app went away.
+    ///
+    /// Two guards, both load-bearing. `usesDefaultLibraryLocation` keeps the
+    /// sweep off throwaway libraries — a dev build under PORTSIDE_LIBRARY_DIR
+    /// shares the one Keychain with the installed app, so sweeping there would
+    /// delete the passwords for every real host, none of which it can see.
+    /// `loadFailure` covers the same hazard from the other direction: a library
+    /// that wouldn't decode has no host list to speak of, and sweeping against
+    /// it is indistinguishable from sweeping against nothing.
+    private func purgeOrphanedCredentials() {
+        guard usesDefaultLibraryLocation, loadFailure == nil else { return }
+        CredentialStore.purgeOrphanedPasswords(keeping: Set(entries.map(\.id)))
     }
 
     /// Test seam: an isolated library backed by `fileURL`, never touching the
@@ -168,6 +195,7 @@ final class SessionStore: ObservableObject {
         self.fileURL = fileURL
         self.seedsFromSSHConfig = seedsFromSSHConfig
         self.coalescesHistoryWrites = coalescesHistoryWrites
+        self.usesDefaultLibraryLocation = false
         load()
         observeTermination()
     }
@@ -180,6 +208,9 @@ final class SessionStore: ObservableObject {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.flushHistory()
+            // The undo ring doesn't outlive the app, so neither should the
+            // passwords it was keeping alive.
+            self?.finalizePendingDeletions()
         }
     }
 
@@ -215,18 +246,111 @@ final class SessionStore: ObservableObject {
     /// then sits in the Keychain indefinitely, under a UUID no session
     /// references anymore.
     func delete(_ entry: SessionEntry) {
-        entries.removeAll { $0.id == entry.id }
-        CredentialStore.deletePassword(for: entry.id)
+        delete(ids: [entry.id])
+    }
+
+    // MARK: - Undoing a delete
+
+    /// Recent deletions, newest last. Published so the menu can name what it
+    /// would bring back and disable itself when there is nothing to.
+    @Published private(set) var deletedItems = DeletedItemRing()
+
+    /// Files a deletion as undoable, and finishes off whatever that pushed out
+    /// of the ring.
+    ///
+    /// This is where a deleted host's Keychain password actually goes. Removing
+    /// it at delete time would mean undo restored a host that could no longer
+    /// authenticate — it would look completely correct and then fail, which is
+    /// worse than not offering undo at all. The alternative, stashing the
+    /// plaintext to write back later, moves a secret out of the Keychain, so
+    /// instead the item simply stays until the delete is beyond taking back.
+    private func recordDeletion(_ batch: DeletedItems) {
+        for expired in deletedItems.record(batch) {
+            for host in expired.hosts { CredentialStore.deletePassword(for: host.id) }
+        }
+    }
+
+    /// Puts back the most recent deletion. Returns what came back, for the
+    /// caller to say so.
+    @discardableResult
+    func undoLastDelete() -> DeletedItems? {
+        guard let batch = deletedItems.takeMostRecent() else { return nil }
+        restore(batch)
+        return batch
+    }
+
+    /// Puts back one specific deletion, for a menu listing several.
+    @discardableResult
+    func undoDelete(id: DeletedItems.ID) -> DeletedItems? {
+        guard let batch = deletedItems.take(id: id) else { return nil }
+        restore(batch)
+        return batch
+    }
+
+    /// Restores a batch, re-creating any folder it referred to.
+    ///
+    /// The folders are the subtle part: deleting the last host in a folder can
+    /// leave that folder with nothing to anchor it, so putting the host back
+    /// without its folder would silently move it to the top level — an undo
+    /// that doesn't undo. Skips anything whose id came back some other way
+    /// (a re-import, a second window) rather than creating a duplicate.
+    private func restore(_ batch: DeletedItems) {
+        for host in batch.hosts where !entries.contains(where: { $0.id == host.id }) {
+            entries.append(host)
+            registerFolder(host.folder)
+        }
+        for group in batch.groups where !groups.contains(where: { $0.id == group.id }) {
+            groups.append(group)
+            registerFolder(group.folder)
+        }
+        for macro in batch.macros where !macros.contains(where: { $0.id == macro.id }) {
+            macros.append(macro)
+        }
         save()
     }
 
-    /// Deletes every entry whose id is in `ids` (and each one's Keychain
-    /// password), saving once. No-op (and no save) when nothing matches, so a
-    /// stray empty selection can't churn disk.
+    private func registerFolder(_ path: String) {
+        let clean = normalize(path)
+        guard !clean.isEmpty, !explicitFolders.contains(clean) else { return }
+        explicitFolders.append(clean)
+    }
+
+    /// Finishes every deletion the ring was holding open. Called at quit: the
+    /// ring doesn't survive a launch, so a password kept alive only by an undo
+    /// that is no longer offered would be a leak.
+    func finalizePendingDeletions() {
+        for expired in deletedItems.drain() {
+            for host in expired.hosts { CredentialStore.deletePassword(for: host.id) }
+        }
+    }
+
+    /// Deletes every entry whose id is in `ids`, saving once. No-op (and no
+    /// save) when nothing matches, so a stray empty selection can't churn disk.
+    ///
+    /// The Keychain passwords are *not* removed here — see `recordDeletion`.
     func delete(ids: Set<UUID>) {
-        guard entries.contains(where: { ids.contains($0.id) }) else { return }
+        let removed = entries.filter { ids.contains($0.id) }
+        guard !removed.isEmpty else { return }
         entries.removeAll { ids.contains($0.id) }
-        for id in ids { CredentialStore.deletePassword(for: id) }
+        recordDeletion(DeletedItems(hosts: removed))
+        save()
+    }
+
+    /// Deletes hosts, groups and macros as one undoable action.
+    ///
+    /// A selection spanning kinds has to come back as one, so it has to go as
+    /// one: two separate deletes would need two undos, and the second would
+    /// restore half of something the user thinks they already took back.
+    func delete(entryIDs: Set<UUID>, groupIDs: Set<UUID>, macroIDs: Set<UUID>) {
+        let removedHosts = entries.filter { entryIDs.contains($0.id) }
+        let removedGroups = groups.filter { groupIDs.contains($0.id) }
+        let removedMacros = macros.filter { macroIDs.contains($0.id) }
+        let batch = DeletedItems(hosts: removedHosts, groups: removedGroups, macros: removedMacros)
+        guard !batch.isEmpty else { return }
+        entries.removeAll { entryIDs.contains($0.id) }
+        groups.removeAll { groupIDs.contains($0.id) }
+        macros.removeAll { macroIDs.contains($0.id) }
+        recordDeletion(batch)
         save()
     }
 
@@ -427,7 +551,9 @@ final class SessionStore: ObservableObject {
     }
 
     func delete(_ group: SessionGroup) {
+        guard let removed = groups.first(where: { $0.id == group.id }) else { return }
         groups.removeAll { $0.id == group.id }
+        recordDeletion(DeletedItems(groups: [removed]))
         save()
     }
 
@@ -479,7 +605,9 @@ final class SessionStore: ObservableObject {
     }
 
     func delete(_ macro: Macro) {
+        guard let removed = macros.first(where: { $0.id == macro.id }) else { return }
         macros.removeAll { $0.id == macro.id }
+        recordDeletion(DeletedItems(macros: [removed]))
         save()
     }
 

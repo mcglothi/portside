@@ -160,6 +160,30 @@ struct PortsideApp: App {
                 Button("Find…") { sessions.selected?.toggleFind() }
                     .keyboardShortcut(shortcut(.find))
                     .disabled(sessions.selected == nil)
+                Divider()
+                // Named rather than a bare "Undo Delete", so you can see which
+                // delete you're about to take back before you take it back.
+                //
+                // Deliberately not ⌘Z: the store is shared by every window, and
+                // ⌘Z already means something in a focused text field or
+                // terminal — a library-wide undo answering it would fire at
+                // moments nobody intended.
+                Button(store.deletedItems.mostRecent.map { "Undo Delete \($0.menuLabel)" }
+                       ?? "Undo Delete") {
+                    store.undoLastDelete()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .option])
+                .disabled(store.deletedItems.isEmpty)
+                Menu("Recently Deleted") {
+                    if store.deletedItems.isEmpty {
+                        Button("Nothing Deleted") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(store.deletedItems.mostRecentFirst) { batch in
+                            Button(batch.menuLabel) { store.undoDelete(id: batch.id) }
+                        }
+                    }
+                }
             }
             CommandGroup(after: .sidebar) {
                 Button("Zoom In") { sessions.zoomIn() }

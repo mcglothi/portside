@@ -54,6 +54,43 @@ enum CredentialStore {
         delete(account: profileAccount(id))
     }
 
+    /// Removes per-host passwords whose host is no longer in the library.
+    ///
+    /// Deleting a host defers its Keychain removal until the delete can no
+    /// longer be undone (see `DeletedItemRing`). A crash or force-quit inside
+    /// that window skips the removal, leaving a password behind for a host that
+    /// no longer exists — the same shape of leak `AskpassInjector.purgeStale
+    /// Directories` cleans up, and handled the same way: sweep at launch.
+    ///
+    /// Only touches accounts that are a bare UUID. The app-wide default
+    /// password and the `profile-` entries have their own lifetimes and are not
+    /// this function's business.
+    ///
+    /// **`live` must be the complete host list of the real library.** Called
+    /// with a partial or wrong one — a store that failed to decode, or a dev
+    /// build pointed at a throwaway library — this deletes the passwords for
+    /// every host it can't see. `SessionStore` guards both cases; anything else
+    /// calling this needs to as well.
+    static func purgeOrphanedPasswords(keeping live: Set<UUID>) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return }
+
+        for item in items {
+            guard let account = item[kSecAttrAccount as String] as? String,
+                  let id = UUID(uuidString: account),   // skips default + profile- accounts
+                  !live.contains(id) else { continue }
+            NSLog("Portside: removing orphaned Keychain password for \(account)")
+            delete(account: account)
+        }
+    }
+
     /// Adds or updates the item for `account`. Tries an add first (the
     /// common case) and falls back to an update on a duplicate — more
     /// reliable than a preceding blind delete-then-add, which silently loses

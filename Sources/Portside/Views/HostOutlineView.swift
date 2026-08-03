@@ -418,14 +418,13 @@ struct HostOutlineView: NSViewRepresentable {
             // One prompt covering the whole selection. Deleting a group throws
             // away an arrangement, not the hosts in it, which is why a lone
             // group deletes as quietly as a lone host.
-            if entries.count + groups.count == 1 {
-                if let entry = entries.first { parent.store.delete(entry) }
-                if let group = groups.first { parent.store.delete(group) }
-                return
-            }
-            guard confirmDelete(hosts: entries.count, groups: groups.count) else { return }
-            if !entries.isEmpty { parent.store.delete(ids: Set(entries.map(\.id))) }
-            for group in groups { parent.store.delete(group) }
+            if entries.count + groups.count > 1,
+               !confirmDelete(hosts: entries.count, groups: groups.count) { return }
+            parent.store.delete(
+                entryIDs: Set(entries.map(\.id)),
+                groupIDs: Set(groups.map(\.id)),
+                macroIDs: []
+            )
         }
 
         private func confirmDelete(hosts: Int, groups: Int) -> Bool {
@@ -530,11 +529,71 @@ struct HostOutlineView: NSViewRepresentable {
             menu.removeAllItems()
             guard let outline, outline.clickedRow >= 0,
                   let node = outline.item(atRow: outline.clickedRow) as? SidebarNode else { return }
+            // A selection spanning both kinds gets its own menu. The host menu
+            // counted hosts only, so right-clicking a host that was selected
+            // alongside a group offered a plain single-host "Delete" — which
+            // deleted the host, left the group, and asked nothing first.
+            let groups = selectedGroups
+            if !groups.isEmpty, outline.isRowSelected(outline.clickedRow),
+               selectedEntries.count + groups.count > 1 {
+                buildMixedSelectionMenu(menu, hosts: selectedEntries, groups: groups)
+                return
+            }
             switch node.kind {
             case .entry(let entry): buildEntryMenu(menu, clicked: entry)
             case .folder(let folder): buildFolderMenu(menu, folder: folder)
             case .group(let group): buildGroupMenu(menu, group: group)
             }
+        }
+
+        /// The menu for a selection containing at least one group and more
+        /// than one row. Deliberately narrow: the bulk host actions
+        /// (credential profile, environment, keychain) have no meaning for a
+        /// group, and offering them next to a count that includes groups would
+        /// misstate what they'd touch.
+        private func buildMixedSelectionMenu(
+            _ menu: NSMenu, hosts: [SessionEntry], groups: [SessionGroup]
+        ) {
+            let store = parent.store
+            let total = hosts.count + groups.count
+
+            if !hosts.isEmpty {
+                menu.addItem(ClosureMenuItem(title: "Connect \(hosts.count) Host\(hosts.count == 1 ? "" : "s")") {
+                    self.parent.connectSelected(false)
+                })
+                menu.addItem(ClosureMenuItem(title: "Connect \(hosts.count) in MultiExec") {
+                    self.parent.connectSelected(true)
+                })
+            }
+            let launch = parent.launchGroup
+            menu.addItem(ClosureMenuItem(title: "Open \(groups.count) Group\(groups.count == 1 ? "" : "s")") {
+                for group in groups { launch(group) }
+            })
+            menu.addItem(.separator())
+
+            let hostIDs = Set(hosts.map(\.id))
+            let groupIDs = Set(groups.map(\.id))
+            let submenu = NSMenu()
+            submenu.addItem(ClosureMenuItem(title: "Top Level") {
+                if !hostIDs.isEmpty { store.move(entryIDs: hostIDs, toFolder: "") }
+                store.move(groupIDs: groupIDs, toFolder: "")
+            })
+            if !store.folders.isEmpty { submenu.addItem(.separator()) }
+            for target in store.folders {
+                submenu.addItem(ClosureMenuItem(title: target) {
+                    if !hostIDs.isEmpty { store.move(entryIDs: hostIDs, toFolder: target) }
+                    store.move(groupIDs: groupIDs, toFolder: target)
+                })
+            }
+            let moveItem = NSMenuItem(title: "Move \(total) Selected to", action: nil, keyEquivalent: "")
+            moveItem.submenu = submenu
+            menu.addItem(moveItem)
+
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(title: "Delete \(total) Selected", role: .destructive) {
+                guard self.confirmDelete(hosts: hosts.count, groups: groups.count) else { return }
+                store.delete(entryIDs: hostIDs, groupIDs: groupIDs, macroIDs: [])
+            })
         }
 
         private func buildGroupMenu(_ menu: NSMenu, group: SessionGroup) {
@@ -552,10 +611,8 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(title: "Delete Group") { remove(group) })
         }
 
-        /// "Move to ▸" for a group. Groups aren't draggable — the outline view
-        /// declines to write a pasteboard item for them — so this menu is the
-        /// only way to file one, and without it every group stayed at the root
-        /// no matter how many you saved.
+        /// "Move to ▸" for a group — the keyboard-and-menu route to the same
+        /// place dragging goes, for the same reason hosts have both.
         private func addGroupMoveMenu(_ menu: NSMenu, group: SessionGroup) {
             let store = parent.store
             let targets = store.folders.filter { $0 != group.folder }
