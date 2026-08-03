@@ -3,6 +3,20 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.21.0
+
+**Groups grow up.** Saved groups can now live in folders, be starred, and be opened from ⌘K — three gaps that didn't matter with two groups and matter a great deal with a dozen.
+
+Filing: the save sheet gains a folder field, and a group's context menu offers "Move to". Both were missing entirely, so every group sat at the top level however many you saved. Renaming or deleting a folder now takes its groups with it, rather than leaving them pointing at a path nothing else referenced.
+
+Favorites: star a group from its sidebar row or its context menu and it appears in a **Groups** section on the welcome screen, alongside your favorite hosts. The field had shipped on the model since groups arrived and nothing could set it.
+
+Quick Connect: ⌘K now searches groups as well as hosts, showing the pane count and folder. Hosts and groups compete on the same score, but with an empty query groups sit below the recents — ⌘K then Return is still the fast reconnect it was.
+
+**Opening a group you already have open** brings that tab forward instead of opening a second copy. Two tabs for one group didn't just clutter the bar: closing a group tab writes its arrangement back, so duplicates competed and whichever you closed last silently overwrote the other's layout.
+
+**The MultiExec disarm notice belongs to the tab that disarmed.** It used to be app-wide, so one tab going down put "MultiExec disarmed" on every tab — including ones that had never been armed. A tab you were nowhere near announcing something that didn't happen to you is worse than no notice at all. Re-arming clears it, too.
+
 ## 0.20.0
 
 **Saved host groups.** Save the panes in a tab as a named group — "Splunk Servers", the eight boxes you always open together — and reopen the whole arrangement with one click. Groups live in the sidebar in their folder, above the hosts, with a pane count; double-click opens, and the context menu offers rename and delete. Save from File ▸ Save Tab as Group…, from the tab's own context menu, or from a button on the MultiExec banner, since assembling a group and arming it are usually the same motion. A tab opened from a group takes the group's name, and rearranging it saves back silently when you close the tab or quit — no "remember to save" step. A group whose hosts you've since deleted opens the ones that remain and says which are gone, rather than quietly giving you a smaller grid than you asked for. Groups always open **disarmed**: assembled and ready, with arming still a deliberate act.
