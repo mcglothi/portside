@@ -147,9 +147,14 @@ struct SidebarView: View {
             onShowHistory: { showingHistory = true },
             onSaveTabAsGroup: {
                 let tab = sessions.selectedTab
+                // A name you chose, or the group's own, or a placeholder worth
+                // typing over. It used to fall back to the active pane's title,
+                // which for a local shell is the whole prompt —
+                // "mcglothi@Newton:~/code/portside" — a name nobody wants and
+                // an ugly thing to hand someone with the field pre-selected.
                 newGroupName = tab?.customTitle
                     ?? tab?.groupID.flatMap { store.group(id: $0)?.name }
-                    ?? tab?.activeLeaf?.title ?? ""
+                    ?? "New Group"
                 // Re-saving a group offers its current folder, so the common
                 // case of overwriting one doesn't quietly move it to the root.
                 newGroupFolder = tab?.groupID.flatMap { store.group(id: $0)?.folder } ?? ""
