@@ -330,7 +330,11 @@ struct SidebarView: View {
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
             )
             .overlay {
-                if store.entries.isEmpty {
+                // Groups count as content. Checking only `entries` drew "No
+                // hosts yet" straight over a sidebar with folders and groups
+                // visible in it — the list is right there underneath, being
+                // told it doesn't exist.
+                if store.entries.isEmpty && store.groups.isEmpty {
                     EmptyStateView(
                         icon: "server.rack",
                         title: "No hosts yet",
