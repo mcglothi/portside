@@ -257,6 +257,29 @@ final class UndoDeleteTests: XCTestCase {
         XCTAssertEqual(reloaded.entries.first?.folder, "prod")
     }
 
+    /// Clearing is how you say "finish that delete now" rather than waiting
+    /// for the ring to evict it — which is what releases the Keychain password.
+    func testClearingForgetsEveryUndoableDelete() {
+        let store = makeStore()
+        store.upsert(SessionEntry(name: "web-01", folder: "", hostname: "w.example.com"))
+        store.upsert(group("Edge caches"))
+        store.delete(store.entries[0])
+        store.delete(store.groups[0])
+        XCTAssertEqual(store.deletedItems.entries.count, 2)
+
+        store.clearDeletedItems()
+
+        XCTAssertTrue(store.deletedItems.isEmpty)
+        XCTAssertNil(store.undoLastDelete(), "cleared deletes cannot be taken back")
+        XCTAssertTrue(store.entries.isEmpty, "clearing must not resurrect anything")
+    }
+
+    func testClearingAnEmptyRingIsANoOp() {
+        let store = makeStore()
+        store.clearDeletedItems()
+        XCTAssertTrue(store.deletedItems.isEmpty)
+    }
+
     func testUndoingWithNothingDeletedIsANoOp() {
         let store = makeStore()
         XCTAssertNil(store.undoLastDelete())

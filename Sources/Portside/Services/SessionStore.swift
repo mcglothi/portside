@@ -315,6 +315,18 @@ final class SessionStore: ObservableObject {
         explicitFolders.append(clean)
     }
 
+    /// Forgets every undoable delete, finishing each one off.
+    ///
+    /// The Keychain passwords go with them, which is the point rather than a
+    /// side effect: this is the answer to "I deleted that host, get rid of its
+    /// password now" instead of waiting for the ring to evict it. No
+    /// confirmation — the deletes themselves were already asked for and
+    /// confirmed, and this only stops offering to reverse them.
+    func clearDeletedItems() {
+        guard !deletedItems.isEmpty else { return }
+        finalizePendingDeletions()
+    }
+
     /// Finishes every deletion the ring was holding open. Called at quit: the
     /// ring doesn't survive a launch, so a password kept alive only by an undo
     /// that is no longer offered would be a leak.

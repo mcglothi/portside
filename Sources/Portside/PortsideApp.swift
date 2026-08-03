@@ -183,6 +183,8 @@ struct PortsideApp: App {
                         ForEach(store.deletedItems.mostRecentFirst) { batch in
                             Button(batch.menuEntry()) { store.undoDelete(id: batch.id) }
                         }
+                        Divider()
+                        Button("Clear Recently Deleted") { store.clearDeletedItems() }
                     }
                 }
             }
