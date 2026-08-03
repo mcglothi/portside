@@ -7,7 +7,7 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Groups grow up.** Saved groups can now live in folders, be starred, and be opened from ⌘K — three gaps that didn't matter with two groups and matter a great deal with a dozen.
 
-Filing: the save sheet gains a folder field, and a group's context menu offers "Move to". Both were missing entirely, so every group sat at the top level however many you saved. Renaming or deleting a folder now takes its groups with it, rather than leaving them pointing at a path nothing else referenced.
+Filing: groups can be dragged into folders like hosts, the save sheet gains a folder field, and a group's context menu offers "Move to". All three were missing, so every group sat at the top level however many you saved. Renaming or deleting a folder now takes its groups with it, rather than leaving them pointing at a path nothing else referenced.
 
 Favorites: star a group from its sidebar row or its context menu and it appears in a **Groups** section on the welcome screen, alongside your favorite hosts. The field had shipped on the model since groups arrived and nothing could set it.
 
