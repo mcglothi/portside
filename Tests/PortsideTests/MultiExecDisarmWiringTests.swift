@@ -213,3 +213,44 @@ final class DisarmNoticeScopeTests: XCTestCase {
     }
 }
 
+/// Opening a group that already has a tab.
+@MainActor
+final class GroupRelaunchTests: XCTestCase {
+
+    private func groupTab(_ manager: SessionManager) throws -> (SessionGroup, Tab) {
+        manager.openLocalShell()
+        let group = try XCTUnwrap(manager.groupFromSelectedTab(named: "Splunk"))
+        let tab = try XCTUnwrap(manager.selectedTab)
+        tab.groupID = group.id
+        return (group, tab)
+    }
+
+    func testLaunchingAnOpenGroupBringsItForwardInsteadOfDuplicating() throws {
+        // Two tabs carrying the same groupID both write their arrangement back
+        // on close, so duplicates compete and the last one closed silently wins.
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        let (group, tab) = try groupTab(manager)
+        manager.openLocalShell()                       // look at something else
+        XCTAssertNotEqual(manager.selectedTabID, tab.id)
+
+        let result = manager.launch(group) { _ in nil }
+
+        XCTAssertTrue(result.wasAlreadyOpen)
+        XCTAssertEqual(manager.selectedTabID, tab.id, "it should bring the existing tab forward")
+        XCTAssertEqual(manager.tabs.filter { $0.groupID == group.id }.count, 1,
+                       "exactly one tab may own a group")
+    }
+
+    func testRelaunchingReportsNoMissingHosts() throws {
+        // Nothing went wrong, so the partial-launch notice must not fire.
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        let (group, _) = try groupTab(manager)
+
+        let result = manager.launch(group) { _ in nil }
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertTrue(result.missing.isEmpty)
+    }
+}

@@ -1640,6 +1640,8 @@ final class SessionManager: ObservableObject {
     struct GroupLaunchResult: Equatable {
         var opened: Int
         var missing: [UUID]
+        /// The group already had a tab, which was brought forward instead.
+        var wasAlreadyOpen = false
         var isComplete: Bool { missing.isEmpty }
     }
 
@@ -1669,6 +1671,18 @@ final class SessionManager: ObservableObject {
     /// so, not refuse.
     @discardableResult
     func launch(_ group: SessionGroup, entryForID: (UUID) -> SessionEntry?) -> GroupLaunchResult {
+        // Already open: bring it forward rather than opening it twice.
+        //
+        // Two tabs carrying the same groupID is not just clutter — closing a
+        // group tab writes its arrangement back, so duplicates compete and
+        // whichever is closed last silently overwrites the other. Selecting the
+        // existing one is also what you meant: double-clicking a group you are
+        // already looking at should take you to it.
+        if let open = tabs.first(where: { $0.groupID == group.id }) {
+            selectedTabID = open.id
+            return GroupLaunchResult(opened: open.leaves.count, missing: [], wasAlreadyOpen: true)
+        }
+
         let missing = group.memberEntryIDs.filter { entryForID($0) == nil }
         let snapshot = WorkspaceSnapshot(
             tabs: [group.layout], selectedTabIndex: 0, wasGridView: group.wasGridView
