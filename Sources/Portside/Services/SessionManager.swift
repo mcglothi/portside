@@ -1556,6 +1556,40 @@ final class SessionManager: ObservableObject {
         selectedTabID = tabs[index].id
     }
 
+    // MARK: - Reordering
+
+    /// Moves `tabID` so it sits where `targetID` currently is.
+    ///
+    /// Order is the user's, and it persists: `currentWorkspace` already stores
+    /// tabs in order, so a rearranged bar comes back rearranged. Everything that
+    /// tracks a *particular* tab keys off its id, so nothing here disturbs the
+    /// selection or the grid link. The things that are index-based — ⌘1–⌘9 and
+    /// ⌘⇧[ / ⌘⇧] — follow the new order, which is what you want: after moving a
+    /// tab to the front, ⌘1 should select it.
+    ///
+    /// Insert semantics here, unlike the grid's swap. A tab bar reads as a list,
+    /// where dragging something to a position and having the rest close up is
+    /// exactly the expectation; a grid reads as a seating chart, where it isn't.
+    func moveTab(_ tabID: UUID, before targetID: UUID) {
+        guard tabID != targetID,
+              let from = tabs.firstIndex(where: { $0.id == tabID }),
+              let to = tabs.firstIndex(where: { $0.id == targetID }) else { return }
+        objectWillChange.send()
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: to)
+        notifyWorkspaceChanged()
+    }
+
+    /// Moves `tabID` to the end of the bar — a drop past the last tab.
+    func moveTabToEnd(_ tabID: UUID) {
+        guard let from = tabs.firstIndex(where: { $0.id == tabID }), from != tabs.count - 1
+        else { return }
+        objectWillChange.send()
+        let tab = tabs.remove(at: from)
+        tabs.append(tab)
+        notifyWorkspaceChanged()
+    }
+
     // MARK: - Grid view
 
     /// The tab, if any, that Grid View consolidated all tabs into.

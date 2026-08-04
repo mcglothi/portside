@@ -439,6 +439,7 @@ struct FindBar: View {
 }
 
 struct TabBar: View {
+    @State private var isEndDropTarget = false
     @EnvironmentObject var sessions: SessionManager
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var library: LibraryCommands
@@ -490,9 +491,27 @@ struct TabBar: View {
                                 sessions.selectedTabID = tab.id
                                 library.requestSaveTabAsGroup()
                             },
-                            onUpdateGroup: { sessions.captureGroupLayoutIfLinked(tab) }
+                            onUpdateGroup: { sessions.captureGroupLayoutIfLinked(tab) },
+                            onDropTab: { sessions.moveTab($0, before: tab.id) }
                         )
                     }
+                    // Somewhere to drop past the last tab. Without it the only
+                    // way to move a tab to the end is onto the last chip, which
+                    // inserts *before* it — so the one position you can't reach
+                    // is the far right.
+                    Color.clear
+                        .frame(width: 24)
+                        .contentShape(Rectangle())
+                        .onDrop(of: [.text], isTargeted: $isEndDropTarget) { providers in
+                            loadTabID(from: providers) { sessions.moveTabToEnd($0) }
+                        }
+                        .overlay(alignment: .leading) {
+                            if isEndDropTarget {
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.accentColor)
+                                    .frame(width: 3)
+                            }
+                        }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -695,6 +714,9 @@ struct TabChip: View {
     let onCloseOthers: () -> Void
     let onSaveAsGroup: () -> Void
     let onUpdateGroup: () -> Void
+    /// Called with the dragged tab's id when one is dropped on this chip.
+    var onDropTab: (UUID) -> Void = { _ in }
+    @State private var isDropTarget = false
 
     private var title: String {
         tabDisplayTitle(tab) { store.group(id: $0)?.name }
@@ -731,7 +753,25 @@ struct TabChip: View {
             in: RoundedRectangle(cornerRadius: 6)
         )
         .contentShape(RoundedRectangle(cornerRadius: 6))
+        // A line down the leading edge rather than a filled highlight: the drop
+        // inserts *before* this tab, and a highlight would suggest replacing it.
+        .overlay(alignment: .leading) {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+            }
+        }
         .onTapGesture(perform: onSelect)
+        .onDrag {
+            // Carries the tab's id, not the tab: a drop is handled by the
+            // manager against live state, so nothing here can act on a stale
+            // copy of a tab that closed mid-drag.
+            NSItemProvider(object: tab.id.uuidString as NSString)
+        }
+        .onDrop(of: [.text], isTargeted: $isDropTarget) { providers in
+            loadTabID(from: providers, then: onDropTab)
+        }
         .contextMenu {
             Button("Rename…", action: onRename)
             // Saving lives here as well as in the File menu: the thing you want
@@ -755,6 +795,43 @@ struct TabChip: View {
                 .disabled(tab.leaves.isEmpty)
         }
     }
+}
+
+/// Pulls a UUID out of a drag's item providers and hands it to `action` on the
+/// main actor.
+///
+/// Shared by the tab bar and the pane grid, which drag the same thing — an id —
+/// for the same reason: the drop is resolved against live state, so a tab or
+/// pane that closed mid-drag simply doesn't match anything.
+///
+/// Returns true immediately because the load is asynchronous; refusing the drop
+/// until the payload arrives would show the "no" cursor over a valid target.
+@MainActor
+func loadTabID(from providers: [NSItemProvider], then action: @escaping (UUID) -> Void) -> Bool {
+    guard let provider = providers.first else { return false }
+    let box = DropCallbackBox(action)
+    _ = provider.loadObject(ofClass: NSString.self) { value, _ in
+        guard let text = value as? String, let id = UUID(uuidString: text) else { return }
+        DispatchQueue.main.async { box.action(id) }
+    }
+    return true
+}
+
+/// Carries a main-actor callback through `NSItemProvider`'s `@Sendable`
+/// completion handler.
+///
+/// The load finishes on a queue of the provider's choosing, so the callback has
+/// to cross a Sendable boundary it can't satisfy — it captures view state and a
+/// `SessionManager`, neither of which is `Sendable`.
+///
+/// Unchecked is accurate here rather than convenient: the closure is stored once
+/// at construction and read only inside the `DispatchQueue.main.async` above, so
+/// it is never called off the main queue. Same shape and same reasoning as
+/// `PipeDrain`, which crosses the same kind of boundary from a
+/// `readabilityHandler`.
+private final class DropCallbackBox: @unchecked Sendable {
+    let action: (UUID) -> Void
+    init(_ action: @escaping (UUID) -> Void) { self.action = action }
 }
 
 /// The "welcome aboard" screen: shown full-window when no tab is open at all,

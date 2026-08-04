@@ -119,5 +119,4 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertEqual(result?.leaves.count, 2)
         XCTAssertEqual(result?.leaves.last?.id, cID)
     }
-
 }
