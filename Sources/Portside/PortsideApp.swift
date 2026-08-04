@@ -287,6 +287,8 @@ struct PortsideApp: App {
                 Button("Terminal Compatibility") { open(Docs.compatibility) }
                 Button("Port Forwarding") { open(Docs.portForwarding) }
                 Divider()
+                Button("Troubleshooting") { open(Docs.troubleshooting) }
+                Divider()
                 Button("Release Notes") { openWindow(id: "about") }
                 Button("Report an Issue…") { open(Docs.newIssue) }
                 Button("Portside on GitHub") { open(Docs.repository) }

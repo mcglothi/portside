@@ -22,6 +22,7 @@ enum Docs {
     static let credentialProfiles = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/credential-profiles.md")!
     static let compatibility = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/COMPATIBILITY.md")!
     static let portForwarding = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/port-forwarding.md")!
+    static let troubleshooting = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/troubleshooting.md")!
     static let newIssue = URL(string: "https://github.com/mcglothi/portside/issues/new/choose")!
     static let security = URL(string: "https://github.com/mcglothi/portside/security/advisories/new")!
 }
