@@ -140,4 +140,89 @@ final class ReorderTests: XCTestCase {
 
         XCTAssertEqual(tab.leaves.map(\.id), [mine])
     }
+    // MARK: - Keyboard
+
+    func testMovingTheSelectedTabWithTheKeyboard() throws {
+        let manager = manager(tabs: 3)
+        defer { shutDown(manager) }
+        let ids = manager.tabs.map(\.id)
+        manager.selectedTabID = ids[0]
+
+        manager.moveSelectedTab(forward: true)
+
+        XCTAssertEqual(manager.tabs.map(\.id), [ids[1], ids[0], ids[2]])
+        XCTAssertEqual(manager.selectedTabID, ids[0], "the tab you moved stays selected")
+    }
+
+    /// Stops rather than wrapping: rearranging is a placing motion, and a tab
+    /// leaping from one end of the bar to the other is rarely what you meant.
+    func testMovingStopsAtTheEnds() throws {
+        let manager = manager(tabs: 2)
+        defer { shutDown(manager) }
+        let ids = manager.tabs.map(\.id)
+        manager.selectedTabID = ids[0]
+
+        XCTAssertFalse(manager.canMoveSelectedTab(forward: false))
+        manager.moveSelectedTab(forward: false)
+
+        XCTAssertEqual(manager.tabs.map(\.id), ids)
+    }
+
+    // MARK: - What reordering must not disturb
+
+    /// Free today, because `includedInMultiExec` lives on the session and a swap
+    /// carries the session with it. Pinned because "the pane I excluded became
+    /// included when I moved it" is a broadcast reaching a host you took out.
+    func testSwappingAPaneKeepsItsMultiExecInclusion() throws {
+        let manager = manager(tabs: 3)
+        defer { shutDown(manager) }
+        manager.setGridView(true)
+        let tab = try XCTUnwrap(manager.selectedTab)
+        let panes = tab.leaves
+        panes[0].includedInMultiExec = false
+
+        manager.swapPanes(panes[0].id, panes[2].id)
+
+        let moved = try XCTUnwrap(tab.leaves.first { $0.id == panes[0].id })
+        XCTAssertFalse(moved.includedInMultiExec, "exclusion travels with the pane")
+        XCTAssertEqual(tab.leaves.map(\.id).firstIndex(of: panes[0].id), 2)
+    }
+
+    /// Also free — `captureGroupLayout` snapshots `tab.root`, which is what the
+    /// swap rewrote. Pinned because a group that quietly forgets a rearrangement
+    /// is the same complaint as a rename that doesn't stick.
+    func testAGroupTabCapturesARearrangedLayout() throws {
+        let manager = manager(tabs: 3)
+        defer { shutDown(manager) }
+        manager.setGridView(true)
+        let tab = try XCTUnwrap(manager.selectedTab)
+        let groupID = UUID()
+        tab.groupID = groupID
+
+        var captured: WorkspaceSnapshot.TabSnapshot?
+        var capturedID: UUID?
+        manager.onGroupLayoutChange = { id, snapshot, _ in capturedID = id; captured = snapshot }
+
+        // Exclude the first pane so its leaf is identifiable in the snapshot,
+        // which records membership but not session ids.
+        let panes = tab.leaves
+        panes[0].includedInMultiExec = false
+        manager.swapPanes(panes[0].id, panes[2].id)
+        manager.captureGroupLayoutIfLinked(tab)
+
+        let snapshot = try XCTUnwrap(captured)
+        XCTAssertEqual(capturedID, groupID)
+        XCTAssertEqual(inclusionOrder(of: snapshot.root), [true, true, false],
+                       "the layout written back is the rearranged one, not the original")
+    }
+
+    /// MultiExec membership per leaf, left to right — a stand-in for identity in
+    /// a snapshot that records what a pane *is*, not which session filled it.
+    private func inclusionOrder(of node: WorkspaceSnapshot.PaneSnapshot) -> [Bool] {
+        switch node {
+        case .leaf(let leaf): return [leaf.includedInMultiExec]
+        case .split(_, let children): return children.flatMap(inclusionOrder)
+        }
+    }
+
 }

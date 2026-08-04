@@ -141,16 +141,20 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case newLocalShell, quickConnect, find
     case zoomIn, zoomOut, actualSize
     case splitRight, splitDown, zoomPane, focusNextPane, focusPreviousPane, closePane
+    case movePaneForward, movePaneBack
     case togglePaneInMultiExec, includeAllPanes, excludeAllPanes, invertPaneSelection
     case nextTab, previousTab, closeTab, reopenClosedTab, toggleMultiExec, toggleGridView, clearBuffer
+    case moveTabForward, moveTabBack
 
     var id: String { rawValue }
 
     var category: String {
         switch self {
-        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .closeTab, .reopenClosedTab:
+        case .newLocalShell, .quickConnect, .nextTab, .previousTab, .closeTab, .reopenClosedTab,
+             .moveTabForward, .moveTabBack:
             return "Tabs"
         case .splitRight, .splitDown, .zoomPane, .focusNextPane, .focusPreviousPane, .closePane,
+             .movePaneForward, .movePaneBack,
              .togglePaneInMultiExec, .includeAllPanes, .excludeAllPanes, .invertPaneSelection:
             return "Panes"
         case .find, .zoomIn, .zoomOut, .actualSize, .toggleMultiExec, .toggleGridView, .clearBuffer:
@@ -175,6 +179,10 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .focusNextPane: return "Focus Next Pane"
         case .focusPreviousPane: return "Focus Previous Pane"
         case .closePane: return "Close Pane"
+        case .movePaneForward: return "Move Pane Forward"
+        case .movePaneBack: return "Move Pane Back"
+        case .moveTabForward: return "Move Tab Forward"
+        case .moveTabBack: return "Move Tab Back"
         case .togglePaneInMultiExec: return "Toggle Pane in MultiExec"
         // Same names the banner buttons and the View ▸ MultiExec Panes items
         // use, so looking up "Invert Selection" finds one entry, not two.
@@ -207,6 +215,19 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .focusNextPane: return KeyBinding(key: .special(.rightArrow), modifiers: [.command, .option])
         case .focusPreviousPane: return KeyBinding(key: .special(.leftArrow), modifiers: [.command, .option])
         case .closePane: return KeyBinding(key: .character("w"), modifiers: [.command, .shift])
+        // Moving is the selecting shortcut plus Control: ⌥⌘←/→ moves the focus
+        // between panes, so ⌃⌥⌘←/→ moves the pane itself. Same rule one level
+        // up — ⇧⌘[ / ⇧⌘] select tabs, ⌃⇧⌘[ / ⌃⇧⌘] carry the tab with you.
+        // One modifier, one meaning: hold Control and the thing moves instead
+        // of the cursor.
+        case .movePaneForward:
+            return KeyBinding(key: .special(.rightArrow), modifiers: [.control, .command, .option])
+        case .movePaneBack:
+            return KeyBinding(key: .special(.leftArrow), modifiers: [.control, .command, .option])
+        case .moveTabForward:
+            return KeyBinding(key: .character("]"), modifiers: [.control, .command, .shift])
+        case .moveTabBack:
+            return KeyBinding(key: .character("["), modifiers: [.control, .command, .shift])
         // ⌥⌘ is already the pane-scoped family (⌥⌘←/→ move focus), and M is
         // MultiExec's letter — so ⌥⌘M reads as "MultiExec, just this pane"
         // next to ⇧⌘M's "MultiExec, the whole tab".

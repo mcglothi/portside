@@ -246,8 +246,10 @@ struct PortsideApp: App {
                     .keyboardShortcut(shortcut(.focusPreviousPane))
                 Divider()
                 Button("Move Pane Forward") { sessions.moveActivePane(forward: true) }
+                    .keyboardShortcut(shortcut(.movePaneForward))
                     .disabled(!sessions.canMoveActivePane(forward: true))
                 Button("Move Pane Back") { sessions.moveActivePane(forward: false) }
+                    .keyboardShortcut(shortcut(.movePaneBack))
                     .disabled(!sessions.canMoveActivePane(forward: false))
                 Divider()
                 Button("Toggle Pane in MultiExec") { sessions.toggleActivePaneInMultiExec() }
@@ -258,6 +260,13 @@ struct PortsideApp: App {
                     .keyboardShortcut(shortcut(.closePane))
             }
             CommandGroup(after: .windowArrangement) {
+                Divider()
+                Button("Move Tab Forward") { sessions.moveSelectedTab(forward: true) }
+                    .keyboardShortcut(shortcut(.moveTabForward))
+                    .disabled(!sessions.canMoveSelectedTab(forward: true))
+                Button("Move Tab Back") { sessions.moveSelectedTab(forward: false) }
+                    .keyboardShortcut(shortcut(.moveTabBack))
+                    .disabled(!sessions.canMoveSelectedTab(forward: false))
                 Divider()
                 Button("Show Next Tab") { sessions.selectNextTab() }
                     .keyboardShortcut(shortcut(.nextTab))

@@ -1580,6 +1580,27 @@ final class SessionManager: ObservableObject {
         notifyWorkspaceChanged()
     }
 
+    /// Moves the selected tab one place along the bar.
+    ///
+    /// The keyboard route to what dragging does. Panes had one from the start
+    /// and tabs didn't, which left half the feature unreachable for anyone who
+    /// can't drag. Stops at the ends rather than wrapping, matching the panes.
+    func moveSelectedTab(forward: Bool) {
+        guard let id = selectedTabID, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + (forward ? 1 : -1)
+        guard tabs.indices.contains(target) else { return }
+        objectWillChange.send()
+        tabs.swapAt(index, target)
+        notifyWorkspaceChanged()
+    }
+
+    /// Whether the selected tab has anywhere to go, for the menu.
+    func canMoveSelectedTab(forward: Bool) -> Bool {
+        guard let id = selectedTabID, let index = tabs.firstIndex(where: { $0.id == id })
+        else { return false }
+        return tabs.indices.contains(index + (forward ? 1 : -1))
+    }
+
     /// Moves `tabID` to the end of the bar — a drop past the last tab.
     func moveTabToEnd(_ tabID: UUID) {
         guard let from = tabs.firstIndex(where: { $0.id == tabID }), from != tabs.count - 1
