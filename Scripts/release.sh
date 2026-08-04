@@ -97,6 +97,12 @@ if [ -f CHANGELOG.md ] && ! grep -q "^## $VERSION\b" CHANGELOG.md; then
     gate_fail "CHANGELOG.md has no '## $VERSION' section — add it before releasing"
 fi
 
+# 6b. The in-app About window reads a bundled copy of the changelog. Shipping a
+# stale one would answer "what changed" confidently and wrongly.
+if ! diff -q CHANGELOG.md Sources/Portside/Resources/CHANGELOG.md >/dev/null 2>&1; then
+    gate_fail "Sources/Portside/Resources/CHANGELOG.md is out of date — cp CHANGELOG.md over it"
+fi
+
 if [ -n "$UNSAFE" ]; then
     echo "==> Release gate OVERRIDDEN — publishing anyway (branch $BRANCH @ ${LOCAL_HEAD:0:9})"
 else

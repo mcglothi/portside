@@ -27,6 +27,7 @@ struct PortsideApp: App {
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
     @State private var settingsTab = "Appearance"
+    @Environment(\.openWindow) private var openWindow
 
     /// Drives the app chrome's light/dark setting. `nil` means "follow system",
     /// which is `NSApplication`'s own way of saying it — not a third value.
@@ -106,6 +107,13 @@ struct PortsideApp: App {
                 }
         }
         .commands {
+            // Replaces the stock About panel, which answers "which version am
+            // I running" but not "and what's in it" — until now only answerable
+            // from a GitHub release page, or from an update dialog already
+            // dismissed.
+            CommandGroup(replacing: .appInfo) {
+                Button("About Portside") { openWindow(id: "about") }
+            }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)
@@ -280,6 +288,15 @@ struct PortsideApp: App {
                 }
             }
         }
+
+        // Its own window rather than a sheet: release notes are something you
+        // read alongside the app, and a modal you have to dismiss to go look at
+        // the thing being described is the wrong shape.
+        Window("About Portside", id: "about") {
+            AboutView()
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Settings {
             // Selection is tracked only so the window can be resized when it
