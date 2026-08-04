@@ -5,7 +5,7 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## 0.22.0
 
-**Tabs and panes can be dragged into order.** Drag a tab onto another to move it there, or past the last one to send it to the end — useful when old and new servers want to sit apart. In Grid View, drag a pane's grip onto another pane and the two swap places; the grid is a seating chart rather than a list, so nothing else shifts around. Rearranging the grid rearranges the tabs underneath it, so leaving Grid View hands them back in the order you arranged.
+**Tabs and panes can be dragged into order.** Drag a tab onto another to move it there, or past the last one to send it to the end — useful when old and new servers want to sit apart. In Grid View, drag a pane's grip onto another pane and the two swap places; the grid is a seating chart rather than a list, so nothing else shifts around. Pane ▸ Move Pane Forward / Back does the same from the keyboard. Rearranging the grid rearranges the tabs underneath it, so leaving Grid View hands them back in the order you arranged.
 
 ## 0.21.1
 
