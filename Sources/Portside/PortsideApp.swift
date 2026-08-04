@@ -281,6 +281,7 @@ struct PortsideApp: App {
                     openSettings()
                 }
                 Divider()
+                Button("MultiExec") { open(Docs.multiExec) }
                 Button("Terminal Compatibility") { open(Docs.compatibility) }
                 Button("Port Forwarding") { open(Docs.portForwarding) }
                 Divider()

@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Deliberately does NOT store which tab was armed for MultiExec: restore
 /// reopens the layout but always launches disarmed, so a relaunch never
-/// auto-broadcasts into freshly reconnected hosts. See docs/split-panes-plan.md.
+/// auto-broadcasts into freshly reconnected hosts. See docs/history/split-panes-plan.md.
 struct WorkspaceSnapshot: Codable, Equatable {
     var tabs: [TabSnapshot] = []
     /// Position (not id) of the tab that was active — replay mints new ids.

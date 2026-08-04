@@ -7,7 +7,7 @@ import SwiftUI
 /// click handling, which is why the old list managed selection by hand. AppKit
 /// handles all of that; this view bridges it back to the SwiftUI world.
 ///
-/// Scope (see docs/host-sidebar-outline-plan.md): drag moves hosts and saved
+/// Scope (see docs/history/host-sidebar-outline-plan.md): drag moves hosts and saved
 /// groups between folders (no manual reordering — the tree is alphabetical),
 /// and folders themselves aren't draggable; they expand/collapse and have
 /// their own menu.

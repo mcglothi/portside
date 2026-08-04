@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**MultiExec is documented.** The flagship feature had no written explanation of arming, protected hosts, the paste confirmation, or why it disarms itself — see [docs/multiexec.md](docs/multiexec.md), linked from Help ▸ MultiExec and from the site. Finished design plans from 0.8–0.17 moved to `docs/history/`, so `docs/` reads as documentation rather than an archive.
+
 ## 0.22.1
 
 **Reordering panes no longer resizes the grid.** 0.22.0 fixed this for a two-pane tab and left it for anything taller. Rebuilding a rearranged split gives it a new identity — which changes its *parent's* child identities, the same problem one level up. A five-pane grid is a vertical split over rows of three and two, so swapping within a row rebuilt that row and left the root rearranging its children: the horizontal resize became a vertical one rather than going away. The new identity now propagates to the root.

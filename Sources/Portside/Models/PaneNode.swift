@@ -6,7 +6,7 @@ enum PaneOrientation: String, Codable { case horizontal, vertical }
 /// A tab's terminal layout: a tree whose leaves are live sessions and whose
 /// interior nodes are horizontal/vertical splits. Generic over the leaf type so
 /// the tree algebra can be unit-tested with a lightweight stub; the app uses
-/// `PaneNode<TerminalSession>`. See docs/split-panes-plan.md.
+/// `PaneNode<TerminalSession>`. See docs/history/split-panes-plan.md.
 indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
     case leaf(Leaf)
     // No proportions here, deliberately. A `fractions` array lived on this
