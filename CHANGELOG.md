@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Groups and credential profiles are documented**, alongside MultiExec — including how a host resolves its credentials, and why an exported library carries assignments but no secrets. See [docs/groups.md](docs/groups.md) and [docs/credential-profiles.md](docs/credential-profiles.md).
+
 **MultiExec is documented.** The flagship feature had no written explanation of arming, protected hosts, the paste confirmation, or why it disarms itself — see [docs/multiexec.md](docs/multiexec.md), linked from Help ▸ MultiExec and from the site. Finished design plans from 0.8–0.17 moved to `docs/history/`, so `docs/` reads as documentation rather than an archive.
 
 ## 0.22.1

@@ -282,6 +282,8 @@ struct PortsideApp: App {
                 }
                 Divider()
                 Button("MultiExec") { open(Docs.multiExec) }
+                Button("Groups") { open(Docs.groups) }
+                Button("Credential Profiles") { open(Docs.credentialProfiles) }
                 Button("Terminal Compatibility") { open(Docs.compatibility) }
                 Button("Port Forwarding") { open(Docs.portForwarding) }
                 Divider()
