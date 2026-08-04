@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.22.0
+
+**Tabs and panes can be dragged into order.** Drag a tab onto another to move it there, or past the last one to send it to the end — useful when old and new servers want to sit apart. In Grid View, drag a pane's grip onto another pane and the two swap places; the grid is a seating chart rather than a list, so nothing else shifts around. Rearranging the grid rearranges the tabs underneath it, so leaving Grid View hands them back in the order you arranged.
+
 ## 0.21.1
 
 **Moving hosts between folders always redraws the sidebar.** Moving a selection into a folder sometimes left the sidebar showing them where they used to be, until a relaunch — the library on disk was already correct. The outline skips rebuilding when a fingerprint of the tree hasn't changed, and that fingerprint didn't record which folder a row was in: dragging hosts from a folder into an empty subfolder of it, or out to the top level, produced a byte-identical fingerprint and so no redraw. The transport badge (mosh, serial, unencrypted) had the same gap and would have gone stale the same way.
