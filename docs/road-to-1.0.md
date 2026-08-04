@@ -168,6 +168,40 @@ The maintainer's call, not a readiness question.
   wanted for 1.0. Read-only team inventory over plain git, alongside personal
   sessions rather than instead of them.
 
+- **Key distribution** (0.23) — a front end for `ssh-copy-id` that pushes a key
+  to a *selection* of hosts, not one at a time, using the passwords Portside
+  already holds. Requested by a user; the fleet case is the feature, since the
+  single-host case is one command nobody needs a GUI for.
+
+  This is the first thing Portside would do that **changes remote machines**.
+  Everything today is read-only or a session you're driving. It gets the
+  treatment MultiExec paste got: a confirmation naming every host, the key's
+  fingerprint shown before rather than after, `isProtected` respected, per-host
+  results rather than one "done", and no auth retry ever — forty hosts with a
+  wrong password is forty failed authentications and a locked account.
+
+- **Key rotation** (after key distribution has mileage) — generate a new key,
+  add it everywhere the old one is used, verify, then retire the old one.
+
+  Deliberately *after*, because rotation's first phase **is** key distribution;
+  shipping them together would mean the first time anyone retires a key, the
+  code that installed it is also new. Three phases the user drives, never one
+  button: **add** (non-destructive, repeatable), **verify** (connect with
+  `IdentitiesOnly=yes` and the new key alone), **retire** (only from hosts that
+  passed verify *in this session*).
+
+  Two hard rules. The old key is never removed from a host that hasn't just
+  proved the new one works — "the push reported success" is not proof. And
+  `authorized_keys` is copied aside before being rewritten, the same instinct as
+  `portside.pre-local-split.json`: cheap, and the difference between a bad edit
+  being a nuisance and being a trip to a console.
+
+  Note what Portside can and can't know here. It knows which hosts *it points
+  at* a key (entry → profile → defaults). It does not know what any
+  `authorized_keys` contains, and a key set by `IdentityFile` in `~/.ssh/config`
+  is invisible to it. The target list is a proposal; the verify phase is what
+  makes it true.
+
 Everything else currently on the table is explicitly **1.x**, not 1.0: CLI and
 URL scheme, tmux control mode, triggers and notifications, connection
 diagnostics, Touch ID gating, dynamic inventory providers, Intel support.
