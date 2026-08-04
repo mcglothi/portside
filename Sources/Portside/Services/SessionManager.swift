@@ -1590,6 +1590,22 @@ final class SessionManager: ObservableObject {
         notifyWorkspaceChanged()
     }
 
+    /// Exchanges two panes within the selected tab.
+    ///
+    /// In Grid View this is also how you reorder the *tabs* underneath, without
+    /// any write-back: leaving the grid maps `tab.leaves` — which is tree order —
+    /// back onto tabs one for one, so a pane that moved has already moved its
+    /// tab. Rearranging the grid and toggling out of it leaves the bar in the
+    /// order you arranged.
+    func swapPanes(_ a: UUID, _ b: UUID) {
+        guard a != b, let tab = selectedTab, let root = tab.root else { return }
+        let swapped = root.swappingLeaves(a, b)
+        guard swapped.leaves.map(\.id) != root.leaves.map(\.id) else { return }
+        objectWillChange.send()
+        tab.root = swapped
+        notifyWorkspaceChanged()
+    }
+
     // MARK: - Grid view
 
     /// The tab, if any, that Grid View consolidated all tabs into.

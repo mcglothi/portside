@@ -119,4 +119,81 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertEqual(result?.leaves.count, 2)
         XCTAssertEqual(result?.leaves.last?.id, cID)
     }
+    // MARK: - swappingLeaves
+
+    /// The whole point: two panes trade places and nothing else moves.
+    func testSwappingTwoPanesExchangesTheirPositions() {
+        let (a, aID) = leaf(), (b, bID) = leaf(), (c, cID) = leaf(), (d, dID) = leaf()
+        let grid = Node.split(id: UUID(), orientation: .vertical, children: [
+            .split(id: UUID(), orientation: .horizontal, children: [a, b]),
+            .split(id: UUID(), orientation: .horizontal, children: [c, d]),
+        ])
+
+        let swapped = grid.swappingLeaves(aID, dID)
+
+        XCTAssertEqual(swapped.leaves.map(\.id), [dID, bID, cID, aID])
+    }
+
+    /// Composing two `replacingLeaf` calls looks like a swap and isn't: after
+    /// the first, the tree holds two leaves with the same id and the second
+    /// overwrites both — one session in two cells, the other gone.
+    func testSwappingDoesNotDuplicateOneSideOverTheOther() {
+        let (a, aID) = leaf(), (b, bID) = leaf()
+        let pair = Node.split(id: UUID(), orientation: .horizontal, children: [a, b])
+
+        let swapped = pair.swappingLeaves(aID, bID)
+
+        XCTAssertEqual(Set(swapped.leaves.map(\.id)), Set([aID, bID]),
+                       "both panes must survive the swap")
+        XCTAssertEqual(swapped.leaves.map(\.id), [bID, aID])
+    }
+
+    func testSwappingIsReversible() {
+        let (a, aID) = leaf(), (b, bID) = leaf(), (c, _) = leaf()
+        let tree = Node.split(id: UUID(), orientation: .horizontal, children: [a, b, c])
+
+        let there = tree.swappingLeaves(aID, bID)
+        let back = there.swappingLeaves(aID, bID)
+
+        XCTAssertEqual(back.leaves.map(\.id), tree.leaves.map(\.id))
+    }
+
+    /// Dropping a pane on itself must not rebuild the tree — a new split id
+    /// would churn SwiftUI's identity for no reason.
+    func testSwappingAPaneWithItselfIsANoOp() {
+        let (a, aID) = leaf(), (b, _) = leaf()
+        let tree = Node.split(id: UUID(), orientation: .horizontal, children: [a, b])
+
+        XCTAssertEqual(tree.swappingLeaves(aID, aID).id, tree.id)
+    }
+
+    func testSwappingWithAPaneThatIsNotHereLeavesTheTreeAlone() {
+        let (a, aID) = leaf(), (b, bID) = leaf()
+        let tree = Node.split(id: UUID(), orientation: .horizontal, children: [a, b])
+
+        let untouched = tree.swappingLeaves(aID, UUID())
+
+        XCTAssertEqual(untouched.leaves.map(\.id), [aID, bID])
+    }
+
+    /// Swap is defined on hand-split layouts too, where "insert between these
+    /// two" would have no unambiguous answer.
+    func testSwappingAcrossUnevenSplitsKeepsTheGeometry() {
+        let (a, aID) = leaf(), (b, bID) = leaf(), (c, cID) = leaf()
+        // One tall pane beside a stack of two.
+        let stack: Node = .split(id: UUID(), orientation: .vertical, children: [b, c])
+        let tree = Node.split(id: UUID(), orientation: .horizontal, children: [a, stack])
+
+        let swapped: Node = tree.swappingLeaves(aID, cID)
+
+        XCTAssertEqual(swapped.leaves.map(\.id), [cID, bID, aID])
+        // The shape is untouched — only the occupants changed.
+        guard case .split(_, .horizontal, let children) = swapped,
+              case .split(_, .vertical, let stacked) = children[1] else {
+            return XCTFail("the split structure should survive a swap")
+        }
+        XCTAssertEqual(children.count, 2)
+        XCTAssertEqual(stacked.count, 2)
+    }
+
 }

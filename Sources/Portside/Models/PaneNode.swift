@@ -65,6 +65,48 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         }
     }
 
+    /// This subtree with the panes `a` and `b` exchanged, each taking the
+    /// other's position and split geometry.
+    ///
+    /// Swap rather than insert, deliberately. A grid is a seating chart, not a
+    /// list: reflowing on insert would shift every pane after the target, so one
+    /// drag visibly rearranges most of the screen. Exchanging two panes moves
+    /// exactly the two things you pointed at.
+    ///
+    /// It also means the operation is defined everywhere. A tab you split by
+    /// hand is a real tree, and "insert between these two" has no unambiguous
+    /// answer there — but "these two trade places" always does.
+    ///
+    /// Returns self unchanged when either id isn't a leaf here, or when they're
+    /// the same pane, so a drop on itself is a no-op rather than a rebuild.
+    func swappingLeaves(_ a: UUID, _ b: UUID) -> PaneNode<Leaf> {
+        guard a != b else { return self }
+        let all = leaves
+        guard let leafA = all.first(where: { $0.id == a }),
+              let leafB = all.first(where: { $0.id == b }) else { return self }
+        // One pass, not two `replacingLeaf` calls: after replacing `a` with
+        // leafB the tree briefly holds two leaves whose id is `b`, and the
+        // second replacement would overwrite both — the same session in both
+        // cells and the other one gone.
+        return mappingLeaves { leaf in
+            if leaf.id == a { return leafB }
+            if leaf.id == b { return leafA }
+            return leaf
+        }
+    }
+
+    /// This subtree with every leaf passed through `transform`, structure
+    /// untouched.
+    func mappingLeaves(_ transform: (Leaf) -> Leaf) -> PaneNode<Leaf> {
+        switch self {
+        case .leaf(let leaf):
+            return .leaf(transform(leaf))
+        case .split(let id, let orientation, let children):
+            return .split(id: id, orientation: orientation,
+                          children: children.map { $0.mappingLeaves(transform) })
+        }
+    }
+
     /// This subtree with the given leaf removed, collapsing any split that ends
     /// up with a single child. Returns nil when removing the leaf empties the
     /// subtree entirely (so the caller can drop the whole tab).

@@ -85,4 +85,59 @@ final class ReorderTests: XCTestCase {
         XCTAssertEqual(hosts, 3)
         XCTAssertEqual(manager.tabs.map(\.id), [ids[2], ids[0], ids[1]])
     }
+    // MARK: - Grid
+
+    func testSwappingTwoPanesExchangesThem() throws {
+        let manager = manager(tabs: 4)
+        defer { shutDown(manager) }
+        manager.setGridView(true)
+        let tab = try XCTUnwrap(manager.selectedTab)
+        let panes = tab.leaves.map(\.id)
+
+        manager.swapPanes(panes[0], panes[3])
+
+        XCTAssertEqual(tab.leaves.map(\.id), [panes[3], panes[1], panes[2], panes[0]])
+    }
+
+    /// The property that makes grid reordering worth having: the grid's pane
+    /// order *is* the tab order, so rearranging the grid and then leaving it
+    /// hands the tabs back rearranged, with no write-back step to forget.
+    func testRearrangingTheGridSurvivesLeavingIt() throws {
+        let manager = manager(tabs: 4)
+        defer { shutDown(manager) }
+        let originalTabOrder = manager.tabs.map { $0.leaves[0].id }
+        manager.setGridView(true)
+        let panes = try XCTUnwrap(manager.selectedTab).leaves.map(\.id)
+
+        manager.swapPanes(panes[0], panes[3])
+        manager.setGridView(false)
+
+        XCTAssertEqual(manager.tabs.map { $0.leaves[0].id },
+                       [originalTabOrder[3], originalTabOrder[1],
+                        originalTabOrder[2], originalTabOrder[0]])
+    }
+
+    func testSwappingAPaneWithItselfChangesNothing() throws {
+        let manager = manager(tabs: 2)
+        defer { shutDown(manager) }
+        manager.setGridView(true)
+        let tab = try XCTUnwrap(manager.selectedTab)
+        let panes = tab.leaves.map(\.id)
+
+        manager.swapPanes(panes[0], panes[0])
+
+        XCTAssertEqual(tab.leaves.map(\.id), panes)
+    }
+
+    func testSwappingWithAPaneFromAnotherTabIsIgnored() throws {
+        let manager = manager(tabs: 3)
+        defer { shutDown(manager) }
+        let tab = try XCTUnwrap(manager.selectedTab)
+        let mine = try XCTUnwrap(tab.leaves.first).id
+        let elsewhere = try XCTUnwrap(manager.tabs.first { $0.id != tab.id }?.leaves.first).id
+
+        manager.swapPanes(mine, elsewhere)
+
+        XCTAssertEqual(tab.leaves.map(\.id), [mine])
+    }
 }

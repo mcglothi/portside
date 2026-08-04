@@ -72,11 +72,45 @@ struct PaneLeafView: View {
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
     @State private var hovering = false
+    @State private var isDropTarget = false
+    @State private var hoveringGrip = false
+    @State private var hoveringPane = false
 
     private var armed: Bool { tab.broadcastArmed }
     private var included: Bool { session.includedInMultiExec }
     private var isActive: Bool { tab.leaves.count > 1 && session.id == tab.activePaneID }
     private var alert: Color { Color(nsColor: store.appearance.alert) }
+
+    /// The handle you drag to rearrange panes.
+    ///
+    /// A grip rather than the pane itself: the terminal is an AppKit view that
+    /// owns the mouse, so dragging anywhere inside it selects text — which is
+    /// what it should do.
+    ///
+    /// Revealed on hover, and only when there's another pane to swap with. A
+    /// permanent badge sits on top of the terminal's first line for the whole
+    /// life of the tab — the same mistake the MultiExec chip made before it
+    /// became a real bar, and the reason that bar exists.
+    ///
+    /// Top *trailing*, for the same reason: a shell prompt and its output start
+    /// at the left, so the leading corner is exactly where the first line is.
+    /// The right edge is only reached by wrapped lines, and then only while
+    /// you're pointing at that pane.
+    @ViewBuilder private var rearrangeGrip: some View {
+        if hoveringPane, tab.leaves.count > 1 {
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(5)
+                .background(Color.black.opacity(hoveringGrip ? 0.75 : 0.35),
+                            in: RoundedRectangle(cornerRadius: 5))
+                .opacity(hoveringGrip ? 1 : 0.6)
+                .padding(6)
+                .help("Drag onto another pane to swap the two")
+                .onHover { hoveringGrip = $0 }
+                .onDrag { NSItemProvider(object: session.id.uuidString as NSString) }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,6 +131,22 @@ struct PaneLeafView: View {
                         .strokeBorder(ring!, lineWidth: 2)
                         .allowsHitTesting(false)
                 }
+            }
+            .overlay(alignment: .topTrailing) { rearrangeGrip }
+            .onHover { hoveringPane = $0 }
+            .overlay {
+                if isDropTarget {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                        .background(Color.accentColor.opacity(0.12))
+                        .allowsHitTesting(false)
+                }
+            }
+            // The drop lands on the pane body rather than on an overlay: an
+            // overlay big enough to catch a drop would also swallow the clicks
+            // meant for the terminal underneath it.
+            .onDrop(of: [.text], isTargeted: $isDropTarget) { providers in
+                loadTabID(from: providers) { sessions.swapPanes($0, session.id) }
             }
             // Host-to-host copy: a file dragged from the SFTP pane lands in
             // whatever directory *this* pane's shell is sitting in.
