@@ -39,8 +39,17 @@ struct PaneNodeView: View {
             // makeNSView keeps showing the previous session.
             PaneLeafView(session: session, tab: tab)
                 .id(session.id)
-        case .split(_, let orientation, let children):
-            container(orientation, children)
+        case .split(let id, let orientation, let children):
+            // Identity tied to the split node, so a rearranged split is a *new*
+            // split as far as SwiftUI is concerned. HSplitView can't survive
+            // having its arranged subviews reordered under it — AppKit throws
+            // from _postWindowNeedsUpdateConstraints mid-layout — so
+            // `swappingLeaves` hands back a fresh id and this rebuilds instead.
+            //
+            // Without the explicit .id this does nothing for the root split,
+            // whose identity would otherwise be structural: a two-pane tab is
+            // exactly the case that crashed.
+            container(orientation, children).id(id)
         }
     }
 

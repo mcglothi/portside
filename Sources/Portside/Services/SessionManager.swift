@@ -1606,6 +1606,29 @@ final class SessionManager: ObservableObject {
         notifyWorkspaceChanged()
     }
 
+    /// Swaps the focused pane with the one after (or before) it in the grid.
+    ///
+    /// The same operation the drag performs, reachable from the keyboard —
+    /// which also makes it testable, since a drag isn't. Stops at the ends
+    /// rather than wrapping: rearranging is a placing motion, and a pane
+    /// leaping from one corner to the other is rarely what you meant.
+    func moveActivePane(forward: Bool) {
+        guard let tab = selectedTab else { return }
+        let ids = tab.leaves.map(\.id)
+        guard let active = tab.activePaneID, let index = ids.firstIndex(of: active) else { return }
+        let target = index + (forward ? 1 : -1)
+        guard ids.indices.contains(target) else { return }
+        swapPanes(active, ids[target])
+    }
+
+    /// Whether there's anywhere for the focused pane to move, for the menu.
+    func canMoveActivePane(forward: Bool) -> Bool {
+        guard let tab = selectedTab, let active = tab.activePaneID else { return false }
+        let ids = tab.leaves.map(\.id)
+        guard let index = ids.firstIndex(of: active) else { return false }
+        return ids.indices.contains(index + (forward ? 1 : -1))
+    }
+
     // MARK: - Grid view
 
     /// The tab, if any, that Grid View consolidated all tabs into.

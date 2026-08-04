@@ -245,6 +245,11 @@ struct PortsideApp: App {
                 Button("Focus Previous Pane") { sessions.focusAdjacentPane(next: false) }
                     .keyboardShortcut(shortcut(.focusPreviousPane))
                 Divider()
+                Button("Move Pane Forward") { sessions.moveActivePane(forward: true) }
+                    .disabled(!sessions.canMoveActivePane(forward: true))
+                Button("Move Pane Back") { sessions.moveActivePane(forward: false) }
+                    .disabled(!sessions.canMoveActivePane(forward: false))
+                Divider()
                 Button("Toggle Pane in MultiExec") { sessions.toggleActivePaneInMultiExec() }
                     .keyboardShortcut(shortcut(.togglePaneInMultiExec))
                     .disabled(!(sessions.selectedTab?.broadcastArmed ?? false))

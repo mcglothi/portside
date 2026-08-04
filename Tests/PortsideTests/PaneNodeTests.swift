@@ -148,6 +148,36 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertEqual(swapped.leaves.map(\.id), [bID, aID])
     }
 
+    /// The fix for the crash. HSplitView can't have its arranged subviews
+    /// reordered underneath it, so a split whose children changed places has to
+    /// come back as a *different* split for SwiftUI to rebuild rather than
+    /// rearrange. Without this, swapping two panes in a two-pane tab threw from
+    /// AppKit's layout pass — and short of that, left one pane a sliver.
+    func testARearrangedSplitGetsANewIdentity() {
+        let (a, aID) = leaf(), (b, bID) = leaf()
+        let pair = Node.split(id: UUID(), orientation: .horizontal, children: [a, b])
+
+        let swapped = pair.swappingLeaves(aID, bID)
+
+        XCTAssertNotEqual(swapped.id, pair.id)
+    }
+
+    /// Only the splits that actually changed: rebuilding untouched ones would
+    /// tear down and recreate terminals that never moved.
+    func testSplitsThatDidNotChangeKeepTheirIdentity() {
+        let (a, aID) = leaf(), (b, bID) = leaf(), (c, _) = leaf(), (d, _) = leaf()
+        let topRow: Node = .split(id: UUID(), orientation: .horizontal, children: [a, b])
+        let bottomRow: Node = .split(id: UUID(), orientation: .horizontal, children: [c, d])
+        let grid = Node.split(id: UUID(), orientation: .vertical, children: [topRow, bottomRow])
+
+        let swapped = grid.swappingLeaves(aID, bID)
+
+        XCTAssertEqual(swapped.id, grid.id, "the outer split's children didn't move")
+        guard case .split(_, _, let rows) = swapped else { return XCTFail("expected a split") }
+        XCTAssertNotEqual(rows[0].id, topRow.id, "the row that was rearranged is a new split")
+        XCTAssertEqual(rows[1].id, bottomRow.id, "the untouched row is not rebuilt")
+    }
+
     func testSwappingIsReversible() {
         let (a, aID) = leaf(), (b, bID) = leaf(), (c, _) = leaf()
         let tree = Node.split(id: UUID(), orientation: .horizontal, children: [a, b, c])
