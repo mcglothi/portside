@@ -91,27 +91,39 @@ indirect enum PaneNode<Leaf: Identifiable>: Identifiable where Leaf.ID == UUID {
         let all = leaves
         guard let leafA = all.first(where: { $0.id == a }),
               let leafB = all.first(where: { $0.id == b }) else { return self }
-        return exchanging(a, for: leafB, and: b, for: leafA)
+        return exchanging(a, for: leafB, and: b, for: leafA).node
     }
 
     /// One pass, rather than two `replacingLeaf` calls: after replacing `a` with
     /// b's leaf the tree briefly holds two leaves whose id is `b`, and the
     /// second replacement would overwrite both — the same session in two cells
     /// and the other one gone.
+    ///
+    /// Reports whether anything beneath changed, because **a new id has to
+    /// propagate all the way to the root**. Giving a split a fresh id changes
+    /// its *parent's* child identities, which is the same arranged-subview
+    /// mutation one level up — so an ancestor that kept its id would be left
+    /// rearranging a live split view, which is the bug this was meant to fix.
+    ///
+    /// The first version of this only checked whether a direct child *was* one
+    /// of the swapped leaves. That is right for a single split and wrong for
+    /// anything taller: a five-pane grid is a vertical split over rows, and
+    /// swapping within a row rebuilt the row but left the root reordering its
+    /// two children — the horizontal resize became a vertical one.
     private func exchanging(_ a: UUID, for leafB: Leaf,
-                            and b: UUID, for leafA: Leaf) -> PaneNode<Leaf> {
+                            and b: UUID, for leafA: Leaf) -> (node: PaneNode<Leaf>, changed: Bool) {
         switch self {
         case .leaf(let leaf):
-            if leaf.id == a { return .leaf(leafB) }
-            if leaf.id == b { return .leaf(leafA) }
-            return self
+            if leaf.id == a { return (.leaf(leafB), true) }
+            if leaf.id == b { return (.leaf(leafA), true) }
+            return (self, false)
         case .split(let id, let orientation, let children):
-            let rearranged = children.contains { $0.id == a || $0.id == b }
-            return .split(id: rearranged ? UUID() : id,
-                          orientation: orientation,
-                          children: children.map {
-                              $0.exchanging(a, for: leafB, and: b, for: leafA)
-                          })
+            let results = children.map { $0.exchanging(a, for: leafB, and: b, for: leafA) }
+            let changed = results.contains(where: \.changed)
+            return (.split(id: changed ? UUID() : id,
+                           orientation: orientation,
+                           children: results.map(\.node)),
+                    changed)
         }
     }
 

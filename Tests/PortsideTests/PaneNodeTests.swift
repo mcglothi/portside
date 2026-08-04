@@ -162,9 +162,15 @@ final class PaneNodeTests: XCTestCase {
         XCTAssertNotEqual(swapped.id, pair.id)
     }
 
-    /// Only the splits that actually changed: rebuilding untouched ones would
-    /// tear down and recreate terminals that never moved.
-    func testSplitsThatDidNotChangeKeepTheirIdentity() {
+    /// A new id has to reach the root. Giving a split a fresh id changes its
+    /// *parent's* child identities, which is the same arranged-subview mutation
+    /// one level up — so an ancestor that kept its id would sit there
+    /// rearranging a live split view.
+    ///
+    /// This test previously asserted the opposite, and was wrong: it encoded the
+    /// belief that only the split directly holding the swapped panes mattered.
+    /// A five-pane grid proved otherwise in the field — see below.
+    func testANewIdentityReachesTheRoot() {
         let (a, aID) = leaf(), (b, bID) = leaf(), (c, _) = leaf(), (d, _) = leaf()
         let topRow: Node = .split(id: UUID(), orientation: .horizontal, children: [a, b])
         let bottomRow: Node = .split(id: UUID(), orientation: .horizontal, children: [c, d])
@@ -172,10 +178,34 @@ final class PaneNodeTests: XCTestCase {
 
         let swapped = grid.swappingLeaves(aID, bID)
 
-        XCTAssertEqual(swapped.id, grid.id, "the outer split's children didn't move")
+        XCTAssertNotEqual(swapped.id, grid.id, "the root holds a rebuilt child, so it is rebuilt too")
         guard case .split(_, _, let rows) = swapped else { return XCTFail("expected a split") }
-        XCTAssertNotEqual(rows[0].id, topRow.id, "the row that was rearranged is a new split")
-        XCTAssertEqual(rows[1].id, bottomRow.id, "the untouched row is not rebuilt")
+        XCTAssertNotEqual(rows[0].id, topRow.id, "the row that was rearranged")
+        XCTAssertEqual(rows[1].id, bottomRow.id, "the row that wasn't keeps its identity")
+    }
+
+    /// The five-host grid that found this. `gridTree` lays 5 panes out as
+    /// ceil(sqrt(5)) = 3 columns, so a vertical root over rows of 3 and 2.
+    /// Swapping within the first row rebuilt that row and left the root
+    /// reordering its two children — which turned a horizontal resize into a
+    /// vertical one rather than fixing it.
+    func testAFivePaneGridRebuildsFromTheRootOnAnySwap() {
+        let leaves = (0..<5).map { _ in leaf() }
+        let topRow: Node = .split(id: UUID(), orientation: .horizontal,
+                                  children: leaves[0...2].map(\.node))
+        let bottomRow: Node = .split(id: UUID(), orientation: .horizontal,
+                                     children: leaves[3...4].map(\.node))
+        let grid = Node.split(id: UUID(), orientation: .vertical, children: [topRow, bottomRow])
+
+        // Within the top row — the case that still resized after the first fix.
+        let sameRow = grid.swappingLeaves(leaves[0].id, leaves[1].id)
+        XCTAssertNotEqual(sameRow.id, grid.id)
+
+        // And across rows, which has to hold too.
+        let acrossRows = grid.swappingLeaves(leaves[0].id, leaves[4].id)
+        XCTAssertNotEqual(acrossRows.id, grid.id)
+        XCTAssertEqual(acrossRows.leaves.map(\.id),
+                       [leaves[4].id, leaves[1].id, leaves[2].id, leaves[3].id, leaves[0].id])
     }
 
     func testSwappingIsReversible() {

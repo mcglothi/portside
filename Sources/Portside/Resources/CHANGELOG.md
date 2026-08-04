@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.22.1
+
+**Reordering panes no longer resizes the grid.** 0.22.0 fixed this for a two-pane tab and left it for anything taller. Rebuilding a rearranged split gives it a new identity — which changes its *parent's* child identities, the same problem one level up. A five-pane grid is a vertical split over rows of three and two, so swapping within a row rebuilt that row and left the root rearranging its children: the horizontal resize became a vertical one rather than going away. The new identity now propagates to the root.
+
 ## 0.22.0
 
 **Tabs and panes can be dragged into order.** Drag a tab onto another to move it there, or past the last one to send it to the end — useful when old and new servers want to sit apart. In Grid View, drag a pane's grip onto another pane and the two swap places; the grid is a seating chart rather than a list, so nothing else shifts around. Pane ▸ Move Pane Forward / Back does the same from the keyboard. Rearranging the grid rearranges the tabs underneath it, so leaving Grid View hands them back in the order you arranged.
