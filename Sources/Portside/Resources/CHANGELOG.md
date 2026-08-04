@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## 0.22.0
 
+**The Help menu does something.** It pointed nowhere at all. It now opens the documentation, jumps to the keyboard-shortcut settings, shows the release notes, and links to reporting an issue.
+
 **About Portside shows the release notes.** The stock About panel answered which version you were running but not what was in it — until now that was only on a GitHub release page, or in an update dialog you'd already dismissed. It's the same changelog the updater shows, read from a copy shipped in the app, so what you're offered on update and what you can go back and read are one text.
 
 **Tabs and panes can be dragged into order.** Drag a tab onto another to move it there, or past the last one to send it to the end — useful when old and new servers want to sit apart. In Grid View, drag a pane's grip onto another pane and the two swap places; the grid is a seating chart rather than a list, so nothing else shifts around. Pane ▸ Move Pane Forward / Back does the same from the keyboard. Rearranging the grid rearranges the tabs underneath it, so leaving Grid View hands them back in the order you arranged.

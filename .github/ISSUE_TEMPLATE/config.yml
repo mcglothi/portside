@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mcglothi/portside/security/advisories/new
+    about: Report privately. Please do not open a public issue.
+  - name: Question or idea
+    url: https://github.com/mcglothi/portside/discussions
+    about: For anything that isn't yet a bug or a concrete request.

@@ -28,6 +28,9 @@ struct PortsideApp: App {
     @StateObject private var library = LibraryCommands()
     @State private var settingsTab = "Appearance"
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+
+    private func open(_ url: URL) { NSWorkspace.shared.open(url) }
 
     /// Drives the app chrome's light/dark setting. `nil` means "follow system",
     /// which is `NSApplication`'s own way of saying it — not a third value.
@@ -266,6 +269,24 @@ struct PortsideApp: App {
                 Divider()
                 Button("Close Pane") { sessions.closeActivePane() }
                     .keyboardShortcut(shortcut(.closePane))
+            }
+            // Replaces SwiftUI's stock "Portside Help", which opens nothing at
+            // all — the single most conspicuous gap for anyone who reaches for
+            // the menu bar first. The docs it points at already existed; they
+            // were only reachable by browsing the repository.
+            CommandGroup(replacing: .help) {
+                Button("Portside Help") { open(Docs.index) }
+                Button("Keyboard Shortcuts") {
+                    settingsTab = "Shortcuts"
+                    openSettings()
+                }
+                Divider()
+                Button("Terminal Compatibility") { open(Docs.compatibility) }
+                Button("Port Forwarding") { open(Docs.portForwarding) }
+                Divider()
+                Button("Release Notes") { openWindow(id: "about") }
+                Button("Report an Issue…") { open(Docs.newIssue) }
+                Button("Portside on GitHub") { open(Docs.repository) }
             }
             CommandGroup(after: .windowArrangement) {
                 Divider()

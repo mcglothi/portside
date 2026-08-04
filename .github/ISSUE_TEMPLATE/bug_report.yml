@@ -1,0 +1,62 @@
+name: Bug report
+description: Something Portside does wrong, or stops doing.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please don't report security vulnerabilities here — see
+        [SECURITY.md](https://github.com/mcglothi/portside/blob/main/SECURITY.md)
+        for private reporting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        I dragged a pane onto another in Grid View.
+        I expected them to swap. The app quit instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The single most useful thing you can give us. If it only happens
+        sometimes, say what you were doing when it did — "only after the
+        subfolder was empty" is exactly the detail that solves it.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Portside version
+      description: About Portside shows it. Please include the build number.
+      placeholder: 0.22.0 (build 220)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: 15.2, Apple silicon
+    validations:
+      required: true
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash report
+      description: >
+        If Portside quit unexpectedly, please attach the report from
+        `~/Library/Logs/DiagnosticReports/` (Finder ▸ Go ▸ Go to Folder).
+        It usually points straight at the cause. Skip this for non-crashes.
+  - type: textarea
+    id: library
+    attributes:
+      label: Library shape
+      description: >
+        Roughly how many hosts, folders, groups and macros — some bugs only
+        appear at scale. **Please don't paste your library**: it contains
+        hostnames and usernames.
+      placeholder: ~800 hosts, 40 folders, 3 credential profiles
