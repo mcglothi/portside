@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.23.0
 
 **A troubleshooting page.** Why a saved password is asked for twice on purpose, what a changed host key means and what the accept-new setting really does, mosh needing UDP 60000–61000, serial devices, and what Portside does rather than overwrite a library it can't read. See [docs/troubleshooting.md](docs/troubleshooting.md).
 
