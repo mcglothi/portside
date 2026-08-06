@@ -82,20 +82,15 @@ struct SessionEditorView: View {
         store.credentialProfile(id: draft.credentialProfileID)
     }
 
-    /// Assigning a profile also flips `savePassword` on, mirroring
-    /// `SessionStore.applyCredentialProfile` — otherwise the profile's
-    /// password would silently never get used (see `SessionManager.
-    /// makeSession`, which gates all password lookup behind `savePassword`).
-    /// Clearing back to "None" leaves `savePassword` as the user set it.
+    /// Plain assignment. This used to flip `savePassword` on as a side effect,
+    /// to get past the gate `CredentialResolver` put in front of every password
+    /// lookup; the resolver takes an assigned profile as consent in its own
+    /// right now, so the toggle is left alone — it's about this host's own
+    /// saved password, which is a different credential.
     private var credentialProfileBinding: Binding<UUID?> {
         Binding(
             get: { draft.credentialProfileID },
-            set: { newValue in
-                draft.credentialProfileID = newValue
-                if newValue != nil {
-                    draft.savePassword = true
-                }
-            }
+            set: { draft.credentialProfileID = $0 }
         )
     }
 

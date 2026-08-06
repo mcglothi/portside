@@ -651,6 +651,10 @@ struct HostOutlineView: NSViewRepresentable {
                 store.toggleFavorite(entry.id)
             })
             addMoveMenu(menu, forSelection: [entry.id], currentFolder: entry.folder)
+            // Same order as the multi-selection and folder menus. A single host
+            // had to go through Edit… for this while a folder or a two-host
+            // selection could do it from the menu.
+            addCredentialProfileMenu(menu, forSelection: [entry.id])
             addEnvironmentMenu(menu, forSelection: [entry.id])
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })

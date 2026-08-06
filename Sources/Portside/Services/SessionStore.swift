@@ -460,19 +460,19 @@ final class SessionStore: ObservableObject {
 
     /// Bulk-assigns (or clears, with `id: nil`) a credential profile across a
     /// multi-selection or a whole folder — mirrors `setSavePassword(_:ids:)`.
-    /// Assigning also flips `savePassword` on (assigning a profile is an
-    /// explicit "yes, use a saved credential here"); clearing leaves
-    /// `savePassword` as-is, since a host might still want its own
-    /// individually-saved password.
+    ///
+    /// Assigning used to flip `savePassword` on as well, purely because
+    /// `CredentialResolver` gated every password behind that toggle and the
+    /// profile would otherwise never be consulted. The resolver treats an
+    /// assigned profile as its own consent now, so the flip is gone: the toggle
+    /// means what it says — "use a password saved against this host" — and
+    /// assigning a profile no longer silently opts a host into an unrelated
+    /// credential it happens to have lying in the Keychain.
     func applyCredentialProfile(_ id: UUID?, to ids: Set<UUID>) {
         var changed = false
         for i in entries.indices where ids.contains(entries[i].id) {
             if entries[i].credentialProfileID != id {
                 entries[i].credentialProfileID = id
-                changed = true
-            }
-            if id != nil, !entries[i].savePassword {
-                entries[i].savePassword = true
                 changed = true
             }
         }

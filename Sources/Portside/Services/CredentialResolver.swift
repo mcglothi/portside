@@ -14,15 +14,27 @@ enum CredentialResolver {
     /// Password for `entry`, honouring profile assignment and defaults.
     ///
     /// Order: the host's assigned profile, then a password stored against the
-    /// host itself, then the default profile, then the legacy default. A host
-    /// that hasn't opted into saved passwords resolves to nil regardless of
-    /// what's stored — the toggle is the user's consent, not a hint.
+    /// host itself, then the default profile, then the legacy default.
+    ///
+    /// `savePassword` gates only the two credentials belonging to the host —
+    /// its own Keychain entry and the legacy app-wide default. A *profile*
+    /// carries its own consent: assigning one to a host, or nominating one as
+    /// the default in Settings ▸ Profiles, is the user saying "authenticate
+    /// with this". Gating profiles behind the per-host toggle as well meant a
+    /// correctly configured default profile was inert against every host that
+    /// had never been individually ticked — which is the state a freshly
+    /// imported library is in, so the feature appeared not to work at all.
     static func password(for entry: SessionEntry, defaultProfileID: UUID?) -> String? {
-        guard entry.savePassword else { return nil }
-        return entry.credentialProfileID.flatMap(CredentialStore.profilePassword)
-            ?? CredentialStore.password(for: entry.id)
-            ?? defaultProfileID.flatMap(CredentialStore.profilePassword)
-            ?? CredentialStore.defaultPassword()
+        if let assigned = entry.credentialProfileID.flatMap(CredentialStore.profilePassword) {
+            return assigned
+        }
+        if entry.savePassword, let own = CredentialStore.password(for: entry.id) {
+            return own
+        }
+        if let fallback = defaultProfileID.flatMap(CredentialStore.profilePassword) {
+            return fallback
+        }
+        return entry.savePassword ? CredentialStore.defaultPassword() : nil
     }
 
     /// Describes the precedence without reading the Keychain, so the order can
@@ -44,11 +56,10 @@ enum CredentialResolver {
         hasDefaultProfilePassword: Bool,
         hasLegacyDefault: Bool
     ) -> Source {
-        guard savePassword else { return .none }
         if hasAssignedProfilePassword { return .assignedProfile }
-        if hasHostPassword { return .hostSpecific }
+        if savePassword, hasHostPassword { return .hostSpecific }
         if hasDefaultProfilePassword { return .defaultProfile }
-        if hasLegacyDefault { return .legacyDefault }
+        if savePassword, hasLegacyDefault { return .legacyDefault }
         return .none
     }
 }

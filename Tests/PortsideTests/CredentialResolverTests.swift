@@ -47,12 +47,35 @@ final class CredentialResolverTests: XCTestCase {
         )
     }
 
-    func testOptingOutOfSavedPasswordsBeatsEveryStoredCredential() {
-        // The toggle is consent, not a hint: a stored password must not be
-        // used by a host that has saving switched off.
+    /// `savePassword` covers the host's *own* credentials only. A profile is
+    /// consented to by being assigned (or nominated as the default), so it
+    /// applies to a host that never ticked the box — the state every freshly
+    /// imported host is in, and the reason a correctly configured default
+    /// profile used to authenticate nothing at all.
+    func testAssignedProfileAppliesWithoutThePerHostToggle() {
         XCTAssertEqual(
             CredentialResolver.source(savePassword: false, hasAssignedProfilePassword: true,
                                       hasHostPassword: true, hasDefaultProfilePassword: true,
+                                      hasLegacyDefault: true),
+            .assignedProfile
+        )
+    }
+
+    func testDefaultProfileAppliesWithoutThePerHostToggle() {
+        XCTAssertEqual(
+            CredentialResolver.source(savePassword: false, hasAssignedProfilePassword: false,
+                                      hasHostPassword: false, hasDefaultProfilePassword: true,
+                                      hasLegacyDefault: false),
+            .defaultProfile
+        )
+    }
+
+    func testOptingOutStillSuppressesTheHostsOwnCredentials() {
+        // The toggle is consent for what's stored against the host itself:
+        // its own Keychain entry and the legacy app-wide default.
+        XCTAssertEqual(
+            CredentialResolver.source(savePassword: false, hasAssignedProfilePassword: false,
+                                      hasHostPassword: true, hasDefaultProfilePassword: false,
                                       hasLegacyDefault: true),
             .none
         )
@@ -67,10 +90,13 @@ final class CredentialResolverTests: XCTestCase {
         )
     }
 
-    func testAHostThatNeverOptedInResolvesToNilWithoutTouchingTheKeychain() {
-        // savePassword == false short-circuits before any CredentialStore call.
+    /// No profile assigned, none nominated as default, toggle off: there is
+    /// nothing this host could authenticate with, and no Keychain lookup that
+    /// could change that.
+    func testAHostWithNoProfileAndNoToggleResolvesToNil() {
         var entry = SessionEntry(name: "web")
         entry.savePassword = false
-        XCTAssertNil(CredentialResolver.password(for: entry, defaultProfileID: UUID()))
+        entry.credentialProfileID = nil
+        XCTAssertNil(CredentialResolver.password(for: entry, defaultProfileID: nil))
     }
 }

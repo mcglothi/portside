@@ -600,7 +600,11 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(store.credentialProfile(id: store.entries.first?.credentialProfileID))
     }
 
-    func testApplyCredentialProfileAssignsAndFlipsSavePasswordOn() {
+    /// Assigning sets the assignment and nothing else. It used to flip
+    /// `savePassword` on too, to get past a gate `CredentialResolver` no longer
+    /// applies to profiles — and that side effect also opted the host into any
+    /// unrelated password sitting in the Keychain under its own id.
+    func testApplyCredentialProfileAssignsWithoutTouchingSavePassword() {
         let a = host("a"), b = host("b")
         let store = makeStore([a, b])
         let profile = CredentialProfile(name: "Ops")
@@ -610,8 +614,24 @@ final class SessionStoreTests: XCTestCase {
 
         for entry in store.entries {
             XCTAssertEqual(entry.credentialProfileID, profile.id)
-            XCTAssertTrue(entry.savePassword)
+            XCTAssertFalse(entry.savePassword, "assignment is not consent for the host's own password")
         }
+    }
+
+    /// The regression this whole change exists for: an assigned profile has to
+    /// authenticate a host that never ticked "Save password in Keychain",
+    /// because that is the state every imported or newly created host is in.
+    func testAnAssignedProfileAuthenticatesAHostThatNeverOptedIn() {
+        let a = host("a")
+        let store = makeStore([a])
+        let profile = CredentialProfile(name: "Ops")
+        store.upsert(profile)
+
+        store.applyCredentialProfile(profile.id, to: [a.id])
+
+        let entry = store.entries.first { $0.id == a.id }!
+        XCTAssertFalse(entry.savePassword)
+        XCTAssertEqual(resolvedSource(entry, hasProfilePassword: true), .assignedProfile)
     }
 
     func testApplyCredentialProfileNilClearsAssignmentButLeavesSavePasswordAlone() {
@@ -809,9 +829,9 @@ final class SessionStoreTests: XCTestCase {
     }
 
     /// The invariant that matters isn't "the UUID survived" — it's "the entry
-    /// can still authenticate". `CredentialResolver` gates every source behind
-    /// `savePassword`, so a retained profile id with the flag off is a pointer
-    /// to a credential that can never be used.
+    /// can still authenticate", so this asks the resolver rather than the id.
+    /// A retained profile id whose profile didn't travel is a pointer to a
+    /// credential that can never be used.
     private func resolvedSource(_ entry: SessionEntry, hasProfilePassword: Bool) -> CredentialResolver.Source {
         CredentialResolver.source(
             savePassword: entry.savePassword,
