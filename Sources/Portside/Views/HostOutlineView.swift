@@ -811,9 +811,12 @@ private final class HostRowCell: NSTableCellView {
     private let model = RowModel()
     private var hosting: NSHostingView<SidebarRowLabel>?
 
+    /// Width last handed to SwiftUI. See `setFrameSize(_:)`.
+    private var availableWidth: CGFloat = 0
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let view = NSHostingView(rootView: SidebarRowLabel(model: model))
+        let view = NSHostingView(rootView: SidebarRowLabel(model: model, availableWidth: 0))
         view.translatesAutoresizingMaskIntoConstraints = false
         if #available(macOS 13.0, *) { view.sizingOptions = [.intrinsicContentSize] }
         addSubview(view)
@@ -838,10 +841,40 @@ private final class HostRowCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { model.emphasized = (backgroundStyle == .emphasized) }
     }
+
+    /// Hand SwiftUI the width we were actually given.
+    ///
+    /// `NSHostingView.intrinsicContentSize` is width-blind: it reports the size
+    /// the content *wants*, which for a host row is the full unwrapped subtitle
+    /// on one line. In a 188pt sidebar that measured `{380, 38}`, so the table
+    /// cached a 38pt row while the text — which of course wrapped to the 188pt
+    /// it really had — drew its extra lines clipped off the top and bottom of
+    /// the row, often taking the host's name with them. Pinning the content to
+    /// this width makes the ideal height the *wrapped* height (`{188, 88}`),
+    /// which is the number the table wanted all along.
+    ///
+    /// Here and not in `layout()`: the cell is sized by its autoresizing mask,
+    /// which resizes it without ever marking it as needing layout, so widening
+    /// the divider never called `layout()` and the rows stayed wrapped at the
+    /// width they had when they were narrow.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard newSize.width > 0, abs(availableWidth - newSize.width) > 0.5 else { return }
+        availableWidth = newSize.width
+        // Assigning `rootView` rather than publishing through `model`: the
+        // outline re-measures row heights on the next turn of the run loop and
+        // an `@Published` write wouldn't have reached SwiftUI by then, so the
+        // re-measure would read the width we just replaced.
+        hosting?.rootView = SidebarRowLabel(model: model, availableWidth: newSize.width)
+    }
 }
 
 private struct SidebarRowLabel: View {
     @ObservedObject var model: RowModel
+    /// The cell's real width, so the row's ideal height is its wrapped height.
+    /// Zero until the cell has been sized; the layout falls back to "as wide as
+    /// it wants" then, which is what the outline assumes for its first pass.
+    var availableWidth: CGFloat
     @State private var hoveringEntry = false
 
     var body: some View {
@@ -853,7 +886,7 @@ private struct SidebarRowLabel: View {
             case .none: EmptyView()
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 5)
         .padding(.horizontal, 4)
         // Never let a row be compressed below the height its text needs. The
         // outline sizes rows from this view's intrinsic height, and a row whose
@@ -863,13 +896,14 @@ private struct SidebarRowLabel: View {
         // "5 panes" with the bottom shaved off, while the host beneath it sat
         // comfortably.
         .fixedSize(horizontal: false, vertical: true)
+        .frame(width: availableWidth > 0 ? availableWidth : nil, alignment: .leading)
         .frame(maxWidth: .infinity, minHeight: Self.minimumRowHeight, alignment: .leading)
     }
 
     /// Keeps every row kind the same height regardless of what it carries, so
     /// the list reads as one list rather than three that happen to be adjacent.
     /// Two lines of text plus the container's own padding.
-    private static let minimumRowHeight: CGFloat = 38
+    private static let minimumRowHeight: CGFloat = 42
 
     private var primary: Color { model.emphasized ? .white : .primary }
     private var secondary: Color { model.emphasized ? .white.opacity(0.85) : .secondary }
@@ -883,13 +917,7 @@ private struct SidebarRowLabel: View {
             }
             Spacer(minLength: 4)
             if entry.isFavorite || hoveringEntry {
-                Button { model.toggleFavorite?() } label: {
-                    Image(systemName: entry.isFavorite ? "star.fill" : "star")
-                }
-                .buttonStyle(.plain)
-                .font(.caption2)
-                .foregroundStyle(entry.isFavorite ? .yellow : (model.emphasized ? .white.opacity(0.7) : .secondary))
-                .help(entry.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                favoriteButton(isFavorite: entry.isFavorite)
             }
             if entry.isProtected {
                 Image(systemName: "lock.fill").font(.caption2)
@@ -914,16 +942,25 @@ private struct SidebarRowLabel: View {
             }
             Spacer(minLength: 4)
             if group.isFavorite || hoveringEntry {
-                Button { model.toggleFavorite?() } label: {
-                    Image(systemName: group.isFavorite ? "star.fill" : "star")
-                }
-                .buttonStyle(.plain)
-                .font(.caption2)
-                .foregroundStyle(group.isFavorite ? .yellow : (model.emphasized ? .white.opacity(0.7) : .secondary))
-                .help(group.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                favoriteButton(isFavorite: group.isFavorite)
             }
         }
         .onHover { hoveringEntry = $0 }
+    }
+
+    /// Shown on hover, or always once the row is a favorite. Deliberately *not*
+    /// given a permanently reserved slot: at the sidebar's 220pt minimum the
+    /// ~14pt that would cost is the difference between a `user@host` subtitle
+    /// fitting on one line and wrapping onto two, which is a worse trade than
+    /// the rewrap a hover can cause on a row already sitting at the boundary.
+    private func favoriteButton(isFavorite: Bool) -> some View {
+        Button { model.toggleFavorite?() } label: {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+        }
+        .buttonStyle(.plain)
+        .font(.caption2)
+        .foregroundStyle(isFavorite ? .yellow : (model.emphasized ? .white.opacity(0.7) : .secondary))
+        .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
     }
 
     private func folderRow(_ folder: FolderNode) -> some View {
@@ -964,5 +1001,46 @@ final class KeyableOutlineView: NSOutlineView {
     override func keyDown(with event: NSEvent) {
         if onKeyDown?(event) == true { return }
         super.keyDown(with: event)
+    }
+
+    /// Width the row heights were last measured at.
+    ///
+    /// `usesAutomaticRowHeights` measures a row once and caches the answer, and
+    /// nothing re-measures when the sidebar divider moves. Narrowing the pane
+    /// rewrapped a long host subtitle onto more lines while the row kept the
+    /// height it was given when it was wider, so the extra lines drew clipped
+    /// off the top and bottom of the row — the host's name could vanish
+    /// entirely. Re-measure whenever our width actually changes.
+    private var lastMeasuredWidth: CGFloat = 0
+    private var rowHeightUpdateScheduled = false
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = abs(newSize.width - lastMeasuredWidth) > 0.5
+        super.setFrameSize(newSize)
+        guard widthChanged else { return }
+        lastMeasuredWidth = newSize.width
+        scheduleRowHeightUpdate()
+    }
+
+    /// Deliberately not synchronous: we're inside the layout pass that resized
+    /// us, the column hasn't necessarily taken its new width yet, and
+    /// re-entering row sizing from here re-measures against the *old* width.
+    /// Coalescing to the next turn of the run loop also means one re-measure
+    /// per drag rather than one per intermediate frame.
+    private func scheduleRowHeightUpdate() {
+        guard !rowHeightUpdateScheduled else { return }
+        rowHeightUpdateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.rowHeightUpdateScheduled = false
+            let count = self.numberOfRows
+            guard count > 0 else { return }
+            // Zero duration: heights animating while the divider is mid-drag
+            // reads as the list lurching, not as a transition.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                self.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<count))
+            }
+        }
     }
 }

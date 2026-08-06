@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## 0.23.0
 
+**A narrow sidebar no longer eats host names.** Dragging the divider in far enough to wrap a long `user@host` subtitle left the row at the height it had when it was wide, so the extra lines drew clipped off the top and bottom — on the worst rows the host's own name was one of the casualties. Rows are measured at the width they're actually drawn at now, and re-measured when the divider moves. Entries also sit a little less tightly against each other.
+
 **A troubleshooting page.** Why a saved password is asked for twice on purpose, what a changed host key means and what the accept-new setting really does, mosh needing UDP 60000–61000, serial devices, and what Portside does rather than overwrite a library it can't read. See [docs/troubleshooting.md](docs/troubleshooting.md).
 
 **Groups and credential profiles are documented**, alongside MultiExec — including how a host resolves its credentials, and why an exported library carries assignments but no secrets. See [docs/groups.md](docs/groups.md) and [docs/credential-profiles.md](docs/credential-profiles.md).
