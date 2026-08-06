@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.22.3
+
+**The default credential profile supplies its user and identity file, not just its password.** It handed over the password alone, so a host with no username of its own connected as your local account name and had a perfectly correct password rejected — the failure looked like a bad password and wasn't one. A default now fills in whatever a host has left blank. It never overrides a host's own values (that remains the job of a profile explicitly *assigned* to a host), and it leaves an aliased host alone entirely, since `~/.ssh/config` already owns that connection's user and key.
+
 ## 0.22.2
 
 **Credential profiles authenticate hosts that never ticked "Save password in Keychain".** Every password lookup sat behind that per-host toggle — including profiles — so a correctly configured default profile, with its password safely in the Keychain, authenticated nothing at all until each host was individually opted in. Since a freshly created or imported host has the toggle off, the feature could look simply broken. A profile is consent in its own right now: assigning one to a host, or nominating one as the default, is enough. The toggle keeps its original meaning for the credentials that belong to the host itself — its own saved password and the legacy app-wide default.

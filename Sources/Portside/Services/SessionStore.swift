@@ -1084,12 +1084,27 @@ final class SessionStore: ObservableObject {
     /// global default user/key applies without editing each host.
     func resolved(_ entry: SessionEntry) -> SessionEntry {
         var e = entry
-        if let profile = credentialProfile(id: e.credentialProfileID) {
-            if let u = profile.user, !u.isEmpty, e.sshAlias?.isEmpty ?? true { e.user = u }
-            if let key = profile.identityFile, !key.isEmpty { e.identityFile = key }
+        let usesAlias = !(e.sshAlias?.isEmpty ?? true)
+
+        if let assigned = credentialProfile(id: e.credentialProfileID) {
+            if let u = assigned.user, !u.isEmpty, !usesAlias { e.user = u }
+            if let key = assigned.identityFile, !key.isEmpty { e.identityFile = key }
         }
-        if (e.user?.isEmpty ?? true), e.sshAlias?.isEmpty ?? true,
-           let u = defaults.user, !u.isEmpty {
+        // The default profile fills blanks — it never overrides, which is the
+        // difference between "the profile this host uses" and "what to fall
+        // back on". It supplied its *password* and nothing else until now, so a
+        // host with no user of its own connected as the local account name and
+        // had a perfectly correct password rejected. Skipped entirely for an
+        // aliased host: `~/.ssh/config` owns that connection's user and key,
+        // and `-i` from a library-wide default would override the config's
+        // choice on every aliased host at once.
+        if !usesAlias, let fallback = credentialProfile(id: defaultProfileID) {
+            if e.user?.isEmpty ?? true, let u = fallback.user, !u.isEmpty { e.user = u }
+            if e.identityFile?.isEmpty ?? true, let key = fallback.identityFile, !key.isEmpty {
+                e.identityFile = key
+            }
+        }
+        if (e.user?.isEmpty ?? true), !usesAlias, let u = defaults.user, !u.isEmpty {
             e.user = u
         }
         if (e.identityFile?.isEmpty ?? true), let key = defaults.identityFile, !key.isEmpty {

@@ -690,6 +690,57 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(resolved.user, "default-user")
     }
 
+    /// The gap found live: the default profile handed over its password and
+    /// nothing else, so a host with no user of its own connected as the local
+    /// account name and had a correct password rejected. Verified against a
+    /// real session's argv — a bare `10.10.10.10`, no `user@`, no `-i`.
+    func testDefaultProfileSuppliesUserAndIdentityToAHostThatHasNeither() {
+        let entry = host("a")
+        let store = makeStore([entry])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser", identityFile: "/keys/ops")
+        store.upsert(profile)
+        store.defaultProfileID = profile.id
+
+        let resolved = store.resolved(store.entries.first!)
+
+        XCTAssertEqual(resolved.user, "opsuser")
+        XCTAssertEqual(resolved.identityFile, "/keys/ops")
+    }
+
+    /// A default fills blanks; it does not override. That distinction is the
+    /// whole difference between it and an assigned profile, which does.
+    func testDefaultProfileNeverOverridesAHostsOwnValues() {
+        var entry = host("a")
+        entry.user = "mine"
+        entry.identityFile = "/keys/mine"
+        let store = makeStore([entry])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser", identityFile: "/keys/ops")
+        store.upsert(profile)
+        store.defaultProfileID = profile.id
+
+        let resolved = store.resolved(store.entries.first!)
+
+        XCTAssertEqual(resolved.user, "mine")
+        XCTAssertEqual(resolved.identityFile, "/keys/mine")
+    }
+
+    /// An aliased host is `~/.ssh/config`'s to decide. A library-wide default
+    /// pushing `-i` would override the config's key choice on every aliased
+    /// host at once — which is all 19 of them in the library this was found in.
+    func testDefaultProfileLeavesAnAliasedHostAlone() {
+        var entry = host("a")
+        entry.sshAlias = "prod-a"
+        let store = makeStore([entry])
+        let profile = CredentialProfile(name: "Ops", user: "opsuser", identityFile: "/keys/ops")
+        store.upsert(profile)
+        store.defaultProfileID = profile.id
+
+        let resolved = store.resolved(store.entries.first!)
+
+        XCTAssertNil(resolved.user)
+        XCTAssertNil(resolved.identityFile)
+    }
+
     func testResolvedTreatsUnknownProfileIDAsUnassigned() {
         var entry = host("a")
         entry.credentialProfileID = UUID()
