@@ -3,13 +3,15 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## 0.23.0
+## 0.22.2
 
 **Credential profiles authenticate hosts that never ticked "Save password in Keychain".** Every password lookup sat behind that per-host toggle — including profiles — so a correctly configured default profile, with its password safely in the Keychain, authenticated nothing at all until each host was individually opted in. Since a freshly created or imported host has the toggle off, the feature could look simply broken. A profile is consent in its own right now: assigning one to a host, or nominating one as the default, is enough. The toggle keeps its original meaning for the credentials that belong to the host itself — its own saved password and the legacy app-wide default.
 
 **Apply Credential Profile works on one host.** It was on folders and on multi-selections, but a single host had to go through Edit… to get to the same setting.
 
 **A narrow sidebar no longer eats host names.** Dragging the divider in far enough to wrap a long `user@host` subtitle left the row at the height it had when it was wide, so the extra lines drew clipped off the top and bottom — on the worst rows the host's own name was one of the casualties. Rows are measured at the width they're actually drawn at now, and re-measured when the divider moves. Entries also sit a little less tightly against each other.
+
+**The session editor's longest labels aren't jammed against the window edge.** A form's label column is only as wide as its widest label, so "~/.ssh/config alias", "Identity file (key)" and "Credential Profile" started exactly on the 20pt padding and read as touching the edge outright on displays that render the text a shade wider. They now clear it by 32pt, with no field narrower for it.
 
 **A troubleshooting page.** Why a saved password is asked for twice on purpose, what a changed host key means and what the accept-new setting really does, mosh needing UDP 60000–61000, serial devices, and what Portside does rather than overwrite a library it can't read. See [docs/troubleshooting.md](docs/troubleshooting.md).
 
