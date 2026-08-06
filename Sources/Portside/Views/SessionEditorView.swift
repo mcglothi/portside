@@ -426,8 +426,16 @@ struct SessionEditorView: View {
                 .disabled(!canSave)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        // Wider horizontal margin than vertical, and the sheet widened by the
+        // same amount so the fields keep their 420pt. A Form's label column is
+        // right-aligned and only as wide as its widest label, which means that
+        // label always starts at the content's leading edge — at 20pt all round
+        // "~/.ssh/config alias" sat exactly on the padding with nothing to
+        // spare, and read as touching the window edge on displays that render
+        // the text a shade wider.
+        .padding(.vertical, 20)
+        .padding(.horizontal, 32)
+        .frame(width: 484)
         .sheet(isPresented: $showingPicker) {
             ContainerPickerView(entry: draftForPicker) { picked in
                 if draft.kind == .kubernetes {
