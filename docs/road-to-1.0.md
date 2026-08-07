@@ -168,17 +168,25 @@ The maintainer's call, not a readiness question.
   wanted for 1.0. Read-only team inventory over plain git, alongside personal
   sessions rather than instead of them.
 
-- **Key distribution** (0.23) — a front end for `ssh-copy-id` that pushes a key
-  to a *selection* of hosts, not one at a time, using the passwords Portside
-  already holds. Requested by a user; the fleet case is the feature, since the
-  single-host case is one command nobody needs a GUI for.
+- **Key distribution** — **built at 0.23.0**, see
+  [key-distribution.md](key-distribution.md). A front end for `ssh-copy-id` that
+  pushes a key to a *selection* of hosts, not one at a time, using the passwords
+  Portside already holds. Requested by a user; the fleet case is the feature,
+  since the single-host case is one command nobody needs a GUI for.
 
-  This is the first thing Portside would do that **changes remote machines**.
-  Everything today is read-only or a session you're driving. It gets the
-  treatment MultiExec paste got: a confirmation naming every host, the key's
-  fingerprint shown before rather than after, `isProtected` respected, per-host
-  results rather than one "done", and no auth retry ever — forty hosts with a
-  wrong password is forty failed authentications and a locked account.
+  This is the first thing Portside does that **changes remote machines**.
+  Everything before it was read-only or a session you're driving. It got the
+  treatment MultiExec paste got, and all of it shipped: a confirmation naming
+  every host, the key's fingerprint shown before rather than after,
+  `isProtected` never swept in by Select All, per-host results rather than one
+  "done", and no auth retry ever.
+
+  **Not yet validated against a real fleet.** The remote script is exercised
+  against `/bin/sh` with a throwaway `HOME` on every build — which is how two
+  real bugs in it were caught, an unexpanded `$HOME` in the backup path and an
+  append that welded the key onto an `authorized_keys` with no trailing newline
+  — but no push has been run against actual hosts. That is the mileage this
+  feature needs before rotation is built on top of it.
 
 - **Key rotation** (after key distribution has mileage) — generate a new key,
   add it everywhere the old one is used, verify, then retire the old one.

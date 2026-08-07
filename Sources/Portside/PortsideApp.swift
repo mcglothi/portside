@@ -239,6 +239,9 @@ struct PortsideApp: App {
                 Button("Collapse All Folders") { library.requestCollapseAllFolders() }
                     .disabled(store.folders.isEmpty)
                 Divider()
+                Button("Copy SSH Key to Hosts…") { library.requestCopyKeyToHosts() }
+                    .disabled(store.entries.allSatisfy { $0.kind != .host })
+                Divider()
                 Button("Inventory Coverage…") { library.requestShowCoverage() }
                 Button("History…") { library.requestShowHistory() }
                 Divider()
@@ -284,6 +287,7 @@ struct PortsideApp: App {
                 Button("MultiExec") { open(Docs.multiExec) }
                 Button("Groups") { open(Docs.groups) }
                 Button("Credential Profiles") { open(Docs.credentialProfiles) }
+                Button("Key Distribution") { open(Docs.keyDistribution) }
                 Button("Terminal Compatibility") { open(Docs.compatibility) }
                 Button("Port Forwarding") { open(Docs.portForwarding) }
                 Divider()

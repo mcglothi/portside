@@ -3,6 +3,16 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.23.0
+
+**Copy an SSH key to a selection of hosts at once.** View ▸ Copy SSH Key to Hosts… adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.
+
+This is the first thing Portside does that changes remote machines, so it is built to be boring about it. **A host is contacted once and a password is never tried twice** — forty hosts with a stale password is forty failed authentications and a locked account, so a failure is reported and left alone rather than retried. Hosts Portside holds no password for fail immediately instead of hanging on a prompt nobody is watching. The key's fingerprint is shown *before* the push, not after, because a filename doesn't identify a key. The confirmation names every host rather than counting them. **Select All never sweeps in a protected host** — the same rule MultiExec has, for the same reason. And you get a result per host, not one "done": key added, already had it, or the actual reason it failed.
+
+On the host it is careful in the ways that matter. `~/.ssh` and `authorized_keys` are created if missing and only then given restrictive permissions — an existing file's permissions are yours. The file is copied to `authorized_keys.portside-backup` before it is touched. A key that's already installed is recognised by its type and blob rather than its comment, so re-running a push is a no-op instead of appending duplicates, and a *commented-out* entry correctly doesn't count as installed. See [docs/key-distribution.md](docs/key-distribution.md).
+
+Key rotation is deliberately not in this release. Rotation's first phase *is* key distribution, and shipping both at once would mean the first time anyone retires a key, the code that installed it is also new.
+
 ## 0.22.4
 
 **`reset` no longer strands a pane at 80 columns.** The terminal honoured DECCOLM — the escape sequence that snaps the buffer to 80 or 132 columns — unconditionally, and xterm's own reset string contains it. So `reset`, `tput init`, or an ssh or tmux session tearing down would quietly shrink the buffer to 80 columns and leave the rest of a wide pane unused, and running `reset` to fix it re-sent the very sequence that caused it. The mode is now ignored unless an application explicitly asks for it, matching xterm.

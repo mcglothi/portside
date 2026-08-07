@@ -20,6 +20,7 @@ enum Docs {
     static let multiExec = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/multiexec.md")!
     static let groups = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/groups.md")!
     static let credentialProfiles = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/credential-profiles.md")!
+    static let keyDistribution = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/key-distribution.md")!
     static let compatibility = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/COMPATIBILITY.md")!
     static let portForwarding = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/port-forwarding.md")!
     static let troubleshooting = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/troubleshooting.md")!

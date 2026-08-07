@@ -294,25 +294,39 @@ struct SFTPClient {
         }
     }
 
+    /// `environment` is a list of `KEY=value` strings replacing the child's
+    /// whole environment; nil inherits this process's. Used to hand ssh an
+    /// askpass helper without the secret ever reaching argv.
     static func runProcess(
-        _ executable: String, _ args: [String], stdin: String
+        _ executable: String, _ args: [String], stdin: String, environment: [String]? = nil
     ) async throws -> (status: Int32, out: String, err: String) {
         let box = ProcessBox()
         return try await withTaskCancellationHandler {
-            try await runProcess(executable, args, stdin: stdin, box: box)
+            try await runProcess(executable, args, stdin: stdin, environment: environment, box: box)
         } onCancel: {
             box.cancel()
         }
     }
 
     private static func runProcess(
-        _ executable: String, _ args: [String], stdin: String, box: ProcessBox
+        _ executable: String, _ args: [String], stdin: String,
+        environment: [String]?, box: ProcessBox
     ) async throws -> (status: Int32, out: String, err: String) {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = args
+                if let environment {
+                    process.environment = Dictionary(
+                        environment.compactMap { entry -> (String, String)? in
+                            guard let separator = entry.firstIndex(of: "=") else { return nil }
+                            return (String(entry[entry.startIndex..<separator]),
+                                    String(entry[entry.index(after: separator)...]))
+                        },
+                        uniquingKeysWith: { _, latest in latest }   // askpass vars are appended last
+                    )
+                }
                 guard box.adopt(process) else {
                     continuation.resume(throwing: CancellationError())
                     return

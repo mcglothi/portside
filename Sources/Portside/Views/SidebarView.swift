@@ -50,6 +50,20 @@ struct SidebarView: View {
     /// which hosts are gone rather than silently getting a smaller grid.
     @State private var groupLaunchNotice: String?
     @State private var selection: Set<UUID> = []
+    @State private var showingKeyDistribution = false
+
+    /// Held as a constant rather than concatenated inline: a chain of `+` on
+    /// string literals inside a `Text` is surprisingly expensive to type-check,
+    /// and this body is close enough to the limit that it was the difference
+    /// between compiling and not.
+    private static let externalChangeMessage = """
+        Something else wrote to your session library since Portside read it — another \
+        copy of Portside, or a sync client bringing down changes made elsewhere. \
+        Saving now would discard them.
+
+        Reload takes the version on disk. Portside has not saved anything in the meantime.
+        """
+
     @State private var showingLogSearch = false
     @State private var showingPortForwarding = false
     @State private var showingCoverage = false
@@ -89,7 +103,15 @@ struct SidebarView: View {
         }
     }
 
-    var body: some View {
+    /// The sidebar's actual content, split out from `body`.
+    ///
+    /// `body` is a single expression carrying every sheet, alert and command
+    /// route this view owns, and it sits right at the edge of what the
+    /// type-checker will solve — close enough that adding one `.sheet` failed
+    /// to compile with the error pointing at this `Picker`, two hundred lines
+    /// from the change. A computed property is type-checked on its own, which
+    /// buys the room back honestly instead of by deleting something.
+    private var content: some View {
         VStack(spacing: 0) {
             Picker("Section", selection: $section) {
                 ForEach(SidebarSection.allCases) { s in
@@ -112,6 +134,10 @@ struct SidebarView: View {
                                    history: { showingHistory = true })
             }
         }
+    }
+
+    var body: some View {
+        content
         .navigationTitle("Portside")
         .toolbar { toolbarContent }
         // Single implementation of each library command; the toolbar menus
@@ -159,7 +185,8 @@ struct SidebarView: View {
                 // case of overwriting one doesn't quietly move it to the root.
                 newGroupFolder = tab?.groupID.flatMap { store.group(id: $0)?.folder } ?? ""
                 savingGroup = true
-            }
+            },
+            onCopyKeyToHosts: { showingKeyDistribution = true }
         ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
@@ -177,22 +204,15 @@ struct SidebarView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingCoverage) {
-            // `library` as well as `store`: the empty state offers Import…, and
-            // a missing @EnvironmentObject is a crash, not a blank view.
-            CoverageView().environmentObject(store).environmentObject(library)
-        }
-        .sheet(isPresented: $showingHistory) {
-            HistoryView().environmentObject(store)
-        }
-        .sheet(isPresented: $showingLogSearch) {
-            LogSearchView().environmentObject(store)
-        }
-        .sheet(isPresented: $showingPortForwarding) {
-            PortForwardingView()
-                .environmentObject(store)
-                .environmentObject(tunnels)
-        }
+        .modifier(LibrarySheets(
+            coverage: $showingCoverage,
+            history: $showingHistory,
+            logSearch: $showingLogSearch,
+            portForwarding: $showingPortForwarding,
+            keyDistribution: $showingKeyDistribution,
+            keyPreselection: selection,
+            store: store, library: library, tunnels: tunnels
+        ))
         .fileImporter(
             isPresented: $showingImporter,
             allowedContentTypes: [.item],
@@ -231,11 +251,7 @@ struct SidebarView: View {
                 store.overwriteExternalChange()
             }
         } message: {
-            Text("Something else wrote to your session library since Portside "
-                 + "read it — another copy of Portside, or a sync client "
-                 + "bringing down changes made elsewhere. Saving now would "
-                 + "discard them.\n\nReload takes the version on disk. "
-                 + "Portside has not saved anything in the meantime.")
+            Text(Self.externalChangeMessage)
         }
         .modifier(GroupAlerts(
             savingGroup: $savingGroup, newGroupName: $newGroupName,
@@ -725,6 +741,7 @@ private struct LibraryCommandRouter: ViewModifier {
     let onShowCoverage: () -> Void
     let onShowHistory: () -> Void
     let onSaveTabAsGroup: () -> Void
+    let onCopyKeyToHosts: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -739,6 +756,49 @@ private struct LibraryCommandRouter: ViewModifier {
             .onChange(of: library.showCoverage) { _, _ in onShowCoverage() }
             .onChange(of: library.showHistory) { _, _ in onShowHistory() }
             .onChange(of: library.saveTabAsGroup) { _, _ in onSaveTabAsGroup() }
+            .onChange(of: library.copyKeyToHosts) { _, _ in onCopyKeyToHosts() }
+    }
+}
+
+/// The library's five standalone sheets, in one modifier.
+///
+/// Not tidiness: `SidebarView.body` sits at the edge of what the type-checker
+/// will solve, and adding a sixth `.sheet` to the chain failed to compile with
+/// the error pointing at an unrelated alert two hundred lines away. Collapsing
+/// the siblings into one modifier bought the room back — the same move
+/// `GroupAlerts` and `LibraryCommandRouter` already document.
+private struct LibrarySheets: ViewModifier {
+    @Binding var coverage: Bool
+    @Binding var history: Bool
+    @Binding var logSearch: Bool
+    @Binding var portForwarding: Bool
+    @Binding var keyDistribution: Bool
+    let keyPreselection: Set<UUID>
+    let store: SessionStore
+    let library: LibraryCommands
+    let tunnels: TunnelManager
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $coverage) {
+                // `library` as well as `store`: the empty state offers Import…,
+                // and a missing @EnvironmentObject is a crash, not a blank view.
+                CoverageView().environmentObject(store).environmentObject(library)
+            }
+            .sheet(isPresented: $history) {
+                HistoryView().environmentObject(store)
+            }
+            .sheet(isPresented: $logSearch) {
+                LogSearchView().environmentObject(store)
+            }
+            .sheet(isPresented: $portForwarding) {
+                PortForwardingView().environmentObject(store).environmentObject(tunnels)
+            }
+            .sheet(isPresented: $keyDistribution) {
+                // The sidebar selection is a starting point, not the decision —
+                // the sheet's own confirmation names every host either way.
+                KeyDistributionView(preselected: keyPreselection).environmentObject(store)
+            }
     }
 }
 
