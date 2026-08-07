@@ -103,9 +103,9 @@ calibrated to where it has actually paid off in Portside.
 - **Reusing a type or view name.** `EmptyStateView` was already taken by the
   welcome screen; a symbol lookup answers that in one call instead of via a
   compiler error.
-- **Tracing a path through the terminal stack.** `LoggingTerminalView` →
-  `SixelStreamGuard` → `super.dataReceived`, or the OSC 133 tap → `CommandTimeline`
-  → transcript offsets. Several behaviours are ordering contracts rather than
+- **Tracing a path through the terminal stack.** `LoggingTerminalView.dataReceived`
+  → logger / `super.dataReceived`, or the OSC 133 tap → `CommandTimeline` →
+  transcript offsets. Several behaviours are ordering contracts rather than
   call graphs, so confirm against the code before trusting a flow.
 
 **Don't bother when the answer isn't in our symbols:**

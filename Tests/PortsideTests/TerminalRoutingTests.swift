@@ -3,26 +3,30 @@ import Foundation
 import XCTest
 @testable import Portside
 
-/// Locks the routing contract in `LoggingTerminalView.dataReceived`: the log and
-/// the command timeline see the bytes as they arrived, and only the terminal
-/// sees the stream `SixelStreamGuard` repaired.
+/// Locks the routing contract in `LoggingTerminalView.dataReceived`: the log,
+/// the command timeline and the terminal all see the bytes as they arrived.
 ///
-/// The ordering is a contract rather than an implementation detail — moving the
-/// filter a few lines up would feed repaired bytes to the transcript, and the
-/// guard changes the byte count. Raised by Codex CLI in the 0.17 pre-release
-/// review, which noted the guard was tested directly but this wiring was not.
+/// The ordering is a contract rather than an implementation detail. Until
+/// 0.22.4 a `SixelStreamGuard` sat in this path repairing unterminated sixel
+/// payloads, and the risk these tests were written for (Codex CLI, 0.17
+/// pre-release review) was that a repaired stream would reach `logger?.append`
+/// and silently invalidate persisted transcript offsets. SwiftTerm 1.16.0 fixed
+/// the decoder crash and the guard is gone, but the contract it was tested
+/// against outlives it — anything reinserted here must not rewrite the bytes
+/// the transcript records.
 @MainActor
 final class TerminalRoutingTests: XCTestCase {
 
-    /// A single-band sixel with no trailing terminator: the guard appends `-`,
-    /// so raw and repaired differ by exactly one byte.
+    /// A single-band sixel with no trailing terminator — the vector that used to
+    /// crash SwiftTerm's decoder, now handled upstream. Kept as the sample
+    /// because it is the one that must pass through untouched.
     private let unterminatedSixel = "\u{1b}Pq#0;2;100;100;100#0~~\u{1b}\\"
 
     private func makeView() -> LoggingTerminalView {
         LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
     }
 
-    func testTerminalReceivesTheRepairedStream() {
+    func testSixelReachesTheTerminalUnchanged() {
         let view = makeView()
         var handedToTerminal: [UInt8] = []
         view.onTerminalBytes = { handedToTerminal = Array($0) }
@@ -31,15 +35,12 @@ final class TerminalRoutingTests: XCTestCase {
         view.dataReceived(slice: raw[...])
 
         XCTAssertEqual(
-            String(decoding: handedToTerminal, as: UTF8.self),
-            "\u{1b}Pq#0;2;100;100;100#0~~-\u{1b}\\",
-            "the terminal must get the repaired stream, or it crashes on this vector"
-        )
-        XCTAssertEqual(handedToTerminal.count, raw.count + 1)
+            handedToTerminal, raw,
+            "sixel is the terminal's to parse; nothing in this path may rewrite it")
     }
 
-    /// Ordinary output must reach the terminal untouched — the guard is a repair
-    /// for one defect, not a filter on everything.
+    /// Ordinary output must reach the terminal untouched too — this path is
+    /// a tap for the log and the timeline, not a filter.
     func testOrdinaryOutputReachesTheTerminalUnchanged() {
         let view = makeView()
         var handedToTerminal: [UInt8] = []
@@ -51,22 +52,9 @@ final class TerminalRoutingTests: XCTestCase {
         XCTAssertEqual(handedToTerminal, raw)
     }
 
-    /// The transcript must not see the repair.
-    ///
-    /// **This one cannot fail, and that is the finding.** The review asked for
-    /// it on the grounds that feeding repaired bytes to the logger would
-    /// silently invalidate persisted transcript offsets. Measured rather than
-    /// assumed: rewriting `dataReceived` to hand `logger?.append` the *repaired*
-    /// slice leaves this test green, because every byte the guard inserts lands
-    /// inside a DCS body and `ANSIStripper` has a `dcs` state that drops DCS
-    /// bodies wholesale. Transcript content and `settledOffset()` come out
-    /// identical either way, so the offset corruption is unreachable through
-    /// this guard.
-    ///
-    /// Kept as a shape guard — a future repair that inserts outside a DCS would
-    /// diverge here — but the assertion carrying the weight is
-    /// `testTerminalReceivesTheRepairedStream` above, which does fail when the
-    /// terminal stops receiving repaired bytes.
+    /// The transcript must match what a logger fed the same bytes directly
+    /// produces — the assertion that would catch a future filter in this path
+    /// shifting the offsets `CommandEvent.logOffset` persists.
     func testTranscriptMatchesARawFedControl() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("portside-routing-\(UUID().uuidString)")

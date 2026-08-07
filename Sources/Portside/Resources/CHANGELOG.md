@@ -3,6 +3,14 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.22.4
+
+**`reset` no longer strands a pane at 80 columns.** The terminal honoured DECCOLM — the escape sequence that snaps the buffer to 80 or 132 columns — unconditionally, and xterm's own reset string contains it. So `reset`, `tput init`, or an ssh or tmux session tearing down would quietly shrink the buffer to 80 columns and leave the rest of a wide pane unused, and running `reset` to fix it re-sent the very sequence that caused it. The mode is now ignored unless an application explicitly asks for it, matching xterm.
+
+**Powerline prompts draw without seams**, selections stay anchored to their text when rows move underneath them, and rows no longer repaint stale while you're scrolled back into history. Right-to-left text is supported, on a parser that's faster than the one it replaces.
+
+**Sixel images are handled by the terminal again.** Portside had been screening sixel data itself since 0.17.0, working around a crash on images whose final band was wider than the ones before it. That was fixed upstream two hours after the release Portside was pinned to, and the pin has now moved past it — so the workaround is gone and sixel goes straight to the parser.
+
 ## 0.22.3
 
 **The default credential profile supplies its user and identity file, not just its password.** It handed over the password alone, so a host with no username of its own connected as your local account name and had a perfectly correct password rejected — the failure looked like a bad password and wasn't one. A default now fills in whatever a host has left blank. It never overrides a host's own values (that remains the job of a profile explicitly *assigned* to a host), and it leaves an aliased host alone entirely, since `~/.ssh/config` already owns that connection's user and key.

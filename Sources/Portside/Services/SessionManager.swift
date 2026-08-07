@@ -24,10 +24,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
     private var suppressInputMirror = false
-    /// Repairs unterminated sixel payloads on the way past, which would
-    /// otherwise crash SwiftTerm's decoder. Temporary; see `SixelStreamGuard`.
-    private var sixelGuard = SixelStreamGuard()
-    /// Test seam: the bytes actually handed to the terminal, after repair.
+    /// Test seam: the bytes actually handed to the terminal.
     ///
     /// Exists because the ordering below is a contract, not an implementation
     /// detail, and there is no way to observe what reached `super` from outside.
@@ -145,9 +142,8 @@ final class LoggingTerminalView: LocalProcessTerminalView {
                 onCommand?(event)
             }
         }
-        let repaired = sixelGuard.filter(slice)
-        onTerminalBytes?(repaired)
-        super.dataReceived(slice: repaired)
+        onTerminalBytes?(slice)
+        super.dataReceived(slice: slice)
     }
 
     /// Everything written to the pty funnels through this delegate method:
