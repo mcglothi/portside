@@ -67,7 +67,11 @@ struct PublicKey: Identifiable, Equatable, Hashable {
         guard !line.isEmpty, !line.hasPrefix("#") else { return nil }
         guard !line.contains("PRIVATE KEY") else { return nil }
 
-        let fields = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        // Split on any whitespace: `ssh-keygen` writes spaces, but a
+        // hand-edited file may use tabs, and the remote `awk` check treats
+        // both as separators — the two ends must agree on what a field is.
+        let fields = line.split(maxSplits: 2, omittingEmptySubsequences: true,
+                                whereSeparator: { $0 == " " || $0 == "\t" })
         guard fields.count >= 2 else { return nil }
         let algorithm = String(fields[0])
         let blob = String(fields[1])
@@ -77,6 +81,12 @@ struct PublicKey: Identifiable, Equatable, Hashable {
         // authorized_keys rather than fail cleanly.
         guard algorithm.hasPrefix("ssh-") || algorithm.hasPrefix("ecdsa-")
                 || algorithm.hasPrefix("sk-") else { return nil }
+        // **Certificates are not keys here.** An `id_ed25519-cert.pub` parses
+        // like a key and appending one to `authorized_keys` is accepted
+        // silently by sshd and grants nothing — certificates are trusted via
+        // `TrustedUserCAKeys`, not by being listed. Offering one would install
+        // a line, report success, and leave the user locked out wondering why.
+        guard !algorithm.contains("-cert-") else { return nil }
         guard !blob.isEmpty, blob.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "+" || $0 == "/" || $0 == "=" })
         else { return nil }
 

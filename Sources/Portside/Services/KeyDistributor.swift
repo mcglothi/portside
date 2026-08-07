@@ -78,6 +78,18 @@ enum KeyDistributor {
     ) async throws -> (status: Int32, out: String, err: String)
 
     static let resultMarker = "PORTSIDE-RESULT:"
+
+    /// A per-push random tag appended to the marker.
+    ///
+    /// The marker is what decides success, and it is read out of the host's
+    /// stdout — which also carries anything the login shell feels like
+    /// printing. A fixed string is guessable and, more plausibly than
+    /// malice, could simply appear in a banner or a `motd` someone pasted a
+    /// Portside log into, turning a failed push into a reported success. A
+    /// nonce the host cannot know in advance removes the class.
+    static func newNonce() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased()
+    }
     static let backupSuffix = ".portside-backup"
 
     // MARK: - The remote script
@@ -92,7 +104,7 @@ enum KeyDistributor {
     /// and it would miss a match whose comment had been edited. Scanning
     /// non-comment lines field by field also handles entries carrying
     /// `command=`/`from=` options, where the algorithm is not the first field.
-    static func remoteScript(for key: PublicKey) -> String {
+    static func remoteScript(for key: PublicKey, nonce: String = "") -> String {
         let blob = ShellQuoting.quote(key.blob)
         let line = ShellQuoting.quote(key.line)
         // Built from `$f` in the script rather than quoted in from here: a
@@ -106,7 +118,7 @@ enum KeyDistributor {
         if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; fi
         if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; fi
         if awk -v b=\(blob) '/^[[:space:]]*#/ {next} {for (i = 1; i <= NF; i++) if ($i == b) {found = 1; exit}} END {exit !found}' "$f"; then
-          printf '%s present\\n' '\(resultMarker)'
+          printf '%s%s present\\n' '\(resultMarker)' '\(nonce)'
         else
           cp "$f" \(backup) 2>/dev/null
           # A file not ending in a newline is common (hand-edited, or written
@@ -115,7 +127,7 @@ enum KeyDistributor {
           # existing access *and* installing nothing usable.
           if [ -s "$f" ] && [ "$(tail -c 1 "$f" | wc -l)" -eq 0 ]; then printf '\\n' >> "$f"; fi
           printf '%s\\n' \(line) >> "$f" || exit 1
-          printf '%s added\\n' '\(resultMarker)'
+          printf '%s%s added\\n' '\(resultMarker)' '\(nonce)'
         fi
         """
     }
@@ -127,8 +139,16 @@ enum KeyDistributor {
     /// `hasPassword` decides only whether `BatchMode` is set — it never adds a
     /// retry, and there is no path through this function that allows more than
     /// one password prompt.
+    /// `account`, when set, overrides which account the key is installed for by
+    /// **logging in as it** — `ssh svc_ansible@host` rather than
+    /// `ssh you@host`. That is the whole trick: `$HOME` is then already the
+    /// target account's, so there is nothing to escalate, no ownership to
+    /// repair, and the remote script is untouched. Writing into *another*
+    /// account's home from your own would need sudo, a tty, and a `chown` to
+    /// keep sshd's `StrictModes` happy — a different feature.
     static func sshArguments(for entry: SessionEntry, hasPassword: Bool,
-                             defaults: ConnectionDefaults = ConnectionDefaults()) -> [String] {
+                             defaults: ConnectionDefaults = ConnectionDefaults(),
+                             account: String? = nil) -> [String] {
         var args = [
             // The rule this whole feature is built around. First, so it is the
             // first thing anyone reads in a process listing or a bug report.
@@ -147,8 +167,39 @@ enum KeyDistributor {
         // no authentication at all — but never become the master, so a push
         // can't outlive itself as a socket other connections lean on.
         args += SSHControl.passiveOptions
-        args += entry.sshArgs
+
+        // Both halves, deliberately. An aliased host's destination is the bare
+        // alias and carries no user, so only `-l` can retarget it; a plain host
+        // builds `user@hostname`, where `-l` alone would lose to the
+        // destination. Setting both means the two always agree and neither
+        // form depends on ssh's precedence rules.
+        var target = entry
+        if let account = account?.trimmingCharacters(in: .whitespaces), !account.isEmpty {
+            target.user = account
+            args += ["-l", account]
+        }
+        args += target.sshArgs
         return args
+    }
+
+    /// The password to spend when the login account has been overridden.
+    ///
+    /// **Never the host's own.** That password belongs to the account the host
+    /// entry logs in as, and offering it to a different account is a guaranteed
+    /// failed authentication — on every host in the run, which is precisely the
+    /// lockout this feature is built to avoid. A credential profile whose user
+    /// *is* the target account is the one credential we can honestly claim
+    /// belongs to it; failing that, the push goes key/agent-only under
+    /// `BatchMode` and fails cleanly rather than spending something wrong.
+    static func password(forAccount account: String,
+                         profiles: [CredentialProfile],
+                         profilePassword: (UUID) -> String?) -> String? {
+        let wanted = account.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return nil }
+        guard let match = profiles.first(where: {
+            ($0.user ?? "").trimmingCharacters(in: .whitespaces) == wanted
+        }) else { return nil }
+        return profilePassword(match.id)
     }
 
     // MARK: - Result parsing
@@ -160,9 +211,10 @@ enum KeyDistributor {
     /// banner or whose profile exits non-zero would otherwise report a failure
     /// for a key that installed fine. The marker is only printed on the two
     /// paths that actually succeeded.
-    static func outcome(status: Int32, out: String, err: String) -> KeyPushOutcome {
-        if out.contains("\(resultMarker) added") { return .added }
-        if out.contains("\(resultMarker) present") { return .alreadyPresent }
+    static func outcome(status: Int32, out: String, err: String,
+                        nonce: String = "") -> KeyPushOutcome {
+        if out.contains("\(resultMarker)\(nonce) added") { return .added }
+        if out.contains("\(resultMarker)\(nonce) present") { return .alreadyPresent }
         return .failed(failureReason(status: status, err: err))
     }
 
@@ -206,6 +258,7 @@ enum KeyDistributor {
         to entry: SessionEntry,
         password: String?,
         defaults: ConnectionDefaults = ConnectionDefaults(),
+        account: String? = nil,
         runner: Runner = defaultRunner
     ) async -> KeyPushOutcome {
         var environment: [String]?
@@ -223,11 +276,13 @@ enum KeyDistributor {
             cleanup?()
         }
 
-        let args = sshArguments(for: entry, hasPassword: environment != nil, defaults: defaults)
-            + [remoteScript(for: key)]
+        let nonce = newNonce()
+        let args = sshArguments(for: entry, hasPassword: environment != nil,
+                                defaults: defaults, account: account)
+            + [remoteScript(for: key, nonce: nonce)]
         do {
             let result = try await runner("/usr/bin/ssh", args, environment, "")
-            return outcome(status: result.status, out: result.out, err: result.err)
+            return outcome(status: result.status, out: result.out, err: result.err, nonce: nonce)
         } catch is CancellationError {
             return .skipped("cancelled")
         } catch {
@@ -248,6 +303,7 @@ enum KeyDistributor {
         to entries: [SessionEntry],
         password: @Sendable (SessionEntry) -> String?,
         defaults: ConnectionDefaults = ConnectionDefaults(),
+        account: String? = nil,
         runner: Runner = defaultRunner,
         progress: @MainActor (KeyPushResult) -> Void
     ) async -> [KeyPushResult] {
@@ -261,7 +317,7 @@ enum KeyDistributor {
                 continue
             }
             let outcome = await push(key: key, to: entry, password: password(entry),
-                                     defaults: defaults, runner: runner)
+                                     defaults: defaults, account: account, runner: runner)
             let result = KeyPushResult(entryID: entry.id, hostName: entry.name, outcome: outcome)
             results.append(result)
             await progress(result)

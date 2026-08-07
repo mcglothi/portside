@@ -33,6 +33,9 @@ struct KeyDistributionView: View {
     @State private var plan = KeyDistributionPlan(candidates: [])
     @State private var results: [KeyPushResult] = []
     @State private var pushTask: Task<Void, Never>?
+    /// Empty means "each host's own resolved user", which is the default and
+    /// the common case.
+    @State private var accountOverride = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -181,8 +184,52 @@ struct KeyDistributionView: View {
                 }
             }
             .listStyle(.inset)
+            accountField
         }
         .padding(16)
+    }
+
+    private var accountField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("Copy to account:")
+                TextField("each host's own user", text: $accountOverride)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 200)
+            }
+            Text(accountHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var accountHint: String {
+        let account = accountOverride.trimmingCharacters(in: .whitespaces)
+        guard !account.isEmpty else {
+            return "The key goes to whichever account Portside logs in as for each host."
+        }
+        if overrideHasCredential {
+            return "Logs in as \(account) instead, so the key lands in that account's home. "
+                + "Using the “\(overrideProfileName ?? account)” profile's password."
+            }
+        return "Logs in as \(account) instead. No credential profile has that user, so this "
+            + "runs key/agent-only — the host's own saved password belongs to a different "
+            + "account and will not be offered."
+    }
+
+    /// The profile whose user matches the override, if any.
+    private var overrideProfile: CredentialProfile? {
+        let account = accountOverride.trimmingCharacters(in: .whitespaces)
+        guard !account.isEmpty else { return nil }
+        return store.credentialProfiles.first {
+            ($0.user ?? "").trimmingCharacters(in: .whitespaces) == account
+        }
+    }
+    private var overrideProfileName: String? { overrideProfile?.name }
+    private var overrideHasCredential: Bool {
+        guard let overrideProfile else { return false }
+        return CredentialStore.profilePassword(for: overrideProfile.id) != nil
     }
 
     // MARK: - Confirming
@@ -227,6 +274,13 @@ struct KeyDistributionView: View {
                 // but it lands in the home directory of whoever Portside logs
                 // in as for that host. Saying so beside the host list is
                 // cheaper than the support question.
+                if !accountOverride.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Label("Logging in as \(accountOverride.trimmingCharacters(in: .whitespaces)) — "
+                          + "the key lands in that account's home on every host above.",
+                          systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.callout)
+                        .foregroundStyle(.tint)
+                }
                 Text("The key is added to each host's login account — the user shown above, resolved from the host, its credential profile, then your defaults. An aliased host uses whatever `~/.ssh/config` says. It does not go to an account named after the key file.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -349,6 +403,8 @@ struct KeyDistributionView: View {
         let targets = plan.selectedEntries
         let defaults = store.defaults
         let defaultProfileID = store.defaultProfileID
+        let account = accountOverride.trimmingCharacters(in: .whitespaces)
+        let profiles = store.credentialProfiles
         guard let key else { return }
         results = []
         stage = .running
@@ -357,9 +413,15 @@ struct KeyDistributionView: View {
                 key: key,
                 to: targets,
                 password: { entry in
-                    CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID)
+                    // With the account overridden, the host's own password is
+                    // for somebody else — see `KeyDistributor.password(forAccount:)`.
+                    account.isEmpty
+                        ? CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID)
+                        : KeyDistributor.password(forAccount: account, profiles: profiles,
+                                                  profilePassword: CredentialStore.profilePassword)
                 },
                 defaults: defaults,
+                account: account.isEmpty ? nil : account,
                 progress: { result in results.append(result) }
             )
             stage = .finished

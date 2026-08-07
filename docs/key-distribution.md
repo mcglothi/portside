@@ -82,6 +82,39 @@ Two details worth knowing:
 Re-running a push is therefore safe and does nothing on hosts that already have
 the key.
 
+The success marker carries a random per-push tag, so a host's banner or `motd`
+can't be mistaken for a result — a report of success means this push's script
+actually ran.
+
+**Certificates are not offered.** An `id_ed25519-cert.pub` looks like a key and
+appending one to `authorized_keys` is accepted silently while granting nothing;
+certificates are trusted through `TrustedUserCAKeys`. Offering one would report
+success and leave you locked out wondering why.
+
+## Copying to a different account
+
+**Copy to account** overrides which account the key is installed for. Leave it
+empty and each host uses its own resolved user, which is the common case.
+
+It works by **logging in as that account** — `ssh svc_ansible@dns2` rather than
+`ssh you@dns2`. That is the whole trick: `$HOME` is then already the target's, so
+there is nothing to escalate, no ownership to repair, and the script that runs on
+the host is identical. Writing into *another* account's home from your own would
+need sudo, a tty, and a `chown` to keep sshd's `StrictModes` happy — a different
+feature, and not this one.
+
+**Which password it uses.** Not the host's — that one belongs to the account the
+host entry logs in as, and offering it to a different account is a guaranteed
+failed authentication on every host in the run. Portside instead looks for a
+credential profile whose *user* is the account you typed, and uses that. If none
+exists, the push runs key/agent-only and fails cleanly rather than spending a
+credential that was never going to work. The field tells you which of the two is
+about to happen.
+
+**The limit.** You need to be able to log in as that account. For a service
+account that is key-only with no usable password, you can't yet — which is often
+the very reason you're installing the key. That case needs sudo and isn't built.
+
 ## Credential profiles
 
 A profile says "these hosts log in with this key". Portside could configure that

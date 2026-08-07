@@ -304,3 +304,67 @@ final class KeyDistributionTargetAccountTests: XCTestCase {
         XCTAssertFalse(args.contains("ignored@web.internal"))
     }
 }
+
+// MARK: - Key file kinds found in a real ~/.ssh
+
+final class PublicKeyRealWorldTests: XCTestCase {
+
+    /// **A certificate is not a key here.** `id_ed25519-cert.pub` parses like
+    /// one, and appending it to `authorized_keys` is accepted silently and
+    /// grants nothing — certificates are trusted via `TrustedUserCAKeys`, not
+    /// by being listed. Offering one would report success and leave the user
+    /// locked out wondering why.
+    func testCertificatesAreRejected() {
+        for line in [
+            "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5 tim@newton",
+            "ssh-rsa-cert-v01@openssh.com AAAAHHNzaC1yc2EtY2Vy tim@newton",
+            "ecdsa-sha2-nistp256-cert-v01@openssh.com AAAAKGVjZHNh tim@newton",
+        ] {
+            XCTAssertNil(PublicKey.parse(line: line, path: "/x-cert.pub",
+                                         fingerprint: "f", bits: nil),
+                         "should have rejected a certificate: \(line)")
+        }
+    }
+
+    /// FIDO/security-key types are ordinary `authorized_keys` entries and must
+    /// still be offered.
+    func testSecurityKeyTypesAreAccepted() {
+        for line in ["sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1 tim@newton",
+                     "sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNo tim@newton"] {
+            XCTAssertNotNil(PublicKey.parse(line: line, path: "/x.pub",
+                                            fingerprint: "f", bits: nil), line)
+        }
+    }
+
+    /// The remote `awk` check splits on any whitespace, so the local parser has
+    /// to agree about what a field is or the two ends disagree about identity.
+    func testTabSeparatedKeysParse() {
+        let key = PublicKey.parse(line: "ssh-ed25519\tAAAAC3NzaC1lZDI1\ttim@newton",
+                                  path: "/x.pub", fingerprint: "f", bits: nil)
+        XCTAssertEqual(key?.algorithm, "ssh-ed25519")
+        XCTAssertEqual(key?.blob, "AAAAC3NzaC1lZDI1")
+        XCTAssertEqual(key?.comment, "tim@newton")
+    }
+
+    /// A `.pub` written on Windows, or copied through something that added one.
+    func testCarriageReturnsAreStripped() {
+        let key = PublicKey.parse(line: "ssh-ed25519 AAAAC3NzaC1lZDI1 tim@newton\r",
+                                  path: "/x.pub", fingerprint: "f", bits: nil)
+        XCTAssertEqual(key?.comment, "tim@newton")
+        XCTAssertFalse(key?.line.contains("\r") ?? true, "a CR would be appended to the host")
+    }
+
+    /// Files that live in `~/.ssh` and are emphatically not distributable keys.
+    func testNeighbouringFilesInSSHAreRejected() {
+        for line in [
+            "example.com ssh-rsa AAAAB3NzaC1yc2E",                  // known_hosts
+            "|1|abc=|def= ssh-ed25519 AAAAC3NzaC1lZDI1",            // hashed known_hosts
+            "Host myserver",                                        // config
+            "-----BEGIN OPENSSH PRIVATE KEY-----",                  // private key
+            "@cert-authority *.example.com ssh-rsa AAAAB3",         // CA marker
+        ] {
+            XCTAssertNil(PublicKey.parse(line: line, path: "/x", fingerprint: "f", bits: nil),
+                         "should have rejected: \(line)")
+        }
+    }
+}
