@@ -51,6 +51,13 @@ struct SidebarView: View {
     @State private var groupLaunchNotice: String?
     @State private var selection: Set<UUID> = []
     @State private var showingKeyDistribution = false
+    /// Hosts the key sheet opens with already ticked — a right-clicked host,
+    /// a multi-selection, or every host in a right-clicked folder. Empty when
+    /// the sheet is opened from the menu bar, which falls back to whatever the
+    /// sidebar selection happens to be.
+    @State private var keyDistributionPreselection: Set<UUID> = []
+    /// Set only when the trip started from a credential profile.
+    @State private var keyDistributionKeyPath: String?
 
     /// Held as a constant rather than concatenated inline: a chain of `+` on
     /// string literals inside a `Text` is surprisingly expensive to type-check,
@@ -186,7 +193,11 @@ struct SidebarView: View {
                 newGroupFolder = tab?.groupID.flatMap { store.group(id: $0)?.folder } ?? ""
                 savingGroup = true
             },
-            onCopyKeyToHosts: { showingKeyDistribution = true }
+            onCopyKeyToHosts: {
+                keyDistributionPreselection = selection
+                keyDistributionKeyPath = nil
+                showingKeyDistribution = true
+            }
         ))
         .sheet(item: $editingEntry) { entry in
             SessionEditorView(entry: entry, folders: store.folders) { result in
@@ -210,7 +221,8 @@ struct SidebarView: View {
             logSearch: $showingLogSearch,
             portForwarding: $showingPortForwarding,
             keyDistribution: $showingKeyDistribution,
-            keyPreselection: selection,
+            keyPreselection: keyDistributionPreselection,
+            keyPath: keyDistributionKeyPath,
             store: store, library: library, tunnels: tunnels
         ))
         .fileImporter(
@@ -347,6 +359,11 @@ struct SidebarView: View {
                 connectSelected: openSelected,
                 edit: { editingEntry = $0 },
                 openFolder: openFolder,
+                copyKeyToHosts: { ids, keyPath in
+                    keyDistributionPreselection = ids
+                    keyDistributionKeyPath = keyPath
+                    showingKeyDistribution = true
+                },
                 newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
             )
@@ -774,6 +791,7 @@ private struct LibrarySheets: ViewModifier {
     @Binding var portForwarding: Bool
     @Binding var keyDistribution: Bool
     let keyPreselection: Set<UUID>
+    let keyPath: String?
     let store: SessionStore
     let library: LibraryCommands
     let tunnels: TunnelManager
@@ -797,7 +815,8 @@ private struct LibrarySheets: ViewModifier {
             .sheet(isPresented: $keyDistribution) {
                 // The sidebar selection is a starting point, not the decision —
                 // the sheet's own confirmation names every host either way.
-                KeyDistributionView(preselected: keyPreselection).environmentObject(store)
+                KeyDistributionView(preselected: keyPreselection, preselectedKeyPath: keyPath)
+                    .environmentObject(store)
             }
     }
 }

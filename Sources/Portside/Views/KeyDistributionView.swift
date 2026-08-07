@@ -14,6 +14,10 @@ struct KeyDistributionView: View {
 
     /// Hosts ticked when the sheet opened (a sidebar selection, usually).
     let preselected: Set<UUID>
+    /// Public key chosen when the sheet opened. Set when arriving from a
+    /// credential profile, where the key is the whole point of the trip and
+    /// picking a different one would be a mistake waiting to happen.
+    var preselectedKeyPath: String? = nil
 
     private enum Stage: Equatable {
         case choosing
@@ -218,6 +222,15 @@ struct KeyDistributionView: View {
                         }
                     }
                 }
+                // The single most confusable thing about this operation: the
+                // key's *filename* suggests an account (`svc_ansible.pub`),
+                // but it lands in the home directory of whoever Portside logs
+                // in as for that host. Saying so beside the host list is
+                // cheaper than the support question.
+                Text("The key is added to each host's login account — the user shown above, resolved from the host, its credential profile, then your defaults. An aliased host uses whatever `~/.ssh/config` says. It does not go to an account named after the key file.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Each host is contacted once. A wrong password will not be retried — it is reported and left alone, so a bad run can't lock the account.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -300,12 +313,34 @@ struct KeyDistributionView: View {
     // MARK: - Work
 
     private func loadKeys() async {
+        // **Resolved, not raw.** A host with no user of its own takes one from
+        // its credential profile or the library defaults, and every connect
+        // path in the app goes through `resolved` for exactly that reason. Raw
+        // entries would send `ssh hostname` with no user, ssh would fall back
+        // to the local account name, and the key would land in the wrong
+        // account's `~/.ssh` — the same failure 0.22.3 fixed for passwords.
+        // It also means the user shown next to each host is the one the key
+        // will actually be installed for.
         plan = KeyDistributionPlan(
-            candidates: KeyDistributionPlan.candidates(from: store.entries),
+            candidates: KeyDistributionPlan.candidates(from: store.entries.map(store.resolved)),
             selected: preselected
         )
         keys = await PublicKeyLocator.discover()
-        chosenKey = keys.first
+        if let preselectedKeyPath {
+            // The profile's key may live outside ~/.ssh, so fall back to
+            // reading it directly rather than silently choosing a different
+            // key than the one the profile names.
+            if let known = keys.first(where: { $0.path == preselectedKeyPath }) {
+                chosenKey = known
+            } else if let loaded = await PublicKeyLocator.load(path: preselectedKeyPath) {
+                keys.insert(loaded, at: 0)
+                chosenKey = loaded
+            } else {
+                chosenKey = keys.first
+            }
+        } else {
+            chosenKey = keys.first
+        }
         loadingKeys = false
     }
 

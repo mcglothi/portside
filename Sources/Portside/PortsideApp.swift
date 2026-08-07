@@ -239,12 +239,18 @@ struct PortsideApp: App {
                 Button("Collapse All Folders") { library.requestCollapseAllFolders() }
                     .disabled(store.folders.isEmpty)
                 Divider()
+            }
+            // Actions that operate on the host *library* rather than on the
+            // window or the session in front of you. They lived in View
+            // because there was nowhere better; key distribution made that
+            // untenable — "changes forty remote machines" does not belong
+            // among view toggles — and rotation lands here next.
+            CommandMenu("Hosts") {
                 Button("Copy SSH Key to Hosts…") { library.requestCopyKeyToHosts() }
                     .disabled(store.entries.allSatisfy { $0.kind != .host })
                 Divider()
                 Button("Inventory Coverage…") { library.requestShowCoverage() }
                 Button("History…") { library.requestShowHistory() }
-                Divider()
             }
             CommandMenu("Pane") {
                 Button("Split Right") { sessions.splitActivePane(.horizontal) }

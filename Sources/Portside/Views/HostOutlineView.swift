@@ -40,6 +40,10 @@ struct HostOutlineView: NSViewRepresentable {
     let connectSelected: (_ multiExec: Bool) -> Void
     let edit: (SessionEntry) -> Void
     let openFolder: (_ path: String, _ multiExec: Bool) -> Void
+    /// Opens the key-distribution sheet with these hosts already ticked, and
+    /// optionally a specific public key already chosen (a credential
+    /// profile's, where picking a different one would defeat the point).
+    var copyKeyToHosts: (Set<UUID>, String?) -> Void = { _, _ in }
     let newSubfolder: (String) -> Void
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
@@ -637,6 +641,8 @@ struct HostOutlineView: NSViewRepresentable {
                 menu.addItem(ClosureMenuItem(title: "Remove \(selected.count) Selected from Favorites") {
                     store.setFavorite(false, ids: selected)
                 })
+                addCopyKeyItem(menu, hosts: selectedEntries.filter { selected.contains($0.id) },
+                               title: "Copy SSH Key to \(selected.count) Selected…")
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
                     if self.confirmDelete(hosts: selected.count, groups: 0) { store.delete(ids: selected) }
@@ -656,8 +662,50 @@ struct HostOutlineView: NSViewRepresentable {
             // selection could do it from the menu.
             addCredentialProfileMenu(menu, forSelection: [entry.id])
             addEnvironmentMenu(menu, forSelection: [entry.id])
+            addCopyKeyItem(menu, hosts: [entry], title: "Copy SSH Key…")
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
+        }
+
+        /// Asks whether to install a just-assigned profile's key on the hosts
+        /// that now use it. Silent when the profile has no public key beside
+        /// its identity file, or when none of the hosts can take one.
+        private func offerProfileKey(_ profile: CredentialProfile, appliedTo ids: Set<UUID>) {
+            let store = parent.store
+            guard CredentialProfileKey.publicKeyPath(for: profile) != nil else { return }
+            let affected = KeyDistributionPlan.candidates(
+                from: store.entries.filter { ids.contains($0.id) })
+            guard !affected.isEmpty else { return }
+
+            let alert = NSAlert()
+            alert.messageText = affected.count == 1
+                ? "Copy \u{201C}\(profile.name)\u{201D}\u{2019}s key to this host?"
+                : "Copy \u{201C}\(profile.name)\u{201D}\u{2019}s key to these \(affected.count) hosts?"
+            alert.informativeText = "They now authenticate with this profile\u{2019}s key. "
+                + "Portside can add it to their authorized_keys \u{2014} you\u{2019}ll see the "
+                + "fingerprint and every host before anything is contacted."
+            alert.addButton(withTitle: "Copy Key\u{2026}")
+            alert.addButton(withTitle: "Not Now")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            self.parent.copyKeyToHosts(Set(affected.map(\.id)),
+                                       CredentialProfileKey.publicKeyPath(for: profile))
+        }
+
+        /// "Copy SSH Key…" — opens the sheet with these hosts pre-ticked.
+        ///
+        /// Only offered when the set contains something with an
+        /// `authorized_keys` to write to, so it never appears on a folder of
+        /// serial consoles. **Protected hosts are pre-ticked here**, unlike
+        /// Select All inside the sheet: right-clicking a specific host or
+        /// folder names its targets, which is the deliberate act the protected
+        /// flag asks for. The sheet still shows them badged and calls them out
+        /// again on the confirmation, and nothing is contacted until then.
+        private func addCopyKeyItem(_ menu: NSMenu, hosts: [SessionEntry], title: String) {
+            let targets = KeyDistributionPlan.candidates(from: hosts)
+            guard !targets.isEmpty else { return }
+            menu.addItem(ClosureMenuItem(title: title) {
+                self.parent.copyKeyToHosts(Set(targets.map(\.id)), nil)
+            })
         }
 
         /// "Move to ▸" submenu of every folder the selection isn't already in,
@@ -692,6 +740,11 @@ struct HostOutlineView: NSViewRepresentable {
             for profile in store.credentialProfiles {
                 submenu.addItem(ClosureMenuItem(title: profile.name) {
                     store.applyCredentialProfile(profile.id, to: ids)
+                    // Assigning a profile is the moment its key is most likely
+                    // wanted on those hosts — it is the point at which the user
+                    // has just declared they log in with it. Offered, never
+                    // done: the sheet still confirms and names every host.
+                    self.offerProfileKey(profile, appliedTo: ids)
                 })
             }
             submenu.addItem(.separator())
@@ -733,6 +786,8 @@ struct HostOutlineView: NSViewRepresentable {
                 menu.addItem(.separator())
                 addCredentialProfileMenu(menu, forSelection: Set(inFolder.map(\.id)))
                 addEnvironmentMenu(menu, forSelection: Set(inFolder.map(\.id)))
+                addCopyKeyItem(menu, hosts: inFolder,
+                               title: "Copy SSH Key to \(folder.name)…")
                 menu.addItem(.separator())
             }
             // Scoped to this folder's own subtree rather than the whole

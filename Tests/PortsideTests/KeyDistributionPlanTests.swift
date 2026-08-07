@@ -256,3 +256,51 @@ final class PublicKeyLocatorTests: XCTestCase {
         XCTAssertEqual(keys.first?.fingerprint, "")
     }
 }
+
+// MARK: - Which account the key lands in
+
+/// The key is installed for whoever ssh logs in as — which is the *resolved*
+/// user, not the one typed on the entry. A host with no user of its own takes
+/// one from its credential profile or the library defaults, and pushing with
+/// the raw entry would send `ssh hostname` with no user at all, letting ssh
+/// fall back to the local account name and writing the key into the wrong
+/// account's `~/.ssh`. That is the same failure 0.22.3 fixed for passwords.
+final class KeyDistributionTargetAccountTests: XCTestCase {
+
+    func testArgumentsCarryTheResolvedUser() {
+        var e = SessionEntry(name: "web")
+        e.kind = .host
+        e.hostname = "web.internal"
+        e.user = "deploy"
+        let args = KeyDistributor.sshArguments(for: e, hasPassword: true)
+        XCTAssertTrue(args.contains("deploy@web.internal"),
+                      "the login target decides whose ~/.ssh gets the key: \(args)")
+    }
+
+    /// With no user resolved, ssh falls back to the local account name — the
+    /// bug this guards. `sshArgs` must not silently produce a bare hostname
+    /// for a host the app believes has a user.
+    func testAHostWithNoUserTargetsTheBareHostname() {
+        var e = SessionEntry(name: "web")
+        e.kind = .host
+        e.hostname = "web.internal"
+        e.user = nil
+        let args = KeyDistributor.sshArguments(for: e, hasPassword: true)
+        XCTAssertTrue(args.contains("web.internal"))
+        XCTAssertFalse(args.contains { $0.contains("@") },
+                       "no user resolved means ssh picks one; callers must resolve first")
+    }
+
+    /// An aliased host defers to `~/.ssh/config` for its user entirely — the
+    /// alias is passed through untouched and Portside must not prepend one.
+    func testAnAliasedHostIsPassedThroughUntouched() {
+        var e = SessionEntry(name: "web")
+        e.kind = .host
+        e.hostname = "web.internal"
+        e.user = "ignored"
+        e.sshAlias = "web-prod"
+        let args = KeyDistributor.sshArguments(for: e, hasPassword: true)
+        XCTAssertTrue(args.contains("web-prod"))
+        XCTAssertFalse(args.contains("ignored@web.internal"))
+    }
+}

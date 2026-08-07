@@ -1,6 +1,6 @@
 # Key distribution
 
-**View ▸ Copy SSH Key to Hosts…**
+**Hosts ▸ Copy SSH Key to Hosts…**, or right-click a host, a selection, or a folder.
 
 Adds one of your public keys to a *selection* of hosts' `authorized_keys`, using
 the passwords Portside already holds. The single-host case is one `ssh-copy-id`
@@ -9,6 +9,19 @@ command and needs no GUI — the fleet case is the feature.
 This is the first thing Portside does that **changes remote machines**.
 Everything else it does is read-only or a session you are driving. That is why
 it works the way it does below.
+
+## Where to start it
+
+- **Hosts ▸ Copy SSH Key to Hosts…** — opens with the sidebar selection ticked.
+- **Right-click a host**, or a multi-selection, or a **folder** — a folder ticks
+  every host inside it.
+- **Settings ▸ Profiles ▸ Copy Key…** on a credential profile that has an
+  identity file — ticks the hosts that authenticate with it, and chooses that
+  profile's key.
+
+Right-clicking a specific host or folder *does* pre-tick protected hosts, unlike
+Select All inside the sheet. Naming a target is the deliberate act the protected
+flag asks for; they are still badged and called out again on the confirmation.
 
 ## What happens
 
@@ -69,12 +82,42 @@ Two details worth knowing:
 Re-running a push is therefore safe and does nothing on hosts that already have
 the key.
 
+## Credential profiles
+
+A profile says "these hosts log in with this key". Portside could configure that
+and nothing more — it set `ssh -i` and hoped the host already trusted the key.
+Two things close that loop:
+
+- **Copy Key… on the profile** (Settings ▸ Profiles) pushes the profile's key to
+  the hosts that use it.
+- **Assigning a profile** to hosts offers the same thing straight away, since
+  that's the moment you've just declared they log in with it. Offered, never
+  done — it opens the same sheet, which still confirms.
+
+Two details:
+
+- The profile stores the **private** key path, because that's what `ssh -i`
+  wants. What gets pushed is the `.pub` beside it. A profile whose key has no
+  public half offers nothing rather than guessing.
+- For the **default** profile, "hosts using it" includes every host with no
+  profile of its own — which may be most of the library. The count is in the
+  button, and the sheet names every host.
+- **Aliased hosts are excluded.** `~/.ssh/config` owns their identity file, so
+  the profile's key may not be the one they present.
+
 ## What Portside can and cannot know
 
 It knows which hosts *it points at* a key — entry, then credential profile, then
 defaults. It does **not** know what any `authorized_keys` actually contains
 until it looks, and a key set by `IdentityFile` in `~/.ssh/config` is invisible
 to it.
+
+**Which account does the key land in?** Whichever one Portside logs in as for
+that host — the user resolved from the entry, then its credential profile, then
+your defaults, and for an aliased host whatever `~/.ssh/config` says. *Not* an
+account named after the key file: pushing `svc_ansible.pub` to a host you
+connect to as `deploy` installs it in `/home/deploy/.ssh/authorized_keys`. The
+resolved user is shown beside each host in the sheet for exactly this reason.
 
 So the host list is a proposal. The per-host result is what makes it true.
 

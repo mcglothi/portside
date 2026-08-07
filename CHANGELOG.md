@@ -5,11 +5,15 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## 0.23.0
 
-**Copy an SSH key to a selection of hosts at once.** View ▸ Copy SSH Key to Hosts… adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.
+**Copy an SSH key to a selection of hosts at once.** Hosts ▸ Copy SSH Key to Hosts…, or right-click a host, a selection, or a folder. It adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.
 
 This is the first thing Portside does that changes remote machines, so it is built to be boring about it. **A host is contacted once and a password is never tried twice** — forty hosts with a stale password is forty failed authentications and a locked account, so a failure is reported and left alone rather than retried. Hosts Portside holds no password for fail immediately instead of hanging on a prompt nobody is watching. The key's fingerprint is shown *before* the push, not after, because a filename doesn't identify a key. The confirmation names every host rather than counting them. **Select All never sweeps in a protected host** — the same rule MultiExec has, for the same reason. And you get a result per host, not one "done": key added, already had it, or the actual reason it failed.
 
 On the host it is careful in the ways that matter. `~/.ssh` and `authorized_keys` are created if missing and only then given restrictive permissions — an existing file's permissions are yours. The file is copied to `authorized_keys.portside-backup` before it is touched. A key that's already installed is recognised by its type and blob rather than its comment, so re-running a push is a no-op instead of appending duplicates, and a *commented-out* entry correctly doesn't count as installed. See [docs/key-distribution.md](docs/key-distribution.md).
+
+**Credential profiles can install the key they name.** A profile has always said "these hosts log in with this key" while being able to do nothing about it — it set `ssh -i` and hoped. Now a profile with an identity file offers **Copy Key…**, targeting the hosts that authenticate with it, and assigning a profile offers the same thing on the spot. It pushes the `.pub` beside the profile's private key, never the private key itself, and skips aliased hosts because `~/.ssh/config` owns their identity.
+
+**A new Hosts menu.** Copy SSH Key to Hosts, Inventory Coverage and History moved out of View, which was where library-wide actions went for want of anywhere better. "Changes forty remote machines" does not belong among view toggles.
 
 Key rotation is deliberately not in this release. Rotation's first phase *is* key distribution, and shipping both at once would mean the first time anyone retires a key, the code that installed it is also new.
 

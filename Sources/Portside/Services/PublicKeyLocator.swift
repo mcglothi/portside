@@ -56,6 +56,19 @@ enum PublicKeyLocator {
         return rank(a) == rank(b) ? a.filename < b.filename : rank(a) < rank(b)
     }
 
+    /// Reads one specific `.pub` file — used when a credential profile names a
+    /// key that isn't in `~/.ssh`.
+    static func load(
+        path: String,
+        fingerprinter: (String) async -> (fingerprint: String, bits: Int?)? = fingerprint
+    ) async -> PublicKey? {
+        guard let contents = try? String(contentsOfFile: path, encoding: .utf8),
+              let firstLine = contents.split(separator: "\n").first else { return nil }
+        let measured = await fingerprinter(path)
+        return PublicKey.parse(line: String(firstLine), path: path,
+                               fingerprint: measured?.fingerprint ?? "", bits: measured?.bits)
+    }
+
     static func fingerprint(of path: String) async -> (fingerprint: String, bits: Int?)? {
         guard let result = try? await SFTPClient.runProcess(
             "/usr/bin/ssh-keygen", ["-l", "-f", path], stdin: ""

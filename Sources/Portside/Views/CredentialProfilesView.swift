@@ -7,6 +7,15 @@ import SwiftUI
 struct CredentialProfilesView: View {
     @EnvironmentObject var store: SessionStore
     @State private var editingProfile: CredentialProfile?
+    @State private var copyingKey: KeyPush?
+
+    /// A pending "push this profile's key to its hosts" trip through the
+    /// key-distribution sheet.
+    struct KeyPush: Identifiable {
+        let keyPath: String
+        let hosts: Set<UUID>
+        var id: String { keyPath + hosts.map(\.uuidString).sorted().joined() }
+    }
 
     private func subtitle(for profile: CredentialProfile) -> String {
         var parts: [String] = []
@@ -49,6 +58,21 @@ struct CredentialProfilesView: View {
                                 Button("Set as Default") { store.defaultProfileID = profile.id }
                                     .buttonStyle(.link)
                             }
+                            if let key = CredentialProfileKey.publicKeyPath(for: profile) {
+                                // A profile says these hosts log in with this
+                                // key; until now Portside could configure that
+                                // and nothing more. This installs it.
+                                let hosts = CredentialProfileKey.hosts(
+                                    using: profile, in: store.entries,
+                                    defaultProfileID: store.defaultProfileID)
+                                if !hosts.isEmpty {
+                                    Button("Copy Key…") {
+                                        copyingKey = KeyPush(keyPath: key,
+                                                             hosts: Set(hosts.map(\.id)))
+                                    }
+                                    .help(CredentialProfileKey.actionTitle(hostCount: hosts.count))
+                                }
+                            }
                             Button("Edit…") { editingProfile = profile }
                             Button("Delete", role: .destructive) { store.delete(profile) }
                         }
@@ -69,6 +93,10 @@ struct CredentialProfilesView: View {
             .padding(Metrics.sheetContent)
         }
         .settingsPageSizing()
+        .sheet(item: $copyingKey) { push in
+            KeyDistributionView(preselected: push.hosts, preselectedKeyPath: push.keyPath)
+                .environmentObject(store)
+        }
         .sheet(item: $editingProfile) { profile in
             CredentialProfileEditorView(profile: profile) { result in
                 switch result {
