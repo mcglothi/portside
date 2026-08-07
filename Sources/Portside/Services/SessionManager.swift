@@ -123,9 +123,8 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
         // The log and the command timeline get the bytes as they actually
-        // arrived. Only the terminal sees the repaired stream -- the guard can
-        // change the byte count, and transcript offsets have to keep matching
-        // what is on disk.
+        // arrived, and so does the terminal. Nothing in this path may rewrite
+        // them: transcript offsets have to keep matching what is on disk.
         logger?.append(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
@@ -1066,6 +1065,14 @@ final class SessionManager: ObservableObject {
     private static let postConnectPollInterval: TimeInterval = 0.15
 
     private func postConnect(_ session: TerminalSession, entry: SessionEntry) {
+        // Goes first so the user's own post-connect command is the first thing
+        // the integration reports on, rather than the one command it misses.
+        // Both wait on the same "nothing is reading a secret" signal and are
+        // scheduled in this order, so they arrive in it.
+        if shouldInjectShellIntegration(for: entry) {
+            sendWhenNotPrompting(ShellIntegrationInjection.command, to: session,
+                                 deadline: .now() + Self.postConnectAuthTimeout)
+        }
         if let command = entry.postConnectCommand {
             sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout)
         }
@@ -1074,6 +1081,24 @@ final class SessionManager: ObservableObject {
         // Quick Connect's ranking and stale-host detection.
         onConnectionAttempt?(entry, .attempted)
         confirmConnection(session, entry: entry)
+    }
+
+    /// Whether this session should have the shell integration typed into it.
+    ///
+    /// Restricted to `.host`, which is the only kind that reaches a remote
+    /// shell over ssh. Serial and telnet have no shell to speak of, and a
+    /// container or pod session opens a *local* login shell that Portside then
+    /// drives into the container — injecting there would integrate the Mac's
+    /// own shell, report the Mac's working directory, and point the file pane
+    /// at the wrong machine entirely.
+    ///
+    /// Not conditioned on whether the host already has the snippet in its rc
+    /// file: re-running it is a no-op by construction (bash checks
+    /// `PROMPT_COMMAND` for its own hook before prepending, `add-zsh-hook`
+    /// will not double-register), so there is nothing to detect and no round
+    /// trip worth spending to detect it.
+    func shouldInjectShellIntegration(for entry: SessionEntry) -> Bool {
+        terminalSettings.injectShellIntegration && entry.kind == .host
     }
 
     /// Sends a post-connect command once nothing is reading a secret.

@@ -58,4 +58,23 @@ final class TerminalSettingsTests: XCTestCase {
         let decoded = try JSONDecoder().decode(TerminalSettings.self, from: data)
         XCTAssertEqual(decoded, t)
     }
+
+    /// `CodingKeys` is declared by hand here, so a new field that isn't added
+    /// to it encodes as nothing and silently resets on every launch.
+    func testInjectShellIntegrationSurvivesARoundTrip() throws {
+        var t = TerminalSettings()
+        t.injectShellIntegration = true
+        let data = try JSONEncoder().encode(t)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("injectShellIntegration"),
+                      "field is missing from CodingKeys — it would never persist")
+        XCTAssertTrue(try JSONDecoder().decode(TerminalSettings.self, from: data).injectShellIntegration)
+    }
+
+    /// A library written before this field existed must still load.
+    func testSettingsWrittenWithoutTheFieldStillDecode() throws {
+        let json = Data(#"{"scrollbackLines":5000}"#.utf8)
+        let decoded = try JSONDecoder().decode(TerminalSettings.self, from: json)
+        XCTAssertEqual(decoded.scrollbackLines, 5_000)
+        XCTAssertFalse(decoded.injectShellIntegration)
+    }
 }

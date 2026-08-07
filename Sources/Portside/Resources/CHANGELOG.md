@@ -9,6 +9,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Powerline prompts draw without seams**, selections stay anchored to their text when rows move underneath them, and rows no longer repaint stale while you're scrolled back into history. Right-to-left text is supported, on a parser that's faster than the one it replaces.
 
+**The file browser can follow `cd` without touching a host's `.bashrc`.** Settings ▸ Terminal ▸ "Set up directory tracking on connect" types the shell integration into each SSH session as it connects, instead of asking to append it to the host's `.bashrc` or `.zshrc`. On a box you don't own — or one where you'd rather not leave anything behind — that's the difference between the SFTP pane following you around and not. It lasts for that session only, shows up as one line in the scrollback, and applies to hosts (not serial, telnet, or container sessions). Off by default, and the existing offer to install it permanently is unchanged. Experimental.
+
 **Sixel images are handled by the terminal again.** Portside had been screening sixel data itself since 0.17.0, working around a crash on images whose final band was wider than the ones before it. That was fixed upstream two hours after the release Portside was pinned to, and the pin has now moved past it — so the workaround is gone and sixel goes straight to the parser.
 
 ## 0.22.3

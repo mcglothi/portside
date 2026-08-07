@@ -29,6 +29,11 @@ struct TerminalSettingsView: View {
                     get: { store.terminal.useMetalRenderer },
                     set: { var t = store.terminal; t.useMetalRenderer = $0; store.updateTerminal(t) }))
                 Text("Experimental. Renders the terminal on the GPU, which can lower CPU use with fast-updating output. If Metal isn't available, Portside stays on the standard renderer. New terminals pick this up; already-open tabs switch when toggled.")
+
+                Toggle("Set up directory tracking on connect", isOn: Binding(
+                    get: { store.terminal.injectShellIntegration },
+                    set: { var t = store.terminal; t.injectShellIntegration = $0; store.updateTerminal(t) }))
+                Text("Experimental. Types the shell integration into each SSH session as it connects, so the file browser follows `cd` without adding anything to the host's .bashrc or .zshrc. It lasts only for that session, appears as one line in the scrollback, and applies to hosts — not serial, telnet, or container sessions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -29,6 +29,13 @@ struct TerminalSettings: Equatable {
     /// safe and discoverable without silently reconnecting.
     var restoreMode: RestoreMode = .ask
 
+    /// Type the shell integration into each new ssh session instead of asking
+    /// to append it to the host's `.bashrc`/`.zshrc` — see
+    /// `ShellIntegrationInjection`. Off by default: it writes a line of shell
+    /// into every session on connect, which is visible in the scrollback and
+    /// is not something to start doing to someone's hosts unasked.
+    var injectShellIntegration: Bool = false
+
     /// Presets offered in Settings. Bounded on purpose: SwiftTerm has no true
     /// "unlimited" mode (passing nil *disables* scrollback), and each line is a
     /// preallocated slot, so we cap at a large-but-sane ceiling.
@@ -45,7 +52,7 @@ struct TerminalSettings: Equatable {
 // scrollbackLines) keeps loading as new terminal settings are added.
 extension TerminalSettings: Codable {
     enum CodingKeys: String, CodingKey {
-        case scrollbackLines, useMetalRenderer, restoreMode
+        case scrollbackLines, useMetalRenderer, restoreMode, injectShellIntegration
     }
 
     init(from decoder: Decoder) throws {
@@ -54,5 +61,7 @@ extension TerminalSettings: Codable {
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? defaults.scrollbackLines
         useMetalRenderer = try c.decodeIfPresent(Bool.self, forKey: .useMetalRenderer) ?? defaults.useMetalRenderer
         restoreMode = try c.decodeIfPresent(RestoreMode.self, forKey: .restoreMode) ?? defaults.restoreMode
+        injectShellIntegration = try c.decodeIfPresent(Bool.self, forKey: .injectShellIntegration)
+            ?? defaults.injectShellIntegration
     }
 }
