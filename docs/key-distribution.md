@@ -186,6 +186,32 @@ later feature, because rotation's first phase *is* key distribution, and shippin
 both together would mean the first time anyone retires a key, the code that
 installed it is also new. See `docs/road-to-1.0.md`.
 
+## Testing it against real hosts
+
+`KeyDistributorIntegrationTests` drives the real code path — argument
+construction, the remote script, sudo, result parsing — against real machines.
+It is skipped unless asked for, because it contacts hosts and, in the sudo
+cases, changes them:
+
+```sh
+PORTSIDE_ITEST_HOSTS=turing,hopper \
+PORTSIDE_ITEST_KEY=~/.ssh/svc_goose.pub \
+PORTSIDE_ITEST_ACCOUNT=svc_goose \
+PORTSIDE_ITEST_SCRATCH_KEY=/tmp/throwaway.pub \
+swift test --filter KeyDistributorIntegration
+```
+
+It authenticates by key and passes no password at all, so nothing is read from
+the Keychain and nothing is spent. A host whose sudo requires a password is
+therefore a *test case* — it should fail cleanly and by name — rather than a
+blocker. The reversible parts use a throwaway key that is removed afterwards
+even if an assertion fails.
+
+It deliberately does **not** delete a home directory to test bootstrapping. That
+path is covered with stubs in `KeyDistributorBootstrapTests`, and a populated
+service-account home is not something a test suite should remove to prove a
+point.
+
 ## Troubleshooting
 
 **"Permission denied"** — Portside had no password for that host, or the one it
