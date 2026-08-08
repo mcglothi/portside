@@ -93,39 +93,35 @@ success and leave you locked out wondering why.
 
 ## Copying to a different account
 
-The sheet states where the key lands, in three places: a line under the key
-naming the account, a `→ account` beside every host in the list, and the
-**Copy to account** field.
+**Copy to account** installs the key for an account other than the one Portside
+logs in as. Leave it empty — the common case — and the key goes to the login
+user's home, needing no privileges at all. That is the `ssh-copy-id` model,
+where `[user@]hostname` decides both who authenticates and whose
+`authorized_keys` is written.
 
-**Copy to account** overrides which account the key is installed for. Leave it
-empty and each host uses its own resolved user, which is the common case.
+Fill it in and **sudo is required on every selected host**. Portside still logs
+in as each host's own user and runs:
 
-It comes **prefilled only when every selected host already resolves to the same
-account** — so leaving it alone changes nothing, and retargeting is one word
-away. It stays empty when the selection spans several accounts, or contains an
-aliased host, because prefilling either would turn an untouched field into a
-real override: the other hosts would be retargeted, and an aliased host would
-get a `-l` overriding its `~/.ssh/config` entry. The prefill follows the
-selection while you haven't typed in it, and stops the moment you do.
+```sh
+sudo -H -u svc_ansible sh -c '<the same script>'
+```
 
-It works by **logging in as that account** — `ssh svc_ansible@dns2` rather than
-`ssh you@dns2`. That is the whole trick: `$HOME` is then already the target's, so
-there is nothing to escalate, no ownership to repair, and the script that runs on
-the host is identical. Writing into *another* account's home from your own would
-need sudo, a tty, and a `chown` to keep sshd's `StrictModes` happy — a different
-feature, and not this one.
+This is the only honest way to reach an account you *cannot* log in as — a
+key-only service account being bootstrapped is exactly that case, and it is why
+Ansible's `authorized_key` module pairs its `user:` parameter with `become`.
 
-**Which password it uses.** Not the host's — that one belongs to the account the
-host entry logs in as, and offering it to a different account is a guaranteed
-failed authentication on every host in the run. Portside instead looks for a
-credential profile whose *user* is the account you typed, and uses that. If none
-exists, the push runs key/agent-only and fails cleanly rather than spending a
-credential that was never going to work. The field tells you which of the two is
-about to happen.
+- `-H` sets `HOME` to the target's, so the script resolves the right `~/.ssh`.
+- Running **as** the target rather than as root means every file is created with
+  the correct ownership — no `chown` afterwards, and nothing for sshd's
+  `StrictModes` to reject.
+- The sudo password is the host's own saved password, sent on stdin **once**.
+  A failed sudo is logged on the host and repeats carry the same lockout risk as
+  repeated ssh authentications, so the one-attempt rule covers sudo too.
+- A host that doesn't permit it is reported as a failure and left alone. The
+  reason is sudo's own words — "a password is required", "is not in the sudoers
+  file" — rather than a bare exit code.
 
-**The limit.** You need to be able to log in as that account. For a service
-account that is key-only with no usable password, you can't yet — which is often
-the very reason you're installing the key. That case needs sudo and isn't built.
+The confirmation warns before any of this happens.
 
 ## Credential profiles
 

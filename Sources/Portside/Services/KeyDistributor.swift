@@ -139,16 +139,12 @@ enum KeyDistributor {
     /// `hasPassword` decides only whether `BatchMode` is set — it never adds a
     /// retry, and there is no path through this function that allows more than
     /// one password prompt.
-    /// `account`, when set, overrides which account the key is installed for by
-    /// **logging in as it** — `ssh svc_ansible@host` rather than
-    /// `ssh you@host`. That is the whole trick: `$HOME` is then already the
-    /// target account's, so there is nothing to escalate, no ownership to
-    /// repair, and the remote script is untouched. Writing into *another*
-    /// account's home from your own would need sudo, a tty, and a `chown` to
-    /// keep sshd's `StrictModes` happy — a different feature.
+    ///
+    /// The login is always the host's own user. Installing the key for a
+    /// *different* account is `sudo`'s job, not the login's — see
+    /// `remoteCommand(for:nonce:account:)`.
     static func sshArguments(for entry: SessionEntry, hasPassword: Bool,
-                             defaults: ConnectionDefaults = ConnectionDefaults(),
-                             account: String? = nil) -> [String] {
+                             defaults: ConnectionDefaults = ConnectionDefaults()) -> [String] {
         var args = [
             // The rule this whole feature is built around. First, so it is the
             // first thing anyone reads in a process listing or a bug report.
@@ -168,38 +164,56 @@ enum KeyDistributor {
         // can't outlive itself as a socket other connections lean on.
         args += SSHControl.passiveOptions
 
-        // Both halves, deliberately. An aliased host's destination is the bare
-        // alias and carries no user, so only `-l` can retarget it; a plain host
-        // builds `user@hostname`, where `-l` alone would lose to the
-        // destination. Setting both means the two always agree and neither
-        // form depends on ssh's precedence rules.
-        var target = entry
-        if let account = account?.trimmingCharacters(in: .whitespaces), !account.isEmpty {
-            target.user = account
-            args += ["-l", account]
-        }
-        args += target.sshArgs
+        args += entry.sshArgs
         return args
     }
 
-    /// The password to spend when the login account has been overridden.
+    // MARK: - Reaching another account
+
+    /// The command actually handed to ssh.
     ///
-    /// **Never the host's own.** That password belongs to the account the host
-    /// entry logs in as, and offering it to a different account is a guaranteed
-    /// failed authentication — on every host in the run, which is precisely the
-    /// lockout this feature is built to avoid. A credential profile whose user
-    /// *is* the target account is the one credential we can honestly claim
-    /// belongs to it; failing that, the push goes key/agent-only under
-    /// `BatchMode` and fails cleanly rather than spending something wrong.
-    static func password(forAccount account: String,
-                         profiles: [CredentialProfile],
-                         profilePassword: (UUID) -> String?) -> String? {
-        let wanted = account.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return nil }
-        guard let match = profiles.first(where: {
-            ($0.user ?? "").trimmingCharacters(in: .whitespaces) == wanted
-        }) else { return nil }
-        return profilePassword(match.id)
+    /// With no `account`, that is the script itself and the key lands in the
+    /// login user's home — the `ssh-copy-id` model, where `[user@]hostname`
+    /// decides both who authenticates and whose `authorized_keys` is written.
+    /// No privileges are involved and nothing needs explaining.
+    ///
+    /// With an `account`, the login is unchanged and the script runs under
+    /// `sudo -H -u <account>`. **This is the only honest way to reach an
+    /// account you cannot log in as** — a key-only service account being
+    /// bootstrapped is exactly the case, and it is why Ansible's
+    /// `authorized_key` module pairs its `user:` parameter with `become`.
+    /// `-H` sets `HOME` to the target's, so the untouched script resolves the
+    /// right `~/.ssh`, and running *as* the target rather than as root means
+    /// every file is created with the right ownership — no `chown` afterwards,
+    /// and nothing for sshd's `StrictModes` to reject.
+    ///
+    /// The script travels base64-encoded through a command substitution rather
+    /// than being interpolated into `sh -c '…'`: it contains single quotes of
+    /// its own (every path and the key line are shell-quoted), and nesting
+    /// those inside another layer of quoting is how this kind of wrapper
+    /// usually breaks. Base64's alphabet cannot terminate a quoted string.
+    ///
+    /// `-S` reads the sudo password from stdin, which `push` supplies once and
+    /// never again; `-p ''` silences the prompt so it can't be mistaken for
+    /// output. Hosts where sudo is unavailable or needs a password we don't
+    /// have fail and are reported, like any other failure.
+    static func remoteCommand(for key: PublicKey, nonce: String,
+                              account: String? = nil) -> String {
+        let script = remoteScript(for: key, nonce: nonce)
+        guard let account = account?.trimmingCharacters(in: .whitespaces),
+              !account.isEmpty else { return script }
+        let encoded = Data(script.utf8).base64EncodedString()
+        let user = ShellQuoting.quote(account)
+        return "__pk=\(ShellQuoting.quote(encoded)); "
+            + "sudo -S -p '' -H -u \(user) sh -c "
+            + "\"$(printf %s \"$__pk\" | base64 -d 2>/dev/null "
+            + "|| printf %s \"$__pk\" | base64 -D 2>/dev/null)\""
+    }
+
+    /// Whether a push to this account needs sudo on the host — which is what
+    /// the confirmation warns about.
+    static func requiresSudo(account: String?) -> Bool {
+        !((account ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     // MARK: - Result parsing
@@ -231,7 +245,18 @@ enum KeyDistributor {
 
         let telling = lines.first {
             let l = $0.lowercased()
-            return l.contains("permission denied")
+            // sudo's own refusals, named plainly. "sudo: a password is
+            // required" and "is not in the sudoers file" are the two answers a
+            // user needs when a push to another account fails, and burying
+            // them under a generic exit code makes the feature look broken
+            // rather than unpermitted.
+            return l.contains("is not in the sudoers file")
+                || l.contains("a password is required")
+                || l.contains("no tty present")
+                || l.contains("sorry, try again")
+                || l.contains("unknown user")
+                || l.contains("command not found")
+                || l.contains("permission denied")
                 || l.contains("host key verification failed")
                 || l.contains("could not resolve")
                 || l.contains("connection refused")
@@ -277,11 +302,19 @@ enum KeyDistributor {
         }
 
         let nonce = newNonce()
-        let args = sshArguments(for: entry, hasPassword: environment != nil,
-                                defaults: defaults, account: account)
-            + [remoteScript(for: key, nonce: nonce)]
+        let args = sshArguments(for: entry, hasPassword: environment != nil, defaults: defaults)
+            + [remoteCommand(for: key, nonce: nonce, account: account)]
+
+        // `sudo -S` reads the password from stdin. Sent once, never re-sent:
+        // a failed sudo is logged on the host and repeated attempts carry the
+        // same lockout risk as repeated ssh authentications, so the
+        // one-attempt rule covers sudo too. Empty when there is nothing to
+        // send, which leaves `sudo -S` to fail immediately rather than wait.
+        let stdin = requiresSudo(account: account) && !(password ?? "").isEmpty
+            ? (password ?? "") + "\n"
+            : ""
         do {
-            let result = try await runner("/usr/bin/ssh", args, environment, "")
+            let result = try await runner("/usr/bin/ssh", args, environment, stdin)
             return outcome(status: result.status, out: result.out, err: result.err, nonce: nonce)
         } catch is CancellationError {
             return .skipped("cancelled")

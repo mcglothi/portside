@@ -388,39 +388,6 @@ final class KeyDistributionAccountDisplayTests: XCTestCase {
         return p
     }
 
-    // MARK: The prefill must be a no-op
-
-    /// One account across the whole selection: prefilling it changes nothing,
-    /// and makes the destination both obvious and one word from editable.
-    func testPrefillsWhenEveryHostResolvesToTheSameAccount() {
-        let p = plan([host("a", user: "deploy"), host("b", user: "deploy")])
-        XCTAssertEqual(p.prefillAccount, "deploy")
-    }
-
-    /// **The trap.** Prefilling one of several accounts would silently
-    /// retarget every host that resolves to a different one.
-    func testDoesNotPrefillWhenAccountsDiffer() {
-        let p = plan([host("a", user: "deploy"), host("b", user: "mcglothi")])
-        XCTAssertNil(p.prefillAccount)
-    }
-
-    /// An aliased host's account is `~/.ssh/config`'s to decide. Prefilling
-    /// would hand it a `-l` that overrides the config.
-    func testDoesNotPrefillForAnAliasedHost() {
-        XCTAssertNil(plan([host("a", user: "deploy", alias: "a-prod")]).prefillAccount)
-        XCTAssertNil(plan([host("a", user: "deploy"),
-                           host("b", user: "deploy", alias: "b-prod")]).prefillAccount)
-    }
-
-    func testDoesNotPrefillForAHostWithNoResolvedUser() {
-        XCTAssertNil(plan([host("a", user: nil)]).prefillAccount)
-        XCTAssertNil(plan([host("a", user: "   ")]).prefillAccount)
-    }
-
-    func testDoesNotPrefillWithNothingSelected() {
-        XCTAssertNil(plan([host("a", user: "deploy")], selectAll: false).prefillAccount)
-    }
-
     // MARK: The accounts themselves
 
     func testTargetAccountsCountHostsPerAccount() {
@@ -446,7 +413,6 @@ final class KeyDistributionAccountDisplayTests: XCTestCase {
         var p = KeyDistributionPlan(candidates: hosts)
         p.toggle(hosts[0])
         XCTAssertEqual(p.targetAccounts.map(\.account), ["deploy"])
-        XCTAssertEqual(p.prefillAccount, "deploy")
     }
 
     // MARK: The sentence

@@ -121,21 +121,6 @@ extension KeyDistributionPlan {
         return user.isEmpty ? nil : user
     }
 
-    /// The account to prefill the override field with — **only** when doing so
-    /// is provably a no-op.
-    ///
-    /// That means every selected host already resolves to this exact account.
-    /// Prefill anything else and an untouched field silently becomes a real
-    /// override: hosts that resolved to something else get retargeted, and an
-    /// aliased host gets a `-l` that overrides its `~/.ssh/config` entry. The
-    /// point of prefilling is to make the destination obvious and one word
-    /// away from being changed, not to quietly change it.
-    var prefillAccount: String? {
-        let targets = targetAccounts
-        guard targets.count == 1, let account = targets[0].account else { return nil }
-        return account
-    }
-
     /// A plain sentence naming where the key lands, for the line under the key.
     func accountSummary(override: String) -> String {
         let override = override.trimmingCharacters(in: .whitespaces)

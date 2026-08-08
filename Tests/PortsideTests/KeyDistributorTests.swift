@@ -562,116 +562,6 @@ final class KeyDistributorScriptTests: XCTestCase {
     }
 }
 
-// MARK: - The account override
-
-/// Overriding the account works by *logging in as it*, which is why there is no
-/// permission story: `$HOME` is already the target's, nothing is escalated, and
-/// the remote script is byte-for-byte the same one.
-final class KeyDistributorAccountOverrideTests: XCTestCase {
-
-    private func entry(alias: String? = nil) -> SessionEntry {
-        var e = SessionEntry(name: "dns2")
-        e.kind = .host
-        e.hostname = "10.10.0.22"
-        e.user = "mcglothi"
-        e.sshAlias = alias
-        return e
-    }
-
-    func testOverrideRetargetsAPlainHost() {
-        let args = KeyDistributor.sshArguments(for: entry(), hasPassword: true,
-                                               account: "svc_ansible")
-        XCTAssertTrue(args.contains("svc_ansible@10.10.0.22"), "\(args)")
-        XCTAssertFalse(args.contains("mcglothi@10.10.0.22"))
-    }
-
-    /// An aliased host's destination is the bare alias and carries no user at
-    /// all, so `-l` is the only thing that can retarget it.
-    func testOverrideRetargetsAnAliasedHost() {
-        let args = KeyDistributor.sshArguments(for: entry(alias: "dns2-prod"),
-                                               hasPassword: true, account: "svc_ansible")
-        XCTAssertTrue(args.contains("dns2-prod"))
-        XCTAssertTrue(adjacent(args, "-l", "svc_ansible"), "\(args)")
-    }
-
-    /// Both forms are set so the two always agree and neither depends on ssh's
-    /// precedence between `-l` and `user@host`.
-    func testOverrideSetsBothTheFlagAndTheDestination() {
-        let args = KeyDistributor.sshArguments(for: entry(), hasPassword: true,
-                                               account: "svc_ansible")
-        XCTAssertTrue(adjacent(args, "-l", "svc_ansible"))
-        XCTAssertTrue(args.contains("svc_ansible@10.10.0.22"))
-    }
-
-    func testNoOverrideLeavesTheHostAlone() {
-        for account in [nil, "", "   "] as [String?] {
-            let args = KeyDistributor.sshArguments(for: entry(), hasPassword: true,
-                                                   account: account)
-            XCTAssertTrue(args.contains("mcglothi@10.10.0.22"), "account=\(account ?? "nil")")
-            XCTAssertFalse(args.contains("-l"))
-        }
-    }
-
-    func testOverrideIsTrimmed() {
-        let args = KeyDistributor.sshArguments(for: entry(), hasPassword: true,
-                                               account: "  svc_ansible  ")
-        XCTAssertTrue(args.contains("svc_ansible@10.10.0.22"))
-    }
-
-    /// The override still can't buy a second password prompt.
-    func testOverrideDoesNotRelaxThePromptCap() {
-        let args = KeyDistributor.sshArguments(for: entry(), hasPassword: true,
-                                               account: "svc_ansible")
-        XCTAssertTrue(adjacent(args, "-o", "NumberOfPasswordPrompts=1"))
-    }
-
-    // MARK: Which password gets spent
-
-    /// **The host's own password belongs to a different account.** Offering it
-    /// to the override target is a guaranteed failed authentication on every
-    /// host in the run — the exact lockout this feature exists to avoid.
-    func testAProfileWhoseUserMatchesSuppliesThePassword() {
-        var profile = CredentialProfile(name: "Ansible")
-        profile.user = "svc_ansible"
-        let password = KeyDistributor.password(
-            forAccount: "svc_ansible", profiles: [profile],
-            profilePassword: { $0 == profile.id ? "secret" : nil })
-        XCTAssertEqual(password, "secret")
-    }
-
-    func testNoMatchingProfileMeansNoPassword() {
-        var profile = CredentialProfile(name: "Ops")
-        profile.user = "someone-else"
-        XCTAssertNil(KeyDistributor.password(forAccount: "svc_ansible", profiles: [profile],
-                                             profilePassword: { _ in "secret" }))
-        XCTAssertNil(KeyDistributor.password(forAccount: "svc_ansible", profiles: [],
-                                             profilePassword: { _ in "secret" }))
-    }
-
-    /// A matching profile with no stored password yields nothing, so the push
-    /// runs key/agent-only rather than under a password it doesn't have.
-    func testMatchingProfileWithNoPasswordYieldsNothing() {
-        var profile = CredentialProfile(name: "Ansible")
-        profile.user = "svc_ansible"
-        XCTAssertNil(KeyDistributor.password(forAccount: "svc_ansible", profiles: [profile],
-                                             profilePassword: { _ in nil }))
-    }
-
-    func testAnEmptyAccountNeverResolvesAPassword() {
-        var profile = CredentialProfile(name: "Blank")
-        profile.user = ""
-        XCTAssertNil(KeyDistributor.password(forAccount: "   ", profiles: [profile],
-                                             profilePassword: { _ in "secret" }))
-    }
-
-    private func adjacent(_ args: [String], _ flag: String, _ value: String) -> Bool {
-        for (i, a) in args.enumerated() where a == flag {
-            if i + 1 < args.count, args[i + 1] == value { return true }
-        }
-        return false
-    }
-}
-
 // MARK: - The success marker
 
 final class KeyDistributorMarkerTests: XCTestCase {
@@ -740,4 +630,242 @@ final class KeyDistributorMarkerTests: XCTestCase {
 private actor ArgsBox {
     private(set) var value: [String] = []
     func set(_ v: [String]) { value = v }
+}
+
+// MARK: - Reaching another account, via sudo
+
+/// One rule: an account means sudo. Writing into another account's home always
+/// requires escalation — the same reason Ansible's `authorized_key` pairs its
+/// `user:` parameter with `become`.
+final class KeyDistributorSudoTests: XCTestCase {
+
+    private let key = PublicKey(
+        path: "/k.pub", line: "ssh-ed25519 AAAABLOB it's mine",
+        algorithm: "ssh-ed25519", blob: "AAAABLOB", comment: "it's mine",
+        fingerprint: "f", bits: 256)
+
+    func testNoAccountSendsThePlainScript() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n1", account: nil)
+        XCTAssertEqual(command, KeyDistributor.remoteScript(for: key, nonce: "n1"))
+        XCTAssertFalse(command.contains("sudo"))
+    }
+
+    func testAnEmptyAccountIsNotAnOverride() {
+        for account in ["", "   "] {
+            XCTAssertFalse(KeyDistributor.remoteCommand(for: key, nonce: "n", account: account)
+                .contains("sudo"))
+            XCTAssertFalse(KeyDistributor.requiresSudo(account: account))
+        }
+    }
+
+    func testAnAccountWrapsTheScriptInSudo() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc_ansible")
+        XCTAssertTrue(command.contains("sudo -S -p '' -H -u svc_ansible sh -c"), command)
+        XCTAssertTrue(KeyDistributor.requiresSudo(account: "svc_ansible"))
+    }
+
+    /// `-H` is what makes the untouched script resolve the *target's* `~/.ssh`
+    /// rather than the login user's. Without it the key would land back in the
+    /// account we were trying not to use.
+    func testSudoSetsHomeToTheTargetAccount() {
+        XCTAssertTrue(KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
+            .contains("-H -u svc"))
+    }
+
+    /// Running *as* the target rather than as root is what gives every created
+    /// file the right ownership — no `chown`, nothing for StrictModes to reject.
+    func testSudoRunsAsTheTargetNotAsRoot() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
+        XCTAssertTrue(command.contains("-u svc"))
+        XCTAssertFalse(command.contains("-u root"), "should not escalate further than needed")
+    }
+
+    /// The script is quoted shell containing single quotes of its own. It
+    /// travels base64-encoded precisely so it can't terminate the wrapper's
+    /// quoting — the classic way this kind of nesting breaks.
+    func testTheScriptTravelsEncodedNotInterpolated() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
+        XCTAssertFalse(command.contains("authorized_keys"),
+                       "the raw script must not be interpolated into the wrapper")
+        let encoded = Data(KeyDistributor.remoteScript(for: key, nonce: "n").utf8)
+            .base64EncodedString()
+        XCTAssertTrue(command.contains(encoded))
+    }
+
+    /// An account name is user input reaching a shell, so it must arrive as a
+    /// single word.
+    ///
+    /// Asserted on the *quoting* rather than on the absence of the payload
+    /// text: correctly escaped input still contains its own characters, so
+    /// "the dangerous substring isn't present" is a check that fails on
+    /// working code. `KeyDistributorSudoExecutionTests` proves the real
+    /// property by running it.
+    func testAnAccountNameIsShellQuoted() {
+        let command = KeyDistributor.remoteCommand(
+            for: key, nonce: "n", account: "svc'; rm -rf /; echo '")
+        XCTAssertTrue(command.contains(ShellQuoting.quote("svc'; rm -rf /; echo '")),
+                      "the account name was not quoted: \(command)")
+    }
+
+    /// The prompt is silenced so it can't be mistaken for host output, and the
+    /// password comes from stdin rather than a tty we don't have.
+    func testSudoReadsThePasswordFromStdinWithNoPrompt() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
+        XCTAssertTrue(command.contains("-S"))
+        XCTAssertTrue(command.contains("-p ''"))
+    }
+
+    /// **One attempt, extended to sudo.** A failed sudo is logged on the host
+    /// and repeats carry the same lockout risk as repeated ssh authentications.
+    func testTheSudoPasswordIsSentExactlyOnce() async {
+        var host = SessionEntry(name: "h")
+        host.kind = .host
+        host.hostname = "h.internal"
+        let calls = StdinBox()
+        _ = await KeyDistributor.push(
+            key: key, to: host, password: "hunter2", account: "svc",
+            runner: { _, _, _, stdin in
+                await calls.record(stdin)
+                return (1, "", "sudo: 1 incorrect password attempt")
+            })
+        let seen = await calls.values
+        XCTAssertEqual(seen.count, 1, "sudo must not be retried")
+        XCTAssertEqual(seen.first, "hunter2\n")
+    }
+
+    /// Nothing is sent on stdin when there is no account — there is no sudo to
+    /// feed, and a stray password on stdin would reach the remote script.
+    func testNoPasswordIsSentOnStdinWithoutAnAccount() async {
+        var host = SessionEntry(name: "h")
+        host.kind = .host
+        host.hostname = "h.internal"
+        let calls = StdinBox()
+        _ = await KeyDistributor.push(
+            key: key, to: host, password: "hunter2", account: nil,
+            runner: { _, _, _, stdin in
+                await calls.record(stdin)
+                return (0, "", "")
+            })
+        let seen = await calls.values
+        XCTAssertEqual(seen.first, "")
+    }
+
+    /// sudo's refusals are the answer the user needs; a generic exit code makes
+    /// the feature look broken rather than unpermitted.
+    func testSudoRefusalsAreReportedInPlainWords() {
+        for phrase in ["sudo: a password is required",
+                       "deploy is not in the sudoers file.  This incident will be reported.",
+                       "sudo: no tty present and no askpass program specified",
+                       "sudo: unknown user: svc_ansible"] {
+            XCTAssertEqual(KeyDistributor.failureReason(status: 1, err: phrase), phrase)
+        }
+    }
+}
+
+private actor StdinBox {
+    private(set) var values: [String] = []
+    func record(_ v: String) { values.append(v) }
+}
+
+/// Runs the sudo wrapper for real, against a stub `sudo` on `PATH`.
+///
+/// The wrapper nests a base64 command substitution inside a double-quoted
+/// argument to `sh -c`, wrapping a script that is itself full of single quotes.
+/// Reading that and believing it works is not the same as running it — this is
+/// the only test that proves the quoting survives a real shell.
+final class KeyDistributorSudoExecutionTests: XCTestCase {
+
+    private var home: URL!
+    private var bin: URL!
+
+    override func setUpWithError() throws {
+        home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-sudo-\(UUID().uuidString)")
+        bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+
+        // A stub sudo: swallow its own flags, ignore the target user (we can't
+        // switch users in a test), and exec the rest. Enough to prove the
+        // command reaches it intact.
+        let stub = """
+        #!/bin/sh
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -S|-H) shift ;;
+            -p) shift 2 ;;
+            -u) shift 2 ;;
+            *) break ;;
+          esac
+        done
+        cat > /dev/null &   # drain the password on stdin
+        exec "$@"
+        """
+        let sudo = bin.appendingPathComponent("sudo")
+        try stub.write(to: sudo, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: sudo.path)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: home)
+    }
+
+    /// The real proof that an account name can't inject: run it and check the
+    /// side effect never happens.
+    func testAMaliciousAccountNameRunsNothing() throws {
+        let canary = home.appendingPathComponent("PWNED")
+        let key = PublicKey(path: "/k.pub", line: "ssh-ed25519 AAAABLOB t@n",
+                            algorithm: "ssh-ed25519", blob: "AAAABLOB",
+                            comment: "t@n", fingerprint: "f", bits: 256)
+        let command = KeyDistributor.remoteCommand(
+            for: key, nonce: "n", account: "svc'; touch \(canary.path); echo '")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        let stdin = Pipe()
+        process.standardInput = stdin
+        try process.run()
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canary.path),
+                       "the account name escaped its quoting and executed")
+    }
+
+    func testTheWrappedScriptSurvivesRealShellQuoting() throws {
+        let key = PublicKey(
+            path: "/k.pub",
+            line: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 it's a comment with 'quotes'",
+            algorithm: "ssh-ed25519", blob: "AAAAC3NzaC1lZDI1NTE5",
+            comment: "it's a comment with 'quotes'", fingerprint: "f", bits: 256)
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "nonce123", account: "svc")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        let stdin = Pipe()
+        process.standardInput = stdin
+        try process.run()
+        stdin.fileHandleForWriting.write(Data("password\n".utf8))
+        stdin.fileHandleForWriting.closeFile()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let output = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(output.contains("PORTSIDE-RESULT:nonce123 added"),
+                      "the wrapped script did not run cleanly: \(output)")
+
+        let installed = try String(
+            contentsOf: home.appendingPathComponent(".ssh/authorized_keys"), encoding: .utf8)
+        XCTAssertEqual(installed, key.line + "\n",
+                       "the key must arrive byte-identical through two layers of quoting")
+    }
 }

@@ -36,13 +36,6 @@ struct KeyDistributionView: View {
     /// Empty means "each host's own resolved user", which is the default and
     /// the common case.
     @State private var accountOverride = ""
-    /// The last value *we* put in the field. Lets the prefill follow the
-    /// selection while it is untouched, and stop the moment the user types.
-    ///
-    /// Without this the prefill is a trap: fill in `deploy` for one host, then
-    /// tick a second host that logs in as someone else, and the untouched
-    /// field has silently become a real override retargeting both.
-    @State private var autoFilledAccount = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,7 +53,6 @@ struct KeyDistributionView: View {
         }
         .frame(width: 620, height: 560)
         .task { await loadKeys() }
-        .onChange(of: plan) { _, _ in applyPrefill() }
         .onDisappear { pushTask?.cancel() }
     }
 
@@ -173,22 +165,10 @@ struct KeyDistributionView: View {
         .padding(.top, 4)
     }
 
-    /// Re-prefills while the field is still ours to set. Once the user has
-    /// typed anything, their value stands regardless of what gets ticked.
-    private func applyPrefill() {
-        guard accountOverride == autoFilledAccount else { return }
-        let prefill = plan.prefillAccount ?? ""
-        accountOverride = prefill
-        autoFilledAccount = prefill
-    }
-
-    /// True only when the field names something other than what the hosts
-    /// would have used anyway — a prefilled value that matches is not an
-    /// override, and shouldn't be coloured like one.
+    /// Any non-empty account is an override, and every override means sudo.
+    /// One rule, so the warning is never conditional on something invisible.
     private var overrideIsActive: Bool {
-        let account = accountOverride.trimmingCharacters(in: .whitespaces)
-        guard !account.isEmpty else { return false }
-        return account != plan.prefillAccount
+        KeyDistributor.requiresSudo(account: accountOverride)
     }
 
     private var hostPicker: some View {
@@ -263,33 +243,12 @@ struct KeyDistributionView: View {
     private var accountHint: String {
         let account = accountOverride.trimmingCharacters(in: .whitespaces)
         guard !account.isEmpty else {
-            return "Leave empty and each host uses its own account, shown above."
+            return "Leave empty and the key goes to each host's own login account — "
+                + "no special privileges needed."
         }
-        if !overrideIsActive {
-            return "This is what these hosts already log in as — change it to install "
-                + "the key for a different account instead."
-        }
-        if overrideHasCredential {
-            return "Logs in as \(account) instead, so the key lands in that account's home. "
-                + "Using the “\(overrideProfileName ?? account)” profile's password."
-            }
-        return "Logs in as \(account) instead. No credential profile has that user, so this "
-            + "runs key/agent-only — the host's own saved password belongs to a different "
-            + "account and will not be offered."
-    }
-
-    /// The profile whose user matches the override, if any.
-    private var overrideProfile: CredentialProfile? {
-        let account = accountOverride.trimmingCharacters(in: .whitespaces)
-        guard !account.isEmpty else { return nil }
-        return store.credentialProfiles.first {
-            ($0.user ?? "").trimmingCharacters(in: .whitespaces) == account
-        }
-    }
-    private var overrideProfileName: String? { overrideProfile?.name }
-    private var overrideHasCredential: Bool {
-        guard let overrideProfile else { return false }
-        return CredentialStore.profilePassword(for: overrideProfile.id) != nil
+        return "Portside still logs in as each host's own user and runs "
+            + "sudo -u \(account). Hosts where that isn't permitted will be reported "
+            + "as failures — nothing is retried."
     }
 
     // MARK: - Confirming
@@ -334,12 +293,25 @@ struct KeyDistributionView: View {
                 // but it lands in the home directory of whoever Portside logs
                 // in as for that host. Saying so beside the host list is
                 // cheaper than the support question.
-                if !accountOverride.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Label("Logging in as \(accountOverride.trimmingCharacters(in: .whitespaces)) — "
-                          + "the key lands in that account's home on every host above.",
-                          systemImage: "person.crop.circle.badge.checkmark")
-                        .font(.callout)
-                        .foregroundStyle(.tint)
+                if overrideIsActive {
+                    let account = accountOverride.trimmingCharacters(in: .whitespaces)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Requires sudo on every host above.", systemImage: "lock.shield")
+                            .font(.callout).bold()
+                        Text("The key goes to \(account)’s home, not the account Portside "
+                             + "logs in as. That needs sudo, because writing into another "
+                             + "account’s home always does.")
+                        Text("sudo -H -u \(account) …")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text("A host that doesn’t permit it is reported as a failure and "
+                             + "left alone. sudo is attempted once, never retried.")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                 }
                 Text("The key is added to each host's login account — the user shown above, resolved from the host, its credential profile, then your defaults. An aliased host uses whatever `~/.ssh/config` says. It does not go to an account named after the key file.")
                     .font(.caption)
@@ -442,7 +414,6 @@ struct KeyDistributionView: View {
         // Prefilled only when every selected host already resolves to this
         // exact account, so leaving it untouched changes nothing. See
         // `KeyDistributionPlan.prefillAccount`.
-        applyPrefill()
         keys = await PublicKeyLocator.discover()
         if let preselectedKeyPath {
             // The profile's key may live outside ~/.ssh, so fall back to
@@ -468,7 +439,6 @@ struct KeyDistributionView: View {
         let defaults = store.defaults
         let defaultProfileID = store.defaultProfileID
         let account = accountOverride.trimmingCharacters(in: .whitespaces)
-        let profiles = store.credentialProfiles
         guard let key else { return }
         results = []
         stage = .running
@@ -477,12 +447,11 @@ struct KeyDistributionView: View {
                 key: key,
                 to: targets,
                 password: { entry in
-                    // With the account overridden, the host's own password is
-                    // for somebody else — see `KeyDistributor.password(forAccount:)`.
-                    account.isEmpty
-                        ? CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID)
-                        : KeyDistributor.password(forAccount: account, profiles: profiles,
-                                                  profilePassword: CredentialStore.profilePassword)
+                    // Always the host's own. The login never changes — a
+                    // different target account is reached by escalating, not
+                    // by logging in as someone else — so this password is both
+                    // the one ssh needs and the one `sudo -S` needs.
+                    CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID)
                 },
                 defaults: defaults,
                 account: account.isEmpty ? nil : account,
