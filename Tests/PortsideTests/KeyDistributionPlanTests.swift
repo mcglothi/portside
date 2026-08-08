@@ -368,3 +368,124 @@ final class PublicKeyRealWorldTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Showing which account the key lands in
+
+final class KeyDistributionAccountDisplayTests: XCTestCase {
+
+    private func host(_ name: String, user: String?, alias: String? = nil) -> SessionEntry {
+        var e = SessionEntry(name: name)
+        e.kind = .host
+        e.hostname = "\(name).internal"
+        e.user = user
+        e.sshAlias = alias
+        return e
+    }
+
+    private func plan(_ entries: [SessionEntry], selectAll: Bool = true) -> KeyDistributionPlan {
+        var p = KeyDistributionPlan(candidates: entries)
+        if selectAll { p.selectAll() }
+        return p
+    }
+
+    // MARK: The prefill must be a no-op
+
+    /// One account across the whole selection: prefilling it changes nothing,
+    /// and makes the destination both obvious and one word from editable.
+    func testPrefillsWhenEveryHostResolvesToTheSameAccount() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "deploy")])
+        XCTAssertEqual(p.prefillAccount, "deploy")
+    }
+
+    /// **The trap.** Prefilling one of several accounts would silently
+    /// retarget every host that resolves to a different one.
+    func testDoesNotPrefillWhenAccountsDiffer() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "mcglothi")])
+        XCTAssertNil(p.prefillAccount)
+    }
+
+    /// An aliased host's account is `~/.ssh/config`'s to decide. Prefilling
+    /// would hand it a `-l` that overrides the config.
+    func testDoesNotPrefillForAnAliasedHost() {
+        XCTAssertNil(plan([host("a", user: "deploy", alias: "a-prod")]).prefillAccount)
+        XCTAssertNil(plan([host("a", user: "deploy"),
+                           host("b", user: "deploy", alias: "b-prod")]).prefillAccount)
+    }
+
+    func testDoesNotPrefillForAHostWithNoResolvedUser() {
+        XCTAssertNil(plan([host("a", user: nil)]).prefillAccount)
+        XCTAssertNil(plan([host("a", user: "   ")]).prefillAccount)
+    }
+
+    func testDoesNotPrefillWithNothingSelected() {
+        XCTAssertNil(plan([host("a", user: "deploy")], selectAll: false).prefillAccount)
+    }
+
+    // MARK: The accounts themselves
+
+    func testTargetAccountsCountHostsPerAccount() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "deploy"),
+                      host("c", user: "root")])
+        let targets = p.targetAccounts
+        XCTAssertEqual(targets.map(\.account), ["deploy", "root"], "commonest first")
+        XCTAssertEqual(targets.map(\.hostCount), [2, 1])
+    }
+
+    /// An aliased host is its own bucket, labelled honestly rather than
+    /// guessed at.
+    func testAliasedHostsAreReportedAsComingFromConfig() {
+        let p = plan([host("a", user: "deploy", alias: "a-prod")])
+        XCTAssertEqual(p.targetAccounts.map(\.account), [nil])
+        XCTAssertEqual(p.targetAccounts.first?.label, "from ~/.ssh/config")
+    }
+
+    /// Only the *selected* hosts count — the summary must not describe hosts
+    /// the user has unticked.
+    func testOnlySelectedHostsAreCounted() {
+        let hosts = [host("a", user: "deploy"), host("b", user: "root")]
+        var p = KeyDistributionPlan(candidates: hosts)
+        p.toggle(hosts[0])
+        XCTAssertEqual(p.targetAccounts.map(\.account), ["deploy"])
+        XCTAssertEqual(p.prefillAccount, "deploy")
+    }
+
+    // MARK: The sentence
+
+    func testSummaryNamesTheSingleAccount() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "deploy")])
+        XCTAssertEqual(p.accountSummary(override: ""), "Lands in deploy’s home on all 2 hosts.")
+    }
+
+    func testSummaryEnumeratesMixedAccounts() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "deploy"),
+                      host("c", user: "root")])
+        let summary = p.accountSummary(override: "")
+        XCTAssertTrue(summary.contains("each host’s own account"), summary)
+        XCTAssertTrue(summary.contains("deploy (2)"), summary)
+        XCTAssertTrue(summary.contains("root (1)"), summary)
+    }
+
+    /// An override replaces the whole story — every host goes to that account.
+    func testSummaryFollowsTheOverride() {
+        let p = plan([host("a", user: "deploy"), host("b", user: "root")])
+        XCTAssertEqual(p.accountSummary(override: "svc_ansible"),
+                       "Lands in svc_ansible’s home on all 2 hosts.")
+        XCTAssertEqual(p.accountSummary(override: "  svc_ansible  "),
+                       "Lands in svc_ansible’s home on all 2 hosts.")
+    }
+
+    func testSummarySingularisesOneHost() {
+        let p = plan([host("a", user: "deploy")])
+        XCTAssertEqual(p.accountSummary(override: ""), "Lands in deploy’s home on host.")
+    }
+
+    func testSummaryWithNothingSelected() {
+        let p = plan([host("a", user: "deploy")], selectAll: false)
+        XCTAssertEqual(p.accountSummary(override: ""), "No hosts selected yet.")
+    }
+
+    func testSummaryIsHonestAboutAliasedHosts() {
+        let p = plan([host("a", user: "deploy", alias: "a-prod")])
+        XCTAssertTrue(p.accountSummary(override: "").contains("~/.ssh/config"))
+    }
+}

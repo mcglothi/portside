@@ -79,3 +79,82 @@ struct KeyDistributionPlan: Equatable {
         return "Add \(keyName) to \(hosts)"
     }
 }
+
+// MARK: - Which account the key actually lands in
+
+extension KeyDistributionPlan {
+
+    /// One account the current selection would install the key for.
+    struct AccountTarget: Equatable, Identifiable {
+        /// nil when the account comes from `~/.ssh/config` and Portside can't
+        /// know it — an aliased host whose `User` lives in the config file.
+        let account: String?
+        let hostCount: Int
+        var id: String { account ?? "\u{0000}config" }
+        var label: String { account ?? "from ~/.ssh/config" }
+    }
+
+    /// The accounts the selected hosts resolve to, commonest first.
+    ///
+    /// Built from `candidates`, which are already `SessionStore.resolved`
+    /// entries — so this is the account ssh will actually log in as, not the
+    /// one typed on the host.
+    var targetAccounts: [AccountTarget] {
+        var counts: [String?: Int] = [:]
+        for entry in selectedEntries {
+            counts[resolvedAccount(of: entry), default: 0] += 1
+        }
+        return counts
+            .map { AccountTarget(account: $0.key, hostCount: $0.value) }
+            .sorted {
+                $0.hostCount == $1.hostCount
+                    ? ($0.account ?? "") < ($1.account ?? "")
+                    : $0.hostCount > $1.hostCount
+            }
+    }
+
+    /// An aliased host's `User` is `~/.ssh/config`'s to decide; `resolved`
+    /// deliberately leaves it unset rather than guessing.
+    private func resolvedAccount(of entry: SessionEntry) -> String? {
+        guard entry.sshAlias?.isEmpty ?? true else { return nil }
+        let user = (entry.user ?? "").trimmingCharacters(in: .whitespaces)
+        return user.isEmpty ? nil : user
+    }
+
+    /// The account to prefill the override field with — **only** when doing so
+    /// is provably a no-op.
+    ///
+    /// That means every selected host already resolves to this exact account.
+    /// Prefill anything else and an untouched field silently becomes a real
+    /// override: hosts that resolved to something else get retargeted, and an
+    /// aliased host gets a `-l` that overrides its `~/.ssh/config` entry. The
+    /// point of prefilling is to make the destination obvious and one word
+    /// away from being changed, not to quietly change it.
+    var prefillAccount: String? {
+        let targets = targetAccounts
+        guard targets.count == 1, let account = targets[0].account else { return nil }
+        return account
+    }
+
+    /// A plain sentence naming where the key lands, for the line under the key.
+    func accountSummary(override: String) -> String {
+        let override = override.trimmingCharacters(in: .whitespaces)
+        let hosts = count == 1 ? "host" : "all \(count) hosts"
+        if !override.isEmpty {
+            return "Lands in \(override)’s home on \(hosts)."
+        }
+        let targets = targetAccounts
+        switch targets.count {
+        case 0:
+            return "No hosts selected yet."
+        case 1:
+            guard let account = targets[0].account else {
+                return "Lands in whichever account ~/.ssh/config logs in as."
+            }
+            return "Lands in \(account)’s home on \(hosts)."
+        default:
+            let parts = targets.map { "\($0.label) (\($0.hostCount))" }.joined(separator: ", ")
+            return "Lands in each host’s own account — \(parts)."
+        }
+    }
+}

@@ -93,8 +93,20 @@ success and leave you locked out wondering why.
 
 ## Copying to a different account
 
+The sheet states where the key lands, in three places: a line under the key
+naming the account, a `→ account` beside every host in the list, and the
+**Copy to account** field.
+
 **Copy to account** overrides which account the key is installed for. Leave it
 empty and each host uses its own resolved user, which is the common case.
+
+It comes **prefilled only when every selected host already resolves to the same
+account** — so leaving it alone changes nothing, and retargeting is one word
+away. It stays empty when the selection spans several accounts, or contains an
+aliased host, because prefilling either would turn an untouched field into a
+real override: the other hosts would be retargeted, and an aliased host would
+get a `-l` overriding its `~/.ssh/config` entry. The prefill follows the
+selection while you haven't typed in it, and stops the moment you do.
 
 It works by **logging in as that account** — `ssh svc_ansible@dns2` rather than
 `ssh you@dns2`. That is the whole trick: `$HOME` is then already the target's, so

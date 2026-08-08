@@ -36,6 +36,13 @@ struct KeyDistributionView: View {
     /// Empty means "each host's own resolved user", which is the default and
     /// the common case.
     @State private var accountOverride = ""
+    /// The last value *we* put in the field. Lets the prefill follow the
+    /// selection while it is untouched, and stop the moment the user types.
+    ///
+    /// Without this the prefill is a trap: fill in `deploy` for one host, then
+    /// tick a second host that logs in as someone else, and the untouched
+    /// field has silently become a real override retargeting both.
+    @State private var autoFilledAccount = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +60,7 @@ struct KeyDistributionView: View {
         }
         .frame(width: 620, height: 560)
         .task { await loadKeys() }
+        .onChange(of: plan) { _, _ in applyPrefill() }
         .onDisappear { pushTask?.cancel() }
     }
 
@@ -144,8 +152,43 @@ struct KeyDistributionView: View {
                     }
                 }
             }
+            destinationLine
         }
         .padding(16)
+    }
+
+    /// The question this sheet gets asked: *which account does it land in?*
+    /// Stated once, prominently, and kept truthful as the selection and the
+    /// override change.
+    private var destinationLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: overrideIsActive
+                  ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+            Text(plan.accountSummary(override: accountOverride))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .font(.callout)
+        .foregroundStyle(overrideIsActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+        .padding(.top, 4)
+    }
+
+    /// Re-prefills while the field is still ours to set. Once the user has
+    /// typed anything, their value stands regardless of what gets ticked.
+    private func applyPrefill() {
+        guard accountOverride == autoFilledAccount else { return }
+        let prefill = plan.prefillAccount ?? ""
+        accountOverride = prefill
+        autoFilledAccount = prefill
+    }
+
+    /// True only when the field names something other than what the hosts
+    /// would have used anyway — a prefilled value that matches is not an
+    /// override, and shouldn't be coloured like one.
+    private var overrideIsActive: Bool {
+        let account = accountOverride.trimmingCharacters(in: .whitespaces)
+        guard !account.isEmpty else { return false }
+        return account != plan.prefillAccount
     }
 
     private var hostPicker: some View {
@@ -175,9 +218,13 @@ struct KeyDistributionView: View {
                             if entry.isProtected {
                                 CapsuleBadge(text: "Protected", style: .tinted(.orange))
                             }
-                            Text(entry.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Spacer()
+                            // The account, called out rather than left inside
+                            // the address — it is the thing being decided.
+                            Text(accountLabel(for: entry))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(overrideIsActive ? AnyShapeStyle(.tint)
+                                                                  : AnyShapeStyle(.secondary))
                                 .lineLimit(1)
                         }
                     }
@@ -187,6 +234,15 @@ struct KeyDistributionView: View {
             accountField
         }
         .padding(16)
+    }
+
+    /// What this row's key will land under, following the override when set.
+    private func accountLabel(for entry: SessionEntry) -> String {
+        let override = accountOverride.trimmingCharacters(in: .whitespaces)
+        if !override.isEmpty { return "→ \(override)" }
+        if !(entry.sshAlias?.isEmpty ?? true) { return "→ ~/.ssh/config" }
+        let user = (entry.user ?? "").trimmingCharacters(in: .whitespaces)
+        return user.isEmpty ? "→ ~/.ssh/config" : "→ \(user)"
     }
 
     private var accountField: some View {
@@ -207,7 +263,11 @@ struct KeyDistributionView: View {
     private var accountHint: String {
         let account = accountOverride.trimmingCharacters(in: .whitespaces)
         guard !account.isEmpty else {
-            return "The key goes to whichever account Portside logs in as for each host."
+            return "Leave empty and each host uses its own account, shown above."
+        }
+        if !overrideIsActive {
+            return "This is what these hosts already log in as — change it to install "
+                + "the key for a different account instead."
         }
         if overrideHasCredential {
             return "Logs in as \(account) instead, so the key lands in that account's home. "
@@ -379,6 +439,10 @@ struct KeyDistributionView: View {
             candidates: KeyDistributionPlan.candidates(from: store.entries.map(store.resolved)),
             selected: preselected
         )
+        // Prefilled only when every selected host already resolves to this
+        // exact account, so leaving it untouched changes nothing. See
+        // `KeyDistributionPlan.prefillAccount`.
+        applyPrefill()
         keys = await PublicKeyLocator.discover()
         if let preselectedKeyPath {
             // The profile's key may live outside ~/.ssh, so fall back to
