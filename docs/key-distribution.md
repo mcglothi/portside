@@ -125,7 +125,12 @@ Ansible's `authorized_key` module pairs its `user:` parameter with `become`.
   never works. An **existing** file's ownership is left alone.
 - An unknown account fails with `portside: unknown user <name>` rather than
   writing somewhere unexpected.
-- The sudo password is the host's own saved password, sent on stdin **once**.
+- **The sudo password is the same saved password Portside logs in with**, sent on
+  stdin once, with sudo's prompt blanked. That means a successful sudo is
+  invisible — "sudo just worked" and "sudo was never needed" look identical from
+  the app. It also assumes your login password *is* your sudo password; where it
+  isn't, the host fails and is reported. The confirmation says so before you
+  start.
   A failed sudo is logged on the host and repeats carry the same lockout risk as
   repeated ssh authentications, so the one-attempt rule covers sudo too.
 - A host that doesn't permit it is reported as a failure and left alone. The

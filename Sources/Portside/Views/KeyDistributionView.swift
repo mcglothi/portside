@@ -165,6 +165,20 @@ struct KeyDistributionView: View {
         .padding(.top, 4)
     }
 
+    /// Names the credential sudo will be answered with, so nobody has to
+    /// reverse-engineer the resolution order to find out what Portside is
+    /// about to spend.
+    ///
+    /// States the rule rather than probing per host: `CredentialStore` is a
+    /// thin wrapper over the real Keychain with no cache, so asking it once
+    /// per selected host — to build a sentence — is a Keychain hit per host,
+    /// and on a dev build a prompt per host.
+    private var sudoCredentialNote: String {
+        "sudo is answered with the same saved password Portside logs in with, on the "
+            + "assumption it is also the sudo password. It is sent once; if sudo wants a "
+            + "different one, that host fails and is reported."
+    }
+
     /// Any non-empty account is an override, and every override means sudo.
     /// One rule, so the warning is never conditional on something invisible.
     private var overrideIsActive: Bool {
@@ -304,6 +318,13 @@ struct KeyDistributionView: View {
                         Text("sudo sh -c '…'  →  installs for \(account)")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
+                        // Saying which credential is about to be spent, and on
+                        // what. sudo answered from stdin with a blanked prompt
+                        // is invisible from here — "sudo just worked" and "sudo
+                        // was never needed" look identical — and a feature
+                        // built on not spending credentials wrongly should not
+                        // spend one silently.
+                        Text(sudoCredentialNote)
                         Text("A host that doesn’t permit it is reported as a failure and "
                              + "left alone. sudo is attempted once, never retried.")
                     }
