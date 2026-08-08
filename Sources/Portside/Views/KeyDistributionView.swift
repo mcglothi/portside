@@ -247,7 +247,7 @@ struct KeyDistributionView: View {
                 + "no special privileges needed."
         }
         return "Portside still logs in as each host's own user and runs "
-            + "sudo -u \(account). Hosts where that isn't permitted will be reported "
+            + "sudo. Hosts where that isn't permitted will be reported "
             + "as failures — nothing is retried."
     }
 
@@ -301,7 +301,7 @@ struct KeyDistributionView: View {
                         Text("The key goes to \(account)’s home, not the account Portside "
                              + "logs in as. That needs sudo, because writing into another "
                              + "account’s home always does.")
-                        Text("sudo -H -u \(account) …")
+                        Text("sudo sh -c '…'  →  installs for \(account)")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                         Text("A host that doesn’t permit it is reported as a failure and "

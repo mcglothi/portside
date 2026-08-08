@@ -104,7 +104,27 @@ enum KeyDistributor {
     /// and it would miss a match whose comment had been edited. Scanning
     /// non-comment lines field by field also handles entries carrying
     /// `command=`/`from=` options, where the algorithm is not the first field.
-    static func remoteScript(for key: PublicKey, nonce: String = "") -> String {
+    /// `account` is set only for a sudo push, where the script runs **as root**
+    /// and must therefore find the target's home itself and repair ownership
+    /// afterwards. Without it the script runs as the login user in `$HOME`.
+    ///
+    /// ## Why root, and not `sudo -u <account>`
+    ///
+    /// Running *as* the target gets file ownership for free and was the first
+    /// design. It cannot bootstrap: `mkdir -p /home/svc_goose` as `svc_goose`
+    /// fails because `/home` isn't theirs to write, and a `~/.ssh` someone
+    /// created earlier with a bare `sudo mkdir` is owned by root, so the target
+    /// can't create `authorized_keys` inside it either. Both were hit on a real
+    /// host within minutes of trying, and both are the normal state of an
+    /// account being *set up* — which is the case this feature exists for.
+    ///
+    /// So it runs as root and fixes ownership explicitly, the same thing
+    /// Ansible's `authorized_key` does with `become`. The cost is that ownership
+    /// is now something to get right rather than something that happens: root
+    /// leaving root-owned files in someone's `~/.ssh` is silent breakage,
+    /// because sshd's `StrictModes` refuses them and the key simply never works.
+    static func remoteScript(for key: PublicKey, nonce: String = "",
+                             account: String? = nil) -> String {
         let blob = ShellQuoting.quote(key.blob)
         let line = ShellQuoting.quote(key.line)
         // Built from `$f` in the script rather than quoted in from here: a
@@ -112,15 +132,45 @@ enum KeyDistributor {
         // directory named `$HOME`, fail, and be swallowed by `2>/dev/null` —
         // leaving every push reporting success with no backup ever written.
         let backup = "\"$f\(backupSuffix)\""
+        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
+
+        // Where the key is going, and who must end up owning it.
+        let locate: String
+        if target.isEmpty {
+            locate = #"h="$HOME""#
+        } else {
+            locate = """
+            u=\(ShellQuoting.quote(target))
+            # The account's real home, from passwd rather than a guess — `~u`
+            # isn't expandable from a variable in POSIX sh, and assuming
+            # /home/$u is wrong on any host that doesn't do it that way.
+            h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+            [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
+            if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
+            """
+        }
+
+        // Root creating files in someone's ~/.ssh leaves them root-owned, which
+        // sshd's StrictModes rejects — the key installs "successfully" and then
+        // silently never works. Only what we create is chowned; an existing
+        // file's ownership is not ours to change.
+        let claim = target.isEmpty ? "" : #"chown "$u:" "$1" 2>/dev/null || chown "$u" "$1" 2>/dev/null"#
+        let ownFunction = target.isEmpty
+            ? "own() { :; }"
+            : "own() { \(claim); }"
+
         return """
         umask 077
-        d="$HOME/.ssh"; f="$d/authorized_keys"
-        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; fi
-        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; fi
+        \(locate)
+        \(ownFunction)
+        d="$h/.ssh"; f="$d/authorized_keys"
+        if [ ! -d "$h" ]; then mkdir -p "$h" || exit 1; own "$h"; fi
+        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; own "$d"; fi
+        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; own "$f"; fi
         if awk -v b=\(blob) '/^[[:space:]]*#/ {next} {for (i = 1; i <= NF; i++) if ($i == b) {found = 1; exit}} END {exit !found}' "$f"; then
           printf '%s%s present\\n' '\(resultMarker)' '\(nonce)'
         else
-          cp "$f" \(backup) 2>/dev/null
+          cp "$f" \(backup) 2>/dev/null && own \(backup)
           # A file not ending in a newline is common (hand-edited, or written
           # by something that didn't bother) and appending straight onto it
           # welds our key to the end of the last entry — breaking that host's
@@ -199,13 +249,16 @@ enum KeyDistributor {
     /// have fail and are reported, like any other failure.
     static func remoteCommand(for key: PublicKey, nonce: String,
                               account: String? = nil) -> String {
-        let script = remoteScript(for: key, nonce: nonce)
         guard let account = account?.trimmingCharacters(in: .whitespaces),
-              !account.isEmpty else { return script }
+              !account.isEmpty else {
+            return remoteScript(for: key, nonce: nonce)
+        }
+        // Root, not `-u account` — see `remoteScript`. The script resolves the
+        // target's home from passwd and chowns what it creates.
+        let script = remoteScript(for: key, nonce: nonce, account: account)
         let encoded = Data(script.utf8).base64EncodedString()
-        let user = ShellQuoting.quote(account)
         return "__pk=\(ShellQuoting.quote(encoded)); "
-            + "sudo -S -p '' -H -u \(user) sh -c "
+            + "sudo -S -p '' sh -c "
             + "\"$(printf %s \"$__pk\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__pk\" | base64 -D 2>/dev/null)\""
     }

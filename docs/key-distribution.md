@@ -103,17 +103,28 @@ Fill it in and **sudo is required on every selected host**. Portside still logs
 in as each host's own user and runs:
 
 ```sh
-sudo -H -u svc_ansible sh -c '<the same script>'
+sudo sh -c '<script, targeting svc_ansible>'
 ```
 
 This is the only honest way to reach an account you *cannot* log in as — a
 key-only service account being bootstrapped is exactly that case, and it is why
 Ansible's `authorized_key` module pairs its `user:` parameter with `become`.
 
-- `-H` sets `HOME` to the target's, so the script resolves the right `~/.ssh`.
-- Running **as** the target rather than as root means every file is created with
-  the correct ownership — no `chown` afterwards, and nothing for sshd's
-  `StrictModes` to reject.
+- It runs **as root**, and hands back what it creates. `sudo -u svc_ansible`
+  looks tidier and cannot bootstrap: the account can't create its own home
+  under `/home`, and a `~/.ssh` made earlier by a bare `sudo mkdir` is
+  root-owned and closed to it. Both are the normal state of an account being
+  set up, which is the case this exists for. Root plus an explicit `chown` is
+  what Ansible does with `become`, for the same reason.
+- The target's home comes from the host's passwd database (`getent`, falling
+  back to `/etc/passwd`) — not from assuming `/home/<user>`, which is wrong on
+  plenty of hosts.
+- Everything it creates — the home if absent, `~/.ssh`, `authorized_keys`, the
+  backup — is chowned to the account. Root-owned files in someone's `~/.ssh`
+  are silent breakage: sshd's `StrictModes` refuses them and the key simply
+  never works. An **existing** file's ownership is left alone.
+- An unknown account fails with `portside: unknown user <name>` rather than
+  writing somewhere unexpected.
 - The sudo password is the host's own saved password, sent on stdin **once**.
   A failed sudo is logged on the host and repeats carry the same lockout risk as
   repeated ssh authentications, so the one-attempt rule covers sudo too.
