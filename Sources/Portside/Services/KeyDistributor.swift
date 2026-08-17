@@ -104,55 +104,85 @@ enum KeyDistributor {
     /// key it does not, and it would miss a match whose comment had been
     /// edited; scanning fields also handles entries carrying `command=`/`from=`
     /// options, where the algorithm is not the first field.
-    /// `account` is set only for a sudo push, where the script runs **as root**
-    /// and must therefore find the target's home itself and repair ownership
-    /// afterwards. Without it the script runs as the login user in `$HOME`.
+    /// `account` is set only for a sudo push. Without it the script runs as the
+    /// login user in `$HOME`; with it, see `rootBootstrap` — root creates the
+    /// account's home if it is missing and then **drops to the account** for
+    /// everything else.
     ///
-    /// ## Why root, and not `sudo -u <account>`
+    /// ## Why not run the whole thing as root
     ///
-    /// Running *as* the target gets file ownership for free and was the first
-    /// design. It cannot bootstrap: `mkdir -p /home/svc_goose` as `svc_goose`
-    /// fails because `/home` isn't theirs to write, and a `~/.ssh` someone
-    /// created earlier with a bare `sudo mkdir` is owned by root, so the target
-    /// can't create `authorized_keys` inside it either. Both were hit on a real
-    /// host within minutes of trying, and both are the normal state of an
-    /// account being *set up* — which is the case this feature exists for.
+    /// Running *as* the target gets file ownership for free but cannot
+    /// bootstrap: `mkdir /home/svc_goose` as `svc_goose` fails because `/home`
+    /// isn't theirs to write. That argued for doing everything as root and
+    /// chowning afterwards, which is what shipped in 0.23.0 — and it was wrong.
+    /// Root working inside a directory the account controls is a privilege
+    /// escalation: the account can point `~/.ssh`, `authorized_keys` or the
+    /// predictable backup name somewhere else and root follows it.
     ///
-    /// So it runs as root and fixes ownership explicitly, the same thing
-    /// Ansible's `authorized_key` does with `become`. The cost is that ownership
-    /// is now something to get right rather than something that happens: root
-    /// leaving root-owned files in someone's `~/.ssh` is silent breakage,
-    /// because sshd's `StrictModes` refuses them and the key simply never works.
-    /// The `awk` that decides whether a host already trusts this key.
+    /// The split resolves both. Root does the one thing only root can — create
+    /// the home, in a parent the account cannot influence — and the account
+    /// does everything inside it, which also means no `chown` is needed at all.
+    /// An `awk` program that finds a key at its **real position** in an
+    /// `authorized_keys` line, and the predicate built on it.
     ///
-    /// ## Type **and** blob, side by side
+    /// ## Why this is a parser
     ///
-    /// It compares `$i == type && $(i+1) == blob` — the pair, adjacent — rather
-    /// than looking for the blob in any field. Blob-anywhere was wrong in a way
-    /// that destroys access:
+    /// The format is `[options] keytype base64 [comment]`. Two cheaper rules
+    /// were tried and both were wrong in ways that destroy access:
     ///
-    /// - A blob appearing as a **comment token** on some unrelated key satisfied
-    ///   the check, so a host was reported as already trusting a key it does
-    ///   not have, and the push silently did nothing.
-    /// - The retire path shares this logic, where the same false match deletes
-    ///   the unrelated key whose comment happened to mention the blob.
+    /// - **Blob anywhere.** A blob appearing in another key's *comment*
+    ///   satisfied the check, so a push reported a key installed that was not,
+    ///   and the retire path deleted the unrelated key whose comment mentioned
+    ///   it.
+    /// - **Type and blob adjacent anywhere.** Also insufficient, and this one
+    ///   looked convincing enough to ship. Both of these falsely match a target
+    ///   of `ssh-ed25519 AAAATARGET` while the line actually grants
+    ///   `ssh-rsa AAAAOTHER`:
+    ///   ```
+    ///   ssh-rsa AAAAOTHER note ssh-ed25519 AAAATARGET
+    ///   command="echo ssh-ed25519 AAAATARGET now",no-pty ssh-rsa AAAAOTHER real
+    ///   ```
+    ///   A key quoted inside a comment or an option is a *reference* to it, not
+    ///   an authorization for it.
     ///
-    /// `PublicKey.identityFields` and the documentation both always said type
-    /// plus blob; only the shell disagreed.
+    /// So the options field is skipped properly: it ends at the first
+    /// whitespace that is not inside a double-quoted section, honouring
+    /// backslash escapes, exactly as sshd reads it. The type is the token after
+    /// that, and the blob the token after the type. A line beginning with a key
+    /// type has no options at all.
     ///
-    /// Requiring the two to be **adjacent** is what lets this skip parsing
-    /// `authorized_keys` options at all. Options are one comma-separated field,
-    /// except that a quoted value may contain spaces — `command="/usr/bin/foo
-    /// bar",no-pty` splits into two fields — so locating the key type by
-    /// walking fields is genuinely fiddly. Since both values are known here,
-    /// finding them next to each other is exact and needs no parser. The only
-    /// way to fool it is a comment containing the entire key, which is a
-    /// reference to that key anyway.
+    /// **Shared with retirement deliberately.** The question "does this line
+    /// grant this key" must have one answer, because one side installs on it
+    /// and the other deletes on it.
+    static let authorizedKeysMatcher = """
+    {
+      line = $0
+      sub(/^[ \\t]+/, "", line)
+      if (line ~ /^#/ || line == "") next
+      split(line, f, /[ \\t]+/)
+      if (f[1] ~ /^(ssh-|ecdsa-|sk-)/) { t = f[1]; b = f[2] }
+      else {
+        inq = 0
+        for (i = 1; i <= length(line); i++) {
+          c = substr(line, i, 1)
+          if (c == "\\\\") { i++; continue }
+          if (c == "\\"") { inq = !inq; continue }
+          if (!inq && (c == " " || c == "\\t")) break
+        }
+        rest = substr(line, i + 1)
+        sub(/^[ \\t]+/, "", rest)
+        split(rest, g, /[ \\t]+/)
+        t = g[1]; b = g[2]
+      }
+      if (t == T && b == B) { found = 1; exit }
+    }
+    END { exit !found }
+    """
+
+    /// True (exit 0) when `file` grants `key`.
     static func installedCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
-        "awk -v t=\(ShellQuoting.quote(key.algorithm)) -v b=\(ShellQuoting.quote(key.blob)) "
-            + "'/^[[:space:]]*#/ {next} "
-            + "{for (i = 1; i < NF; i++) if ($i == t && $(i + 1) == b) {found = 1; exit}} "
-            + "END {exit !found}' \(file)"
+        "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "
+            + "'\(authorizedKeysMatcher)' \(file)"
     }
 
     static func remoteScript(for key: PublicKey, nonce: String = "",
@@ -249,17 +279,58 @@ enum KeyDistributor {
           echo "portside: $h is a symbolic link; refusing to write through it as root" >&2
           exit 1
         fi
+        case "$h" in /*) ;; *) echo "portside: $h is not an absolute path" >&2; exit 1 ;; esac
         if [ ! -d "$h" ]; then
-          mkdir -p "$h" || exit 1
+          # Creating the home means root writes into a path it did not choose.
+          # Checking only the final component is a check-then-use race — but a
+          # race needs a racer: if no unprivileged party can modify ANY ancestor,
+          # nothing can be swapped between the check and the mkdir. So every
+          # ancestor must be a real directory, root-owned, and writable by
+          # nobody else. That is what makes this safe without openat.
+          # Canonicalise the parent before validating it. A symlinked ancestor
+          # is not itself the problem — /home is a symlink on plenty of real
+          # hosts, and /var is one on macOS — the problem is an ancestor an
+          # unprivileged user can write. Resolving first means we validate the
+          # directories that actually exist, and an attacker-controlled symlink
+          # resolves to somewhere whose ancestors fail the ownership test.
+          __parent=$(cd "$(dirname "$h")" 2>/dev/null && pwd -P)
+          if [ -z "$__parent" ]; then
+            echo "portside: $(dirname "$h") does not exist; create the home yourself" >&2
+            exit 1
+          fi
+          h="$__parent/$(basename "$h")"
+          __a=$__parent
+          while : ; do
+            if [ ! -d "$__a" ]; then
+              echo "portside: $__a is not a plain directory; refusing to create $h" >&2
+              exit 1
+            fi
+            if [ -z "$(find "$__a" -maxdepth 0 -user root ! -perm -0020 ! -perm -0002 2>/dev/null)" ]; then
+              echo "portside: $__a is not root-owned and unwritable by others; refusing to create $h — create the home yourself" >&2
+              exit 1
+            fi
+            [ "$__a" = "/" ] && break
+            __b=$(dirname "$__a")
+            [ "$__b" = "$__a" ] && break
+            __a=$__b
+          done
+          # No -p: every ancestor was just verified to exist, so this creates
+          # exactly one component and fails if anything raced it into being.
+          mkdir "$h" || exit 1
           chown "$u:" "$h" 2>/dev/null || chown "$u" "$h" 2>/dev/null
+        elif [ -z "$(find "$h" -maxdepth 0 -user "$u" 2>/dev/null)" ]; then
+          echo "portside: $h is not owned by $u; refusing" >&2
+          exit 1
         fi
         if [ -h "$h/.ssh" ]; then
           echo "portside: $h/.ssh is a symbolic link; refusing" >&2
           exit 1
         fi
-        # Root-owned ~/.ssh is a broken state sshd's StrictModes rejects. Say so
-        # rather than chown it, which is the unsafe pattern this avoids.
-        if [ -d "$h/.ssh" ] && [ ! -O "$h/.ssh" ] && [ -n "$(find "$h/.ssh" -maxdepth 0 ! -user "$u" 2>/dev/null)" ]; then
+        # Ownership compared against the ACCOUNT, never with `-O`. `-O` asks
+        # whether the *effective* uid owns it, which under root is true exactly
+        # when the directory is root-owned — so an earlier version of this guard
+        # exempted the one case it claimed to refuse.
+        if [ -d "$h/.ssh" ] && [ -z "$(find "$h/.ssh" -maxdepth 0 -user "$u" 2>/dev/null)" ]; then
           echo "portside: $h/.ssh is not owned by $u; fix its ownership first" >&2
           exit 1
         fi
