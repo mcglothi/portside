@@ -723,19 +723,25 @@ final class KeyDistributorSudoTests: XCTestCase {
 
     func testAnAccountWrapsTheScriptInSudo() {
         let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc_ansible")
-        XCTAssertTrue(command.contains("sudo -S -p '' sh -c"), command)
+        XCTAssertTrue(command.contains("sudo -S -p '' -H -u svc_ansible sh -c"), command)
         XCTAssertTrue(KeyDistributor.requiresSudo(account: "svc_ansible"))
     }
 
-    /// The home comes from the host's passwd database, not from `-H` and not
-    /// from assuming `/home/$u`. `~u` cannot be expanded from a variable in
-    /// POSIX sh, and plenty of hosts don't lay homes out that way.
-    func testTheTargetHomeIsResolvedFromPasswd() {
+    /// **The home now comes from `sudo -H`,** which sets it from the passwd
+    /// database on the host's behalf. The script therefore resolves nothing
+    /// itself — the passwd lookup and its `/etc/passwd` fallback belonged to the
+    /// removed root phase, and their continued presence would mean that phase
+    /// had come back.
+    func testTheTargetHomeComesFromSudoRatherThanAPasswdLookup() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
+        XCTAssertTrue(command.contains("-H -u svc"), "expected -H to supply the home: \(command)")
+
         let script = KeyDistributor.remoteScript(for: key, nonce: "n", account: "svc")
-        XCTAssertTrue(script.contains(#"getent passwd "$u""#), script)
-        XCTAssertTrue(script.contains("/etc/passwd"), "no fallback when getent is absent")
-        // Comments stripped: one of them explains why /home/$u is wrong, and
-        // would otherwise fail this on working code.
+        XCTAssertTrue(script.contains(#"h="$HOME""#))
+        XCTAssertFalse(script.contains("getent"), "the passwd lookup was part of the root phase")
+        XCTAssertFalse(script.contains("/etc/passwd"))
+        // Comments stripped: one explains why /home/$u is wrong, and would
+        // otherwise fail this on working code.
         let code = script.split(separator: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
             .joined(separator: "\n")
@@ -747,28 +753,24 @@ final class KeyDistributorSudoTests: XCTestCase {
     /// made earlier by a bare `sudo mkdir` is root-owned and closed to it.
     /// Both were live failures. Root plus explicit `chown` is what Ansible's
     /// `authorized_key` does with `become`, and for the same reason.
-    /// **This asserted the opposite, and passed for the wrong reason.**
+    /// **This assertion has now been wrong twice, in opposite directions.**
     ///
-    /// It used to require `!command.contains("-u svc")` with the message "must
-    /// not drop to the target account" — the old root-does-everything design.
-    /// After the change it kept passing only because the drop lives inside the
-    /// base64-encoded inner script, so the literal never appears in the outer
-    /// command. A test that cannot fail is not evidence.
-    func testTheOuterCommandEscalatesAndTheInnerScriptDropsBack() {
+    /// It first required `!command.contains("-u svc")` — the design where root
+    /// did everything. Then it required an inner `sudo -n -u` — the design where
+    /// root created the home and dropped back. Both are gone: there is one hop,
+    /// straight to the account, and root never holds the pen.
+    ///
+    /// Worth keeping the history in view, because each version passed and each
+    /// described something untrue.
+    func testThereIsExactlyOneEscalationAndItGoesToTheAccount() {
         let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc")
-        XCTAssertTrue(command.contains("sudo -S -p ''"),
-                      "the outer command must escalate once, reading the password from stdin")
+        XCTAssertEqual(command.components(separatedBy: "sudo ").count - 1, 1,
+                       "a second sudo means root is back in the path: \(command)")
+        XCTAssertTrue(command.contains("-H -u svc"))
 
         let script = KeyDistributor.remoteScript(for: key, nonce: "n", account: "svc")
-        XCTAssertTrue(script.contains(#"sudo -n -u "$u""#),
-                      "the script must drop to the account rather than staying root")
-        // Root's half creates the home and nothing else; anything touching the
-        // account's files belongs after the drop.
-        let rootHalf = script.components(separatedBy: "sudo -n -u").first ?? script
-        XCTAssertFalse(rootHalf.contains("authorized_keys"),
-                       "root touches authorized_keys before dropping: \(rootHalf)")
-        XCTAssertFalse(rootHalf.contains(".ssh\" ||"),
-                       "root creates ~/.ssh instead of leaving it to the account")
+        XCTAssertFalse(script.contains("sudo"), "the script must not escalate at all")
+        XCTAssertFalse(script.contains("chown"), "nothing is chowned once it runs as the owner")
     }
 
     /// The plain path is untouched by any of this: no passwd lookup, no chown,
@@ -802,11 +804,11 @@ final class KeyDistributorSudoTests: XCTestCase {
     /// property by running it.
     func testAnAccountNameIsShellQuoted() {
         let nasty = "svc'; rm -rf /; echo '"
-        // The name now lives inside the base64'd script rather than in the
-        // wrapper, so the assertion has to look where it actually goes.
-        let script = KeyDistributor.remoteScript(for: key, nonce: "n", account: nasty)
-        XCTAssertTrue(script.contains("u=\(ShellQuoting.quote(nasty))"),
-                      "the account name was not quoted: \(script)")
+        // The name is a sudo argument now — it left the script when the root
+        // phase did — so the assertion has to look where it actually goes.
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: nasty)
+        XCTAssertTrue(command.contains("-u \(ShellQuoting.quote(nasty))"),
+                      "the account name was not quoted: \(command)")
     }
 
     /// The prompt is silenced so it can't be mistaken for host output, and the
@@ -988,372 +990,178 @@ final class KeyDistributorSudoExecutionTests: XCTestCase {
     }
 }
 
-/// Bootstrapping an account whose home does not exist yet.
+/// The cross-account push, which now escalates **once, directly to the target**
+/// and never via root.
 ///
-/// Both of these were live failures on a real host. The first design ran the
-/// script *as* the target account, which gets ownership for free and cannot
-/// bootstrap: `mkdir -p /home/svc_goose` as `svc_goose` fails because `/home`
-/// isn't theirs, and a `~/.ssh` created earlier with a bare `sudo mkdir` is
-/// root-owned, so the target can't create `authorized_keys` inside it either.
-/// Running as root and repairing ownership is the fix — and ownership then has
-/// to be *tested*, because root-owned files in someone's `~/.ssh` are silent
-/// breakage: sshd's `StrictModes` refuses them and the key just never works.
-final class KeyDistributorBootstrapTests: XCTestCase {
+/// The suite this replaces tested a root bootstrap phase: creating a missing
+/// home, resolving it from passwd, and chowning what root had made. All of that
+/// is gone. Root inside a directory the account controls is an escalation, and
+/// the obvious repair — validate the path first — cannot be made sound in a
+/// shell, because ownership and POSIX mode bits do not prove a directory has no
+/// unprivileged writer (an ACL can grant write while the mode still reads
+/// `0755 root root`). So Portside requires a home that already exists and does
+/// everything as the account instead.
+final class KeyDistributorAccountPushTests: XCTestCase {
 
     private var root: URL!
     private var bin: URL!
     private var chownLog: URL!
 
     private let key = PublicKey(
-        path: "/k.pub", line: "ssh-ed25519 AAAAGOOSE svc_goose@home",
-        algorithm: "ssh-ed25519", blob: "AAAAGOOSE",
-        comment: "svc_goose@home", fingerprint: "f", bits: 256)
+        path: "/k.pub", line: "ssh-ed25519 AAAABLOB tim@newton",
+        algorithm: "ssh-ed25519", blob: "AAAABLOB", comment: "tim@newton",
+        fingerprint: "f", bits: 256)
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("portside-bootstrap-\(UUID().uuidString)")
+            .appendingPathComponent("portside-account-\(UUID().uuidString)")
         bin = root.appendingPathComponent("bin")
         chownLog = root.appendingPathComponent("chown.log")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+
+        // A stub sudo that records how it was called and then runs the rest in
+        // place; a test cannot actually switch user.
+        try """
+        #!/bin/sh
+        echo "$@" >> \(root.appendingPathComponent("sudo.log").path)
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -S|-H|-n) shift ;;
+            -u|-p) shift 2 ;;
+            *) break ;;
+          esac
+        done
+        cat > /dev/null &
+        exec "$@"
+        """.write(to: bin.appendingPathComponent("sudo"), atomically: true, encoding: .utf8)
+        // Present so its ABSENCE from the script is meaningful.
+        try "#!/bin/sh\necho \"$@\" >> \(chownLog.path)\n"
+            .write(to: bin.appendingPathComponent("chown"), atomically: true, encoding: .utf8)
+        for tool in ["sudo", "chown"] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: bin.appendingPathComponent(tool).path)
+        }
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// `getent` stands in for the host's passwd database, so the script can be
-    /// pointed at a home of our choosing. `chown` records rather than acts,
-    /// since a test can't own files as another user.
-    /// Paths whose ownership the stub `find` should report as something other
-    /// than root. Written as "path owner writable" lines.
-    private var ownersFile: URL { root.appendingPathComponent("owners") }
-
-    /// The path as `cd … && pwd -P` reports it — which is what the script
-    /// validates, and is not always what Foundation returns.
-    private func shellResolved(_ path: String) -> String {
+    private func runCommand(home: URL) throws -> (out: String, err: String, status: Int32) {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n1", account: "svc_goose")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "cd \"$1\" 2>/dev/null && pwd -P", "sh", path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try? process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
+        let out = Pipe(), err = Pipe(), stdin = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        process.standardInput = stdin
+        try process.run()
+        stdin.fileHandleForWriting.closeFile()
+        let o = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let e = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (o, e, process.terminationStatus)
     }
 
-    private func declareOwner(_ path: String, _ owner: String, writable: Bool = false) throws {
-        let line = "\(path) \(owner) \(writable ? "yes" : "no")\n"
-        let existing = (try? String(contentsOf: ownersFile, encoding: .utf8)) ?? ""
-        try (existing + line).write(to: ownersFile, atomically: true, encoding: .utf8)
+    // MARK: - The escalation itself
+
+    /// One hop, straight to the account. Not `sudo` to root and then down
+    /// again: root never holds the pen.
+    func testEscalationGoesDirectlyToTheAccountAndNeverViaRoot() {
+        let command = KeyDistributor.remoteCommand(for: key, nonce: "n", account: "svc_goose")
+        XCTAssertTrue(command.contains("sudo -S -p '' -H -u svc_goose"),
+                      "expected one direct hop to the account: \(command)")
+        XCTAssertEqual(command.components(separatedBy: "sudo ").count - 1, 1,
+                       "more than one sudo means root is in the path somewhere")
     }
 
-    private func installStubs(home: String?) throws {
-        let getent = home.map {
-            "#!/bin/sh\necho 'svc_goose:x:900:900::\($0):/bin/sh'\n"
-        } ?? "#!/bin/sh\nexit 2\n"     // no such user
-        try getent.write(to: bin.appendingPathComponent("getent"),
-                         atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        echo "$@" >> \(chownLog.path)
-        """.write(to: bin.appendingPathComponent("chown"), atomically: true, encoding: .utf8)
-        // The script drops privileges for the install phase. A test can't
-        // actually switch user, so this stub swallows sudo's flags and runs the
-        // rest as-is — enough to prove the hand-off is well formed and that the
-        // inner script reaches the right home.
-        try """
-        #!/bin/sh
-        while [ $# -gt 0 ]; do
-          case "$1" in
-            -n|-S|-H) shift ;;
-            -u|-p) shift 2 ;;
-            *) break ;;
-          esac
-        done
-        exec "$@"
-        """.write(to: bin.appendingPathComponent("sudo"), atomically: true, encoding: .utf8)
-        // A test cannot create root-owned ancestors or files owned by another
-        // account, so ownership is modelled rather than real. Anything not
-        // named in the owners file is reported as root-owned and unwritable by
-        // others, which is what a sane host looks like.
-        try """
-        #!/bin/sh
-        p=$1; shift
-        want=""; perm=no
-        while [ $# -gt 0 ]; do
-          case "$1" in
-            -user) want=$2; shift 2 ;;
-            -perm) perm=yes; shift 2 ;;
-            *) shift ;;
-          esac
-        done
-        owner=$(awk -v p="$p" '$1 == p {print $2}' \(ownersFile.path) 2>/dev/null)
-        writable=$(awk -v p="$p" '$1 == p {print $3}' \(ownersFile.path) 2>/dev/null)
-        [ -n "$owner" ] || owner=root
-        [ -n "$writable" ] || writable=no
-        if [ "$perm" = yes ] && [ "$writable" = yes ]; then exit 0; fi
-        if [ -z "$want" ] || [ "$want" = "$owner" ]; then echo "$p"; fi
-        """.write(to: bin.appendingPathComponent("find"), atomically: true, encoding: .utf8)
-        for stub in ["getent", "chown", "sudo", "find"] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: bin.appendingPathComponent(stub).path)
+    /// `-H` is what supplies the account's home, so the script needs no passwd
+    /// lookup of its own — and must not have one, since that was part of the
+    /// root phase.
+    func testTheScriptResolvesNothingItself() {
+        let script = KeyDistributor.remoteScript(for: key, nonce: "n", account: "svc_goose")
+        XCTAssertTrue(script.contains(#"h="$HOME""#))
+        for gone in ["getent", "/etc/passwd", "chown", "sudo"] {
+            XCTAssertFalse(script.contains(gone),
+                           "\(gone) belongs to the removed root phase: \(script)")
         }
     }
 
-    private func runPush(account: String? = "svc_goose")
-        throws -> (out: String, err: String, status: Int32) {
-        let script = root.appendingPathComponent("push.sh")
-        try KeyDistributor.remoteScript(for: key, nonce: "n1", account: account)
-            .write(to: script, atomically: true, encoding: .utf8)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [script.path]
-        // The stubs come first so they shadow the real tools.
-        process.environment = ["PATH": "\(bin.path):/usr/bin:/bin", "HOME": root.path]
-        let out = Pipe(), err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        try process.run()
-        let o = out.fileHandleForReading.readDataToEndOfFile()
-        let e = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (String(decoding: o, as: UTF8.self),
-                String(decoding: e, as: UTF8.self),
-                process.terminationStatus)
+    /// The script is now identical either way; only the wrapper differs.
+    func testTheScriptIsTheSameWithOrWithoutAnAccount() {
+        XCTAssertEqual(KeyDistributor.remoteScript(for: key, nonce: "n", account: "svc_goose"),
+                       KeyDistributor.remoteScript(for: key, nonce: "n", account: nil))
     }
 
-    private var chownedPaths: String {
-        (try? String(contentsOf: chownLog, encoding: .utf8)) ?? ""
-    }
+    // MARK: - Execution
 
-    /// **The reported failure.** The account's home doesn't exist at all.
-    func testCreatesAHomeThatDoesNotExistYet() throws {
+    func testTheWrappedScriptInstallsIntoTheAccountsHome() throws {
         let home = root.appendingPathComponent("home/svc_goose")
-        // Only the final component is created now — `mkdir`, not `mkdir -p` —
-        // so the parent has to exist, exactly as /home does on a real host.
-        try FileManager.default.createDirectory(at: home.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try installStubs(home: home.path)
-        try declareOwner(home.path, "svc_goose")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
 
-        let result = try runPush()
+        let result = try runCommand(home: home)
         XCTAssertTrue(result.out.contains("PORTSIDE-RESULT:n1 added"),
                       "out=\(result.out) err=\(result.err)")
-        let authorized = home.appendingPathComponent(".ssh/authorized_keys")
-        XCTAssertEqual(try String(contentsOf: authorized, encoding: .utf8), key.line + "\n")
+        XCTAssertEqual(
+            try String(contentsOf: home.appendingPathComponent(".ssh/authorized_keys"),
+                       encoding: .utf8),
+            key.line + "\n")
     }
 
-    /// **Root creates the home and nothing else.**
-    ///
-    /// The home's parent (`/home`, or wherever passwd points) is root-owned, so
-    /// it is not something the target account can redirect. Everything below it
-    /// *is*, which is why `~/.ssh` and `authorized_keys` are created by the
-    /// account after privileges are dropped — and therefore need no `chown` at
-    /// all. A chown of either would mean root had written it.
-    func testRootCreatesOnlyTheHomeAndChownsOnlyThat() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        try FileManager.default.createDirectory(at: home.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try installStubs(home: home.path)
-        _ = try runPush()
+    /// **The behaviour that replaced bootstrap.** A missing home is reported in
+    /// a sentence rather than created, because creating it safely is not
+    /// something a shell can do.
+    func testAMissingHomeIsReportedRatherThanCreated() throws {
+        let home = root.appendingPathComponent("home/svc_goose")   // never created
 
-        let log = chownedPaths
-        XCTAssertTrue(log.contains(home.path), "the home was not chowned: \(log)")
-        XCTAssertTrue(log.contains("svc_goose"), "chowned to the wrong account: \(log)")
-        XCTAssertFalse(log.contains("/.ssh\n"),
-                       "root created ~/.ssh instead of dropping privileges first: \(log)")
-        XCTAssertFalse(log.contains("authorized_keys"),
-                       "root created authorized_keys instead of dropping first: \(log)")
-    }
-
-    /// The install half must run as the account, not as root. This asserts on
-    /// the generated script rather than the filesystem, because a test cannot
-    /// actually switch user — the stub `sudo` runs the inner script in place.
-    func testTheInstallPhaseIsHandedToTheAccount() {
-        let script = KeyDistributor.remoteScript(for: key, nonce: "n1", account: "svc_goose")
-        XCTAssertTrue(script.contains("sudo -n -u \"$u\""),
-                      "the script never drops privileges: \(script)")
-        // The part that writes authorized_keys must be inside the dropped half,
-        // not in the root half.
-        let rootHalf = script.components(separatedBy: "sudo -n -u").first ?? script
-        XCTAssertFalse(rootHalf.contains("authorized_keys"),
-                       "root touches authorized_keys before dropping: \(rootHalf)")
-    }
-
-    /// The home exists but `~/.ssh` doesn't — the state after someone made the
-    /// home by hand.
-    func testCreatesSSHInsideAnExistingHome() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        try installStubs(home: home.path)
-        try declareOwner(home.path, "svc_goose")
-
-        XCTAssertTrue(try runPush().out.contains("added"))
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: home.appendingPathComponent(".ssh/authorized_keys").path))
-        // An existing home is not ours to re-own, and ~/.ssh is the account's
-        // to create.
-        XCTAssertFalse(chownedPaths.contains("\(home.path)\n"),
-                       "an existing home should not be chowned: \(chownedPaths)")
-        XCTAssertFalse(chownedPaths.contains("/.ssh\n"),
-                       "~/.ssh should be created by the account: \(chownedPaths)")
-    }
-
-    // MARK: - Hostile filesystem states in a home the account controls
-
-    /// **The escalation this design exists to prevent.** The account owns its
-    /// home, so it can point `~/.ssh` anywhere — at `/root/.ssh`, say — and a
-    /// script running as root would happily install a key there.
-    ///
-    /// Root refuses rather than following it. Note what this test can and
-    /// cannot show: it proves the refusal, but the privilege *drop* that makes
-    /// the remaining paths safe cannot be exercised without a real second user,
-    /// so the stub `sudo` runs the inner script in place.
-    func testASymlinkedSSHDirectoryIsRefused() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        let victim = root.appendingPathComponent("victim")
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(
-            at: home.appendingPathComponent(".ssh"), withDestinationURL: victim)
-        try installStubs(home: home.path)
-        try declareOwner(home.path, "svc_goose")
-
-        let result = try runPush()
-        XCTAssertNotEqual(result.status, 0, "a symlinked ~/.ssh must not succeed")
-        XCTAssertTrue(result.err.contains("symbolic link"), "err=\(result.err)")
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: victim.appendingPathComponent("authorized_keys").path),
-            "root wrote through the symlink into \(victim.path)")
-    }
-
-    /// The same for the home itself, which passwd points at and the account may
-    /// have replaced.
-    func testASymlinkedHomeIsRefused() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        let victim = root.appendingPathComponent("victim-home")
-        try FileManager.default.createDirectory(at: home.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: home, withDestinationURL: victim)
-        try installStubs(home: home.path)
-
-        let result = try runPush()
-        XCTAssertNotEqual(result.status, 0, "a symlinked home must not succeed")
-        XCTAssertTrue(result.err.contains("symbolic link"), "err=\(result.err)")
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: victim.appendingPathComponent(".ssh").path),
-            "root wrote through the symlinked home")
-    }
-
-    /// An existing `authorized_keys` belongs to the account already; appending
-    /// to it must not change who owns it.
-    func testAnExistingAuthorizedKeysIsNotReowned() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        let ssh = home.appendingPathComponent(".ssh")
-        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
-        try "ssh-rsa AAAAOTHER other@host\n".write(
-            to: ssh.appendingPathComponent("authorized_keys"), atomically: true, encoding: .utf8)
-        try installStubs(home: home.path)
-        try declareOwner(home.path, "svc_goose")
-        try declareOwner(ssh.path, "svc_goose")
-
-        XCTAssertTrue(try runPush().out.contains("added"))
-        XCTAssertFalse(chownedPaths.contains("authorized_keys\n"),
-                       "an existing authorized_keys was re-owned: \(chownedPaths)")
-    }
-
-    /// **Blocker 2, pinned.** An earlier guard used `[ ! -O "$h/.ssh" ]`. `-O`
-    /// asks whether the *effective* uid owns the path, which under root is true
-    /// exactly when the directory is root-owned — so the conjunct exempted the
-    /// one case the guard claimed to refuse, and a push proceeded against a
-    /// root-owned `~/.ssh` that sshd would reject anyway.
-    func testARootOwnedSSHDirectoryIsRefused() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        let ssh = home.appendingPathComponent(".ssh")
-        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
-        try installStubs(home: home.path)
-        try declareOwner(home.path, "svc_goose")
-        try declareOwner(ssh.path, "root")
-
-        let result = try runPush()
-        XCTAssertNotEqual(result.status, 0, "a root-owned ~/.ssh must not be written to")
-        XCTAssertTrue(result.err.contains("not owned by svc_goose"), "err=\(result.err)")
-    }
-
-    /// **Blocker 3, pinned.** Creating the home means root writes into a path it
-    /// did not choose. That is only safe if no unprivileged party can modify any
-    /// ancestor — otherwise a component can be swapped between the check and the
-    /// `mkdir`. An ancestor writable by others must therefore stop the push
-    /// rather than being created through.
-    func testAnAncestorWritableByOthersRefusesToCreateTheHome() throws {
-        let home = root.appendingPathComponent("home/svc_goose")
-        let parent = home.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try installStubs(home: home.path)
-        // Canonicalised before validation, so declare the path exactly as the
-        // script will see it. Foundation's resolvingSymlinksInPath strips the
-        // /private prefix that `pwd -P` produces, so resolve it the same way
-        // the shell does rather than guessing.
-        try declareOwner(shellResolved(parent.path), "root", writable: true)
-
-        let result = try runPush()
-        XCTAssertNotEqual(result.status, 0, "a world-writable ancestor must not be built through")
-        XCTAssertTrue(result.err.contains("refusing to create"), "err=\(result.err)")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home.path),
-                       "the home was created despite an unsafe ancestor")
-    }
-
-    /// No `mkdir -p`: only the final component is ever created, so a missing
-    /// parent is reported rather than built through.
-    func testAMissingParentIsReportedRatherThanCreated() throws {
-        let home = root.appendingPathComponent("nonexistent/deeper/svc_goose")
-        try installStubs(home: home.path)
-
-        let result = try runPush()
+        let result = try runCommand(home: home)
         XCTAssertNotEqual(result.status, 0)
         XCTAssertTrue(result.err.contains("does not exist"), "err=\(result.err)")
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("nonexistent").path))
+        XCTAssertTrue(result.err.contains("create the home directory first"),
+                      "the message should say what to do: \(result.err)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.path),
+                       "the home was created anyway")
     }
 
-    /// A typo in the account name must fail with a sentence, not a bare exit
-    /// code — and must certainly not fall back to somebody else's home.
-    func testAnUnknownAccountFailsClearly() throws {
-        try installStubs(home: nil)
-        let result = try runPush()
-        XCTAssertEqual(result.status, 1)
-        XCTAssertTrue(result.err.contains("unknown user svc_goose"), result.err)
-        XCTAssertFalse(result.out.contains("added"))
-        XCTAssertFalse(result.out.contains("present"))
+    /// Nothing chowns anything any more — files created by their owner are
+    /// already owned correctly. A chown here would mean root wrote something.
+    func testNothingIsEverChowned() throws {
+        let home = root.appendingPathComponent("home/svc_goose")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        _ = try runCommand(home: home)
+
+        let log = (try? String(contentsOf: chownLog, encoding: .utf8)) ?? ""
+        XCTAssertTrue(log.isEmpty, "something was chowned: \(log)")
     }
 
-    /// `getent` is absent on some hosts (and on macOS entirely), so the passwd
-    /// file is read directly as a fallback. Proven by removing the stub.
-    func testFallsBackToEtcPasswdWhenGetentIsMissing() throws {
-        try installStubs(home: root.appendingPathComponent("home/svc_goose").path)
-        try FileManager.default.removeItem(at: bin.appendingPathComponent("getent"))
-        // No getent and no such user in the real /etc/passwd: must fail
-        // cleanly rather than resolve to an empty path and write to "/.ssh".
-        let result = try runPush()
-        XCTAssertEqual(result.status, 1)
-        XCTAssertTrue(result.err.contains("unknown user"), result.err)
-    }
+    /// An account name is interpolated into a sudo invocation and a base64
+    /// payload. The honest test is not "the dangerous substring is absent" —
+    /// correctly escaped input still contains its own characters — but that
+    /// running it has no effect.
+    func testAMaliciousAccountNameExecutesNothing() throws {
+        let canary = root.appendingPathComponent("PWNED")
+        let home = root.appendingPathComponent("home/svc_goose")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
 
-    /// Without an account the script is unchanged: `$HOME`, no passwd lookup,
-    /// no chown. The common case must not have grown a dependency on `getent`.
-    func testTheNoAccountScriptNeitherLooksUpNorChowns() throws {
-        try installStubs(home: nil)
-        let result = try runPush(account: nil)
-        XCTAssertTrue(result.out.contains("added"), "out=\(result.out) err=\(result.err)")
-        XCTAssertEqual(chownedPaths, "", "the plain path must not chown anything")
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(".ssh/authorized_keys").path))
+        let command = KeyDistributor.remoteCommand(
+            for: key, nonce: "n", account: "svc'; touch \(canary.path); echo '")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        let stdin = Pipe()
+        process.standardInput = stdin
+        try process.run()
+        stdin.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canary.path),
+                       "the account name escaped its quoting and executed")
     }
 }
 
@@ -1454,6 +1262,21 @@ final class AuthorizedKeysMatchingTests: XCTestCase {
         try assertGrants(true,
                          "command=\"/usr/bin/foo bar\",no-pty ssh-ed25519 AAAATARGET restricted",
                          "a quoted option containing a space")
+    }
+
+    /// **A no-comment key line ending CRLF.** `ssh-keygen` accepts such a file,
+    /// but the CR lands on the *blob* field, so the matcher saw `AAAATARGET\r`
+    /// and reported the key absent — appending a duplicate to a perfectly valid
+    /// file. The existing CRLF coverage used a line *with* a comment, where the
+    /// CR falls after the comment and cannot reach the boundary that matters.
+    func testANoCommentLineEndingCRLFStillGrants() throws {
+        try assertGrants(true, "ssh-ed25519 AAAATARGET\r",
+                         "a trailing CR must not hide the blob")
+    }
+
+    func testACRLFLineWithOptionsStillGrants() throws {
+        try assertGrants(true, "no-pty ssh-ed25519 AAAATARGET\r",
+                         "trailing CR behind options")
     }
 
     /// The comment is decoration — the same key under a different comment is

@@ -104,24 +104,28 @@ enum KeyDistributor {
     /// key it does not, and it would miss a match whose comment had been
     /// edited; scanning fields also handles entries carrying `command=`/`from=`
     /// options, where the algorithm is not the first field.
-    /// `account` is set only for a sudo push. Without it the script runs as the
-    /// login user in `$HOME`; with it, see `rootBootstrap` — root creates the
-    /// account's home if it is missing and then **drops to the account** for
-    /// everything else.
+    /// The script is the same whether or not an `account` is given; escalation
+    /// lives in `remoteCommand`, which runs it under `sudo -H -u <account>`.
     ///
-    /// ## Why not run the whole thing as root
+    /// ## Root does not appear in this path at all
     ///
-    /// Running *as* the target gets file ownership for free but cannot
-    /// bootstrap: `mkdir /home/svc_goose` as `svc_goose` fails because `/home`
-    /// isn't theirs to write. That argued for doing everything as root and
-    /// chowning afterwards, which is what shipped in 0.23.0 — and it was wrong.
-    /// Root working inside a directory the account controls is a privilege
-    /// escalation: the account can point `~/.ssh`, `authorized_keys` or the
-    /// predictable backup name somewhere else and root follows it.
+    /// 0.23.0 ran the whole thing as root so it could create a missing home,
+    /// then chowned what it made. That was a privilege escalation: root working
+    /// inside a directory the account controls follows whatever that account
+    /// points `~/.ssh`, `authorized_keys` or the predictable backup name at.
     ///
-    /// The split resolves both. Root does the one thing only root can — create
-    /// the home, in a parent the account cannot influence — and the account
-    /// does everything inside it, which also means no `chown` is needed at all.
+    /// The obvious repair — validate the path first — cannot be made sound in
+    /// a shell. Ownership plus POSIX mode bits do not prove a directory has no
+    /// unprivileged writer: an ACL can grant `add_file`/`delete_child` to
+    /// somebody while the mode still reads `0755 root root`, so the check
+    /// passes and the component can still be swapped before the write. Doing it
+    /// properly needs fd-relative (`openat`) semantics, which is a helper
+    /// binary and a platform threat model, not a line of `find`.
+    ///
+    /// So Portside no longer creates homes. It requires one that already
+    /// exists and belongs to the account, and does everything **as** that
+    /// account — which removes the symlink question, the ownership repair and
+    /// the nested escalation together, rather than guarding each one.
     /// An `awk` program that finds a key at its **real position** in an
     /// `authorized_keys` line, and the predicate built on it.
     ///
@@ -157,6 +161,7 @@ enum KeyDistributor {
     static let authorizedKeysMatcher = """
     {
       line = $0
+      sub(/\\r$/, "", line)
       sub(/^[ \\t]+/, "", line)
       if (line ~ /^#/ || line == "") next
       split(line, f, /[ \\t]+/)
@@ -187,25 +192,23 @@ enum KeyDistributor {
 
     static func remoteScript(for key: PublicKey, nonce: String = "",
                              account: String? = nil) -> String {
-        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
-        guard !target.isEmpty else {
-            // No escalation: this runs as the login user in their own home,
-            // where following a symlink is their business and not a privilege
-            // boundary.
-            return installPhase(for: key, nonce: nonce, home: #""$HOME""#)
-        }
-        return rootBootstrap(for: key, nonce: nonce, account: target)
+        // `account` no longer changes the script. It used to select a root
+        // variant that created the home and repaired ownership; that is gone,
+        // and escalation now lives entirely in `remoteCommand`. The parameter
+        // stays so callers read the same either way.
+        _ = account
+        return installPhase(for: key, nonce: nonce, home: #""$HOME""#)
     }
 
-    /// Everything that touches `authorized_keys`. **Always runs as the account
-    /// that owns the file** — as the login user directly, or dropped down to the
-    /// target account after `rootBootstrap` has made the home exist.
+    /// Everything that touches `authorized_keys`, run **as the account that
+    /// owns it** — the login user directly, or the target account via
+    /// `sudo -H -u`.
     ///
     /// Running as the owner is what makes the symlink questions go away. A
     /// symlinked `authorized_keys` is followed rather than replaced, which is
-    /// correct and is what the tests pin; it is only dangerous when *root* is
-    /// the one following it. Nothing here chowns anything either, because files
-    /// created by their owner already have the right owner.
+    /// correct and is what the tests pin; it was only dangerous when *root* did
+    /// the following. Nothing here chowns anything, because a file created by
+    /// its owner already has the right owner.
     static func installPhase(for key: PublicKey, nonce: String, home: String) -> String {
         let line = ShellQuoting.quote(key.line)
         // Built from `$f` in the script rather than quoted in from here: a
@@ -216,6 +219,17 @@ enum KeyDistributor {
         return """
         umask 077
         h=\(home)
+        # No apostrophes in these messages: an unescaped ' inside a ${...}
+        # expansion inside double quotes fails to parse, and `sh -n` on the
+        # generated script is the only thing that shows it.
+        if [ -z "$h" ]; then
+          echo "portside: no home directory is set for this account" >&2
+          exit 1
+        fi
+        if [ ! -d "$h" ]; then
+          echo "portside: $h does not exist; create the home directory first" >&2
+          exit 1
+        fi
         d="$h/.ssh"; f="$d/authorized_keys"
         if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; fi
         if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; fi
@@ -231,114 +245,6 @@ enum KeyDistributor {
           printf '%s\\n' \(line) >> "$f" || exit 1
           printf '%s%s added\\n' '\(resultMarker)' '\(nonce)'
         fi
-        """
-    }
-
-    /// The root half of a cross-account push: make the account's home exist,
-    /// then **drop privileges** and let the account install its own key.
-    ///
-    /// ## Why root does as little as possible
-    ///
-    /// The previous version ran the *whole* script as root against paths inside
-    /// a home the target account controls. That is a local privilege escalation
-    /// waiting to happen: the account can pre-create `~/.ssh`, `authorized_keys`
-    /// or the predictable `.portside-backup` name as a symlink, and root then
-    /// follows it. Pointing `~/.ssh` at `/root/.ssh` installs the attacker's key
-    /// for root; pointing `authorized_keys` at `/etc/shadow` gets it copied to a
-    /// backup that is then chowned *to them*.
-    ///
-    /// Checking for symlinks first is not a fix. The account owns the
-    /// containing directory, so it can swap any component between the check and
-    /// the write — a check-then-use race. The only durable answer is to stop
-    /// being root before touching anything the account can influence.
-    ///
-    /// So root creates **only the home directory**, whose parent (`/home`, or
-    /// whatever passwd says) is root-owned and therefore not something the
-    /// account can redirect, chowns it, and hands off. Everything after that —
-    /// `~/.ssh`, `authorized_keys`, the backup — is created by the account
-    /// itself, which also means it is owned correctly with no `chown` at all.
-    ///
-    /// **A pre-existing root-owned `~/.ssh` is now reported rather than
-    /// repaired.** The old code chowned it, which is the same unsafe pattern;
-    /// and sshd's `StrictModes` rejects that directory anyway, so it was a
-    /// broken state being silently papered over. Bootstrapping a genuinely new
-    /// account is unaffected: nothing exists, so the account creates it all.
-    static func rootBootstrap(for key: PublicKey, nonce: String, account: String) -> String {
-        let inner = Data(installPhase(for: key, nonce: nonce, home: #""$1""#).utf8)
-            .base64EncodedString()
-        return """
-        umask 077
-        u=\(ShellQuoting.quote(account))
-        # The account's real home, from passwd rather than a guess — `~u` isn't
-        # expandable from a variable in POSIX sh, and assuming /home/$u is wrong
-        # on any host that doesn't do it that way.
-        h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
-        [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
-        if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
-        if [ -h "$h" ]; then
-          echo "portside: $h is a symbolic link; refusing to write through it as root" >&2
-          exit 1
-        fi
-        case "$h" in /*) ;; *) echo "portside: $h is not an absolute path" >&2; exit 1 ;; esac
-        if [ ! -d "$h" ]; then
-          # Creating the home means root writes into a path it did not choose.
-          # Checking only the final component is a check-then-use race — but a
-          # race needs a racer: if no unprivileged party can modify ANY ancestor,
-          # nothing can be swapped between the check and the mkdir. So every
-          # ancestor must be a real directory, root-owned, and writable by
-          # nobody else. That is what makes this safe without openat.
-          # Canonicalise the parent before validating it. A symlinked ancestor
-          # is not itself the problem — /home is a symlink on plenty of real
-          # hosts, and /var is one on macOS — the problem is an ancestor an
-          # unprivileged user can write. Resolving first means we validate the
-          # directories that actually exist, and an attacker-controlled symlink
-          # resolves to somewhere whose ancestors fail the ownership test.
-          __parent=$(cd "$(dirname "$h")" 2>/dev/null && pwd -P)
-          if [ -z "$__parent" ]; then
-            echo "portside: $(dirname "$h") does not exist; create the home yourself" >&2
-            exit 1
-          fi
-          h="$__parent/$(basename "$h")"
-          __a=$__parent
-          while : ; do
-            if [ ! -d "$__a" ]; then
-              echo "portside: $__a is not a plain directory; refusing to create $h" >&2
-              exit 1
-            fi
-            if [ -z "$(find "$__a" -maxdepth 0 -user root ! -perm -0020 ! -perm -0002 2>/dev/null)" ]; then
-              echo "portside: $__a is not root-owned and unwritable by others; refusing to create $h — create the home yourself" >&2
-              exit 1
-            fi
-            [ "$__a" = "/" ] && break
-            __b=$(dirname "$__a")
-            [ "$__b" = "$__a" ] && break
-            __a=$__b
-          done
-          # No -p: every ancestor was just verified to exist, so this creates
-          # exactly one component and fails if anything raced it into being.
-          mkdir "$h" || exit 1
-          chown "$u:" "$h" 2>/dev/null || chown "$u" "$h" 2>/dev/null
-        elif [ -z "$(find "$h" -maxdepth 0 -user "$u" 2>/dev/null)" ]; then
-          echo "portside: $h is not owned by $u; refusing" >&2
-          exit 1
-        fi
-        if [ -h "$h/.ssh" ]; then
-          echo "portside: $h/.ssh is a symbolic link; refusing" >&2
-          exit 1
-        fi
-        # Ownership compared against the ACCOUNT, never with `-O`. `-O` asks
-        # whether the *effective* uid owns it, which under root is true exactly
-        # when the directory is root-owned — so an earlier version of this guard
-        # exempted the one case it claimed to refuse.
-        if [ -d "$h/.ssh" ] && [ -z "$(find "$h/.ssh" -maxdepth 0 -user "$u" 2>/dev/null)" ]; then
-          echo "portside: $h/.ssh is not owned by $u; fix its ownership first" >&2
-          exit 1
-        fi
-        __pi=\(ShellQuoting.quote(inner))
-        # Drop to the account for everything that touches its files. sudo never
-        # prompts when the caller is already root, and -n keeps it that way.
-        sudo -n -u "$u" /bin/sh -c "$(printf %s "$__pi" | base64 -d 2>/dev/null \
-          || printf %s "$__pi" | base64 -D 2>/dev/null)" portside "$h"
         """
     }
 
@@ -388,14 +294,14 @@ enum KeyDistributor {
     /// No privileges are involved and nothing needs explaining.
     ///
     /// With an `account`, the login is unchanged and the script runs under
-    /// `sudo -H -u <account>`. **This is the only honest way to reach an
-    /// account you cannot log in as** — a key-only service account being
-    /// bootstrapped is exactly the case, and it is why Ansible's
-    /// `authorized_key` module pairs its `user:` parameter with `become`.
-    /// `-H` sets `HOME` to the target's, so the untouched script resolves the
-    /// right `~/.ssh`, and running *as* the target rather than as root means
-    /// every file is created with the right ownership — no `chown` afterwards,
-    /// and nothing for sshd's `StrictModes` to reject.
+    /// `sudo -H -u <account>` — **one hop, directly to the target**, never via
+    /// root. `-H` sets `HOME` from the passwd database, so the script resolves
+    /// the right `~/.ssh`, and because it runs as the account every file it
+    /// creates is already owned correctly.
+    ///
+    /// This was the design before 0.23.0, abandoned then for one reason: it
+    /// cannot create a missing home. Portside no longer tries to — see
+    /// `remoteScript` — so the reason is gone and the escalation goes with it.
     ///
     /// The script travels base64-encoded through a command substitution rather
     /// than being interpolated into `sh -c '…'`: it contains single quotes of
@@ -405,20 +311,18 @@ enum KeyDistributor {
     ///
     /// `-S` reads the sudo password from stdin, which `push` supplies once and
     /// never again; `-p ''` silences the prompt so it can't be mistaken for
-    /// output. Hosts where sudo is unavailable or needs a password we don't
-    /// have fail and are reported, like any other failure.
+    /// output. A host where sudo is unavailable, or where policy forbids this
+    /// RunAs target, fails and is reported like any other failure.
     static func remoteCommand(for key: PublicKey, nonce: String,
                               account: String? = nil) -> String {
         guard let account = account?.trimmingCharacters(in: .whitespaces),
               !account.isEmpty else {
             return remoteScript(for: key, nonce: nonce)
         }
-        // Root, not `-u account` — see `remoteScript`. The script resolves the
-        // target's home from passwd and chowns what it creates.
-        let script = remoteScript(for: key, nonce: nonce, account: account)
+        let script = remoteScript(for: key, nonce: nonce)
         let encoded = Data(script.utf8).base64EncodedString()
         return "__pk=\(ShellQuoting.quote(encoded)); "
-            + "sudo -S -p '' sh -c "
+            + "sudo -S -p '' -H -u \(ShellQuoting.quote(account)) sh -c "
             + "\"$(printf %s \"$__pk\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__pk\" | base64 -D 2>/dev/null)\""
     }
