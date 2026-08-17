@@ -97,8 +97,17 @@ enum BroadcastPasteReview: Equatable {
         // paste and must not nag — it's the shape of every useful paste.
         // Interior newlines mean several commands, which is the case where
         // a half-read clipboard does real damage.
-        let trimmed = text.hasSuffix("\n") ? String(text.dropLast()) : text
-        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+        //
+        // **Split on `isNewline`, never on `"\n"`.** `\r\n` is a *single* Swift
+        // `Character` — one extended grapheme cluster — so `hasSuffix("\n")` is
+        // false for CRLF text and `split(separator: "\n")` finds no separator in
+        // it at all, handing back the whole paste as one line. A two-command
+        // CRLF paste therefore counted as one command and was sent to every
+        // pane **with no confirmation**, which is precisely the case this guard
+        // exists for. Clipboards from Windows, RDP, most web pages and Excel are
+        // all CRLF, so this was the common shape rather than the exotic one.
+        let trimmed = text.last?.isNewline == true ? String(text.dropLast()) : text
+        let lines = trimmed.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         let isMultiCommand = lines.count > 1
         let isLarge = text.count > largePasteThreshold
 

@@ -30,7 +30,7 @@ enum PublicKeyLocator {
             guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
             // A .pub file holds one key. Anything past the first key line is
             // not something to guess about, so only the first is offered.
-            guard let firstLine = contents.split(separator: "\n").first else { continue }
+            guard let firstLine = contents.split(whereSeparator: \.isNewline).first else { continue }
             let measured = await fingerprinter(path)
             guard let key = PublicKey.parse(
                 line: String(firstLine),
@@ -63,7 +63,7 @@ enum PublicKeyLocator {
         fingerprinter: (String) async -> (fingerprint: String, bits: Int?)? = fingerprint
     ) async -> PublicKey? {
         guard let contents = try? String(contentsOfFile: path, encoding: .utf8),
-              let firstLine = contents.split(separator: "\n").first else { return nil }
+              let firstLine = contents.split(whereSeparator: \.isNewline).first else { return nil }
         let measured = await fingerprinter(path)
         return PublicKey.parse(line: String(firstLine), path: path,
                                fingerprint: measured?.fingerprint ?? "", bits: measured?.bits)

@@ -224,6 +224,40 @@ final class KeyDistributorOutcomeTests: XCTestCase {
         XCTAssertTrue(KeyDistributor.failureReason(status: 255, err: "").contains("could not connect"))
         XCTAssertTrue(KeyDistributor.failureReason(status: 7, err: "").contains("status 7"))
     }
+
+    /// **ssh writes its own client errors with CRLF.** Measured, not assumed:
+    /// `ssh: Could not resolve hostname …` arrives `\r\n`-terminated. Since
+    /// `\r\n` is a single Swift `Character`, splitting on `"\n"` found no
+    /// separator and treated the whole transcript as one line — so the leading
+    /// `Warning:` swallowed everything and the real reason was replaced by a
+    /// bare exit code.
+    ///
+    /// Messages relayed from the *remote* side use plain `\n`, which is why
+    /// sudo's refusals always looked right and hid this.
+    func testFailureReasonHandlesSshsOwnCRLFOutput() {
+        let err = "Warning: Permanently added 'db1.internal' (ED25519) to the list of known hosts.\r\n"
+            + "tim@db1.internal: Permission denied (publickey,password).\r\n"
+        let reason = KeyDistributor.failureReason(status: 255, err: err)
+
+        XCTAssertTrue(reason.contains("Permission denied"), "got: \(reason)")
+        XCTAssertFalse(reason.contains("Permanently added"),
+                       "ssh's noise came back as the reason: \(reason)")
+        XCTAssertFalse(reason.contains("could not connect"),
+                       "fell through to the exit code instead of reading the message")
+    }
+
+    /// A reason is one line. Returning the whole transcript puts several lines
+    /// of ssh debug output into a single result row.
+    func testFailureReasonIsASingleLineWhateverTheLineEndings() {
+        for (name, terminator) in [("LF", "\n"), ("CRLF", "\r\n")] {
+            let err = ["ssh: connect to host db1 port 22: Connection refused",
+                       "some trailing noise"].joined(separator: terminator)
+            let reason = KeyDistributor.failureReason(status: 255, err: err)
+            XCTAssertFalse(reason.contains("trailing noise"),
+                           "\(name): the whole transcript came back as the reason")
+            XCTAssertTrue(reason.contains("Connection refused"), "\(name): got \(reason)")
+        }
+    }
 }
 
 // MARK: - The script, run for real

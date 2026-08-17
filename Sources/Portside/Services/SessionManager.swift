@@ -2235,8 +2235,14 @@ final class SessionManager: ObservableObject {
     /// The first few lines of what's about to run, so the confirmation shows
     /// the actual commands rather than asking the user to trust their memory
     /// of what they copied.
-    private static func previewLines(of text: String, limit: Int = 6) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+    /// Internal rather than private so the string shown in a destructive
+    /// confirmation can be tested directly, rather than trusted to mirror the
+    /// model it sits beside.
+    static func previewLines(of text: String, limit: Int = 6) -> String {
+        // `isNewline`, not `"\n"` — see `BroadcastPasteReview.review`. A CRLF
+        // paste previewed as a single run-on line, in the very dialog asking
+        // the user to check what they are about to run everywhere.
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         let shown = lines.prefix(limit).map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.count > 80 ? String(trimmed.prefix(80)) + "…" : trimmed

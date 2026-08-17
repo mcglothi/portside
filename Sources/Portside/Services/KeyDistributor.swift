@@ -290,9 +290,18 @@ enum KeyDistributor {
     /// ssh is chatty on failure and the first line is rarely the informative
     /// one ("Warning: Permanently added…" precedes the actual error), so this
     /// prefers a line that names a known failure over simply taking the first.
+    /// Splitting on `\.isNewline`, not on `"\n"` — **`\r\n` is a single Swift
+    /// `Character`**, so `split(separator: "\n")` finds no separator at all in
+    /// CRLF output and returns the whole blob as one line. ssh writes its own
+    /// client errors with CRLF (measured: "Could not resolve hostname" arrives
+    /// as `\r\n`), so this degraded every failure ssh itself reported: either a
+    /// leading `Warning:` swallowed the entire transcript and left only the exit
+    /// code, or the whole multi-line transcript came back as one host's
+    /// "reason". Messages relayed from the *remote* side use plain `\n`, which
+    /// is why sudo's refusals looked correct and hid this.
     static func failureReason(status: Int32, err: String) -> String {
         let lines = err
-            .split(separator: "\n")
+            .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("Warning: Permanently added") }
 

@@ -3,6 +3,16 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.23.1
+
+**A multi-command paste copied from Windows could reach every pane without asking.** MultiExec holds a paste for confirmation when it contains more than one command, because a half-read clipboard run on twelve hosts at once is the thing that guard exists to prevent. It counted commands by splitting on line breaks — and missed the Windows convention entirely, so a paste using carriage-return-plus-newline counted as a single command and went straight out to every pane. Clipboards from Windows, RDP sessions, most web pages and Excel all use that convention, so this was reachable by ordinary copy-and-paste rather than anything exotic. The identical text with Unix line endings was correctly held. The confirmation now counts commands the same way whatever produced the text, and its preview no longer runs those commands together on one line.
+
+**Importing `~/.ssh/config` no longer chokes on a Windows-style file.** The same line-break assumption meant a config written or edited on Windows was read as one enormous line: instead of your hosts, the import produced a single nonsense entry with the rest of the file as its hostname.
+
+**A failed key copy says why again.** ssh writes its *own* errors — "could not resolve hostname", "connection refused", "permission denied" — using the Windows convention, so those failures were misread the same way: the real message was discarded and the host reported a bare exit code instead. Messages relayed from the remote host were never affected, which is why sudo's refusals always read correctly and this stayed hidden.
+
+These all come from one cause. In Swift, a carriage return and newline together count as a *single* character, so asking to split text on "newline" finds nothing at all in Windows-style text and hands back the whole thing as one line. It is invisible on inspection and silent at runtime — the code looks right and simply sees one line where there are ten. Every place Portside splits text into lines has been audited; the affected ones are fixed and covered by tests that fail without the fix.
+
 ## 0.23.0
 
 **Copy an SSH key to a selection of hosts at once.** Hosts ▸ Copy SSH Key to Hosts…, or right-click a host, a selection, or a folder. It adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.
