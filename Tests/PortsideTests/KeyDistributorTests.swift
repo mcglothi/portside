@@ -459,12 +459,41 @@ final class KeyDistributorScriptTests: XCTestCase {
         XCTAssertEqual(try contents().split(separator: "\n").count, 2)
     }
 
-    /// Ours appearing as another key's *comment* is a real match by the rules
-    /// we use (any field equal to the blob), and harmless: the file already
-    /// contains the string, so re-adding gains nothing.
-    func testOurBlobInAnotherKeysCommentCountsAsPresent() throws {
+    /// **This used to assert the opposite, and the reasoning was wrong.**
+    ///
+    /// The old rule was "any field equal to the blob", and the old comment here
+    /// called a match in someone else's comment field harmless because "the
+    /// file already contains the string". A comment grants nothing — sshd
+    /// authenticates on type and blob, not on text further along the line — so
+    /// the host was reported as already trusting a key it does not have, the
+    /// push installed nothing, and the operator was told it had worked.
+    ///
+    /// The retire path shares this check, where the same false match deletes
+    /// the unrelated key whose comment mentioned the blob. That is why this is
+    /// a destructive bug and not a cosmetic one.
+    func testOurBlobInAnotherKeysCommentIsNotUs() throws {
         try seed("ssh-rsa AAAADIFFERENT \(testKey.blob)\n")
-        XCTAssertTrue(try runScript().contains("present"))
+        XCTAssertTrue(try runScript().contains("added"),
+                      "a blob in a comment is not an installed key")
+        XCTAssertEqual(try contents().split(separator: "\n").count, 2,
+                       "our key should have been appended alongside")
+    }
+
+    /// The type alone is not us either — every ed25519 key on the host shares
+    /// it, so matching on it without the blob beside it would call the first
+    /// one a match.
+    func testAnotherKeyOfTheSameTypeIsNotUs() throws {
+        try seed("\(testKey.algorithm) AAAACOMPLETELYDIFFERENT other@host\n")
+        XCTAssertTrue(try runScript().contains("added"))
+        XCTAssertEqual(try contents().split(separator: "\n").count, 2)
+    }
+
+    /// The pair has to be **adjacent**. Our type at the end of one field group
+    /// and our blob somewhere further along is not an entry granting our key.
+    func testTheTypeAndBlobMustBeSideBySide() throws {
+        try seed("ssh-rsa AAAADIFFERENT \(testKey.algorithm) trailing \(testKey.blob)\n")
+        XCTAssertTrue(try runScript().contains("added"),
+                      "type and blob separated by another field is not an installed key")
     }
 
     // MARK: - Hostile filesystem states
@@ -847,7 +876,7 @@ final class KeyDistributorSudoExecutionTests: XCTestCase {
         #!/bin/sh
         while [ $# -gt 0 ]; do
           case "$1" in
-            -S|-H) shift ;;
+            -S|-H|-n) shift ;;
             -p) shift 2 ;;
             -u) shift 2 ;;
             *) break ;;
@@ -983,7 +1012,22 @@ final class KeyDistributorBootstrapTests: XCTestCase {
         #!/bin/sh
         echo "$@" >> \(chownLog.path)
         """.write(to: bin.appendingPathComponent("chown"), atomically: true, encoding: .utf8)
-        for stub in ["getent", "chown"] {
+        // The script drops privileges for the install phase. A test can't
+        // actually switch user, so this stub swallows sudo's flags and runs the
+        // rest as-is — enough to prove the hand-off is well formed and that the
+        // inner script reaches the right home.
+        try """
+        #!/bin/sh
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -n|-S|-H) shift ;;
+            -u|-p) shift 2 ;;
+            *) break ;;
+          esac
+        done
+        exec "$@"
+        """.write(to: bin.appendingPathComponent("sudo"), atomically: true, encoding: .utf8)
+        for stub in ["getent", "chown", "sudo"] {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755],
                 ofItemAtPath: bin.appendingPathComponent(stub).path)
@@ -1029,19 +1073,39 @@ final class KeyDistributorBootstrapTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: authorized, encoding: .utf8), key.line + "\n")
     }
 
-    /// Everything root creates on the way must be handed to the account, or
-    /// sshd's StrictModes will refuse the file and the key silently won't work.
-    func testEverythingCreatedIsChownedToTheAccount() throws {
+    /// **Root creates the home and nothing else.**
+    ///
+    /// The home's parent (`/home`, or wherever passwd points) is root-owned, so
+    /// it is not something the target account can redirect. Everything below it
+    /// *is*, which is why `~/.ssh` and `authorized_keys` are created by the
+    /// account after privileges are dropped — and therefore need no `chown` at
+    /// all. A chown of either would mean root had written it.
+    func testRootCreatesOnlyTheHomeAndChownsOnlyThat() throws {
         let home = root.appendingPathComponent("home/svc_goose")
         try installStubs(home: home.path)
         _ = try runPush()
 
         let log = chownedPaths
         XCTAssertTrue(log.contains(home.path), "the home was not chowned: \(log)")
-        XCTAssertTrue(log.contains("\(home.path)/.ssh"), "~/.ssh was not chowned: \(log)")
-        XCTAssertTrue(log.contains("\(home.path)/.ssh/authorized_keys"),
-                      "authorized_keys was not chowned: \(log)")
         XCTAssertTrue(log.contains("svc_goose"), "chowned to the wrong account: \(log)")
+        XCTAssertFalse(log.contains("/.ssh\n"),
+                       "root created ~/.ssh instead of dropping privileges first: \(log)")
+        XCTAssertFalse(log.contains("authorized_keys"),
+                       "root created authorized_keys instead of dropping first: \(log)")
+    }
+
+    /// The install half must run as the account, not as root. This asserts on
+    /// the generated script rather than the filesystem, because a test cannot
+    /// actually switch user — the stub `sudo` runs the inner script in place.
+    func testTheInstallPhaseIsHandedToTheAccount() {
+        let script = KeyDistributor.remoteScript(for: key, nonce: "n1", account: "svc_goose")
+        XCTAssertTrue(script.contains("sudo -n -u \"$u\""),
+                      "the script never drops privileges: \(script)")
+        // The part that writes authorized_keys must be inside the dropped half,
+        // not in the root half.
+        let rootHalf = script.components(separatedBy: "sudo -n -u").first ?? script
+        XCTAssertFalse(rootHalf.contains("authorized_keys"),
+                       "root touches authorized_keys before dropping: \(rootHalf)")
     }
 
     /// The home exists but `~/.ssh` doesn't — the state after someone made the
@@ -1052,10 +1116,60 @@ final class KeyDistributorBootstrapTests: XCTestCase {
         try installStubs(home: home.path)
 
         XCTAssertTrue(try runPush().out.contains("added"))
-        XCTAssertTrue(chownedPaths.contains("\(home.path)/.ssh"))
-        // The home already existed, so it is not ours to re-own.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: home.appendingPathComponent(".ssh/authorized_keys").path))
+        // An existing home is not ours to re-own, and ~/.ssh is the account's
+        // to create.
         XCTAssertFalse(chownedPaths.contains("\(home.path)\n"),
                        "an existing home should not be chowned: \(chownedPaths)")
+        XCTAssertFalse(chownedPaths.contains("/.ssh\n"),
+                       "~/.ssh should be created by the account: \(chownedPaths)")
+    }
+
+    // MARK: - Hostile filesystem states in a home the account controls
+
+    /// **The escalation this design exists to prevent.** The account owns its
+    /// home, so it can point `~/.ssh` anywhere — at `/root/.ssh`, say — and a
+    /// script running as root would happily install a key there.
+    ///
+    /// Root refuses rather than following it. Note what this test can and
+    /// cannot show: it proves the refusal, but the privilege *drop* that makes
+    /// the remaining paths safe cannot be exercised without a real second user,
+    /// so the stub `sudo` runs the inner script in place.
+    func testASymlinkedSSHDirectoryIsRefused() throws {
+        let home = root.appendingPathComponent("home/svc_goose")
+        let victim = root.appendingPathComponent("victim")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: home.appendingPathComponent(".ssh"), withDestinationURL: victim)
+        try installStubs(home: home.path)
+
+        let result = try runPush()
+        XCTAssertNotEqual(result.status, 0, "a symlinked ~/.ssh must not succeed")
+        XCTAssertTrue(result.err.contains("symbolic link"), "err=\(result.err)")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: victim.appendingPathComponent("authorized_keys").path),
+            "root wrote through the symlink into \(victim.path)")
+    }
+
+    /// The same for the home itself, which passwd points at and the account may
+    /// have replaced.
+    func testASymlinkedHomeIsRefused() throws {
+        let home = root.appendingPathComponent("home/svc_goose")
+        let victim = root.appendingPathComponent("victim-home")
+        try FileManager.default.createDirectory(at: home.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: home, withDestinationURL: victim)
+        try installStubs(home: home.path)
+
+        let result = try runPush()
+        XCTAssertNotEqual(result.status, 0, "a symlinked home must not succeed")
+        XCTAssertTrue(result.err.contains("symbolic link"), "err=\(result.err)")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: victim.appendingPathComponent(".ssh").path),
+            "root wrote through the symlinked home")
     }
 
     /// An existing `authorized_keys` belongs to the account already; appending

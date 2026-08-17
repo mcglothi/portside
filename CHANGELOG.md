@@ -3,6 +3,14 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.23.2
+
+**Copying a key no longer risks deleting a different one.** Portside decided whether a host already had a key by looking for the key's fingerprint data in *any* field of a line in `authorized_keys` — including the trailing comment. So a host that merely mentioned the key in a comment was reported as already having it, and the copy silently did nothing while telling you it had worked. The check now requires the key's type and its data side by side, which is what sshd itself authenticates on. Matching on the comment was also the more dangerous half of this: the same check decides which line to *remove*, so an unrelated key whose comment mentioned yours could be deleted along with it.
+
+**Copying a key to another account no longer runs as root on that account's files.** Reaching an account you can't log in as needs `sudo`, and the whole operation used to run as root inside a directory that account controls. An account able to edit its own home could point `~/.ssh` — or the backup file Portside writes — somewhere else entirely, and root would follow it: at best a key installed in the wrong place, at worst a file it should never have touched. Root now does one thing only: create the account's home directory if it is missing, in a location the account cannot redirect. Everything after that — `~/.ssh`, `authorized_keys`, the backup — is created by the account itself. That also means those files are owned correctly with no ownership repair at all, so a service account whose `~/.ssh` belongs to a non-default group keeps it.
+
+One behaviour change comes with that: if `~/.ssh` already exists but is owned by someone other than the account, Portside now says so instead of quietly taking ownership of it. sshd refuses that directory anyway, so the key would not have worked.
+
 ## 0.23.1
 
 **A multi-command paste copied from Windows could reach every pane without asking.** MultiExec holds a paste for confirmation when it contains more than one command, because a half-read clipboard run on twelve hosts at once is the thing that guard exists to prevent. It counted commands by splitting on line breaks — and missed the Windows convention entirely, so a paste using carriage-return-plus-newline counted as a single command and went straight out to every pane. Clipboards from Windows, RDP sessions, most web pages and Excel all use that convention, so this was reachable by ordinary copy-and-paste rather than anything exotic. The identical text with Unix line endings was correctly held. The confirmation now counts commands the same way whatever produced the text, and its preview no longer runs those commands together on one line.

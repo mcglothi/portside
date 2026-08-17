@@ -98,12 +98,12 @@ enum KeyDistributor {
     /// need a key pushed to them are exactly the hosts least likely to have a
     /// modern shell.
     ///
-    /// Idempotency is checked with `awk` over the blob rather than `grep -F`
-    /// over the whole line. `grep` would match the blob inside a *commented
-    /// out* entry and report the host as already trusting a key it does not,
-    /// and it would miss a match whose comment had been edited. Scanning
-    /// non-comment lines field by field also handles entries carrying
-    /// `command=`/`from=` options, where the algorithm is not the first field.
+    /// Idempotency is checked with `awk` over the type/blob pair rather than
+    /// `grep -F` over the whole line — see `installedCheck`. `grep` would match
+    /// inside a *commented out* entry and report the host as already trusting a
+    /// key it does not, and it would miss a match whose comment had been
+    /// edited; scanning fields also handles entries carrying `command=`/`from=`
+    /// options, where the algorithm is not the first field.
     /// `account` is set only for a sudo push, where the script runs **as root**
     /// and must therefore find the target's home itself and repair ownership
     /// afterwards. Without it the script runs as the login user in `$HOME`.
@@ -123,54 +123,76 @@ enum KeyDistributor {
     /// is now something to get right rather than something that happens: root
     /// leaving root-owned files in someone's `~/.ssh` is silent breakage,
     /// because sshd's `StrictModes` refuses them and the key simply never works.
+    /// The `awk` that decides whether a host already trusts this key.
+    ///
+    /// ## Type **and** blob, side by side
+    ///
+    /// It compares `$i == type && $(i+1) == blob` — the pair, adjacent — rather
+    /// than looking for the blob in any field. Blob-anywhere was wrong in a way
+    /// that destroys access:
+    ///
+    /// - A blob appearing as a **comment token** on some unrelated key satisfied
+    ///   the check, so a host was reported as already trusting a key it does
+    ///   not have, and the push silently did nothing.
+    /// - The retire path shares this logic, where the same false match deletes
+    ///   the unrelated key whose comment happened to mention the blob.
+    ///
+    /// `PublicKey.identityFields` and the documentation both always said type
+    /// plus blob; only the shell disagreed.
+    ///
+    /// Requiring the two to be **adjacent** is what lets this skip parsing
+    /// `authorized_keys` options at all. Options are one comma-separated field,
+    /// except that a quoted value may contain spaces — `command="/usr/bin/foo
+    /// bar",no-pty` splits into two fields — so locating the key type by
+    /// walking fields is genuinely fiddly. Since both values are known here,
+    /// finding them next to each other is exact and needs no parser. The only
+    /// way to fool it is a comment containing the entire key, which is a
+    /// reference to that key anyway.
+    static func installedCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
+        "awk -v t=\(ShellQuoting.quote(key.algorithm)) -v b=\(ShellQuoting.quote(key.blob)) "
+            + "'/^[[:space:]]*#/ {next} "
+            + "{for (i = 1; i < NF; i++) if ($i == t && $(i + 1) == b) {found = 1; exit}} "
+            + "END {exit !found}' \(file)"
+    }
+
     static func remoteScript(for key: PublicKey, nonce: String = "",
                              account: String? = nil) -> String {
-        let blob = ShellQuoting.quote(key.blob)
+        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard !target.isEmpty else {
+            // No escalation: this runs as the login user in their own home,
+            // where following a symlink is their business and not a privilege
+            // boundary.
+            return installPhase(for: key, nonce: nonce, home: #""$HOME""#)
+        }
+        return rootBootstrap(for: key, nonce: nonce, account: target)
+    }
+
+    /// Everything that touches `authorized_keys`. **Always runs as the account
+    /// that owns the file** — as the login user directly, or dropped down to the
+    /// target account after `rootBootstrap` has made the home exist.
+    ///
+    /// Running as the owner is what makes the symlink questions go away. A
+    /// symlinked `authorized_keys` is followed rather than replaced, which is
+    /// correct and is what the tests pin; it is only dangerous when *root* is
+    /// the one following it. Nothing here chowns anything either, because files
+    /// created by their owner already have the right owner.
+    static func installPhase(for key: PublicKey, nonce: String, home: String) -> String {
         let line = ShellQuoting.quote(key.line)
         // Built from `$f` in the script rather than quoted in from here: a
         // quoted "$HOME/..." is a literal, so the copy would land in a relative
         // directory named `$HOME`, fail, and be swallowed by `2>/dev/null` —
         // leaving every push reporting success with no backup ever written.
         let backup = "\"$f\(backupSuffix)\""
-        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
-
-        // Where the key is going, and who must end up owning it.
-        let locate: String
-        if target.isEmpty {
-            locate = #"h="$HOME""#
-        } else {
-            locate = """
-            u=\(ShellQuoting.quote(target))
-            # The account's real home, from passwd rather than a guess — `~u`
-            # isn't expandable from a variable in POSIX sh, and assuming
-            # /home/$u is wrong on any host that doesn't do it that way.
-            h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
-            [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
-            if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
-            """
-        }
-
-        // Root creating files in someone's ~/.ssh leaves them root-owned, which
-        // sshd's StrictModes rejects — the key installs "successfully" and then
-        // silently never works. Only what we create is chowned; an existing
-        // file's ownership is not ours to change.
-        let claim = target.isEmpty ? "" : #"chown "$u:" "$1" 2>/dev/null || chown "$u" "$1" 2>/dev/null"#
-        let ownFunction = target.isEmpty
-            ? "own() { :; }"
-            : "own() { \(claim); }"
-
         return """
         umask 077
-        \(locate)
-        \(ownFunction)
+        h=\(home)
         d="$h/.ssh"; f="$d/authorized_keys"
-        if [ ! -d "$h" ]; then mkdir -p "$h" || exit 1; own "$h"; fi
-        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; own "$d"; fi
-        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; own "$f"; fi
-        if awk -v b=\(blob) '/^[[:space:]]*#/ {next} {for (i = 1; i <= NF; i++) if ($i == b) {found = 1; exit}} END {exit !found}' "$f"; then
+        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; fi
+        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; fi
+        if \(installedCheck(for: key)); then
           printf '%s%s present\\n' '\(resultMarker)' '\(nonce)'
         else
-          cp "$f" \(backup) 2>/dev/null && own \(backup)
+          cp "$f" \(backup) 2>/dev/null
           # A file not ending in a newline is common (hand-edited, or written
           # by something that didn't bother) and appending straight onto it
           # welds our key to the end of the last entry — breaking that host's
@@ -179,6 +201,73 @@ enum KeyDistributor {
           printf '%s\\n' \(line) >> "$f" || exit 1
           printf '%s%s added\\n' '\(resultMarker)' '\(nonce)'
         fi
+        """
+    }
+
+    /// The root half of a cross-account push: make the account's home exist,
+    /// then **drop privileges** and let the account install its own key.
+    ///
+    /// ## Why root does as little as possible
+    ///
+    /// The previous version ran the *whole* script as root against paths inside
+    /// a home the target account controls. That is a local privilege escalation
+    /// waiting to happen: the account can pre-create `~/.ssh`, `authorized_keys`
+    /// or the predictable `.portside-backup` name as a symlink, and root then
+    /// follows it. Pointing `~/.ssh` at `/root/.ssh` installs the attacker's key
+    /// for root; pointing `authorized_keys` at `/etc/shadow` gets it copied to a
+    /// backup that is then chowned *to them*.
+    ///
+    /// Checking for symlinks first is not a fix. The account owns the
+    /// containing directory, so it can swap any component between the check and
+    /// the write — a check-then-use race. The only durable answer is to stop
+    /// being root before touching anything the account can influence.
+    ///
+    /// So root creates **only the home directory**, whose parent (`/home`, or
+    /// whatever passwd says) is root-owned and therefore not something the
+    /// account can redirect, chowns it, and hands off. Everything after that —
+    /// `~/.ssh`, `authorized_keys`, the backup — is created by the account
+    /// itself, which also means it is owned correctly with no `chown` at all.
+    ///
+    /// **A pre-existing root-owned `~/.ssh` is now reported rather than
+    /// repaired.** The old code chowned it, which is the same unsafe pattern;
+    /// and sshd's `StrictModes` rejects that directory anyway, so it was a
+    /// broken state being silently papered over. Bootstrapping a genuinely new
+    /// account is unaffected: nothing exists, so the account creates it all.
+    static func rootBootstrap(for key: PublicKey, nonce: String, account: String) -> String {
+        let inner = Data(installPhase(for: key, nonce: nonce, home: #""$1""#).utf8)
+            .base64EncodedString()
+        return """
+        umask 077
+        u=\(ShellQuoting.quote(account))
+        # The account's real home, from passwd rather than a guess — `~u` isn't
+        # expandable from a variable in POSIX sh, and assuming /home/$u is wrong
+        # on any host that doesn't do it that way.
+        h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+        [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
+        if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
+        if [ -h "$h" ]; then
+          echo "portside: $h is a symbolic link; refusing to write through it as root" >&2
+          exit 1
+        fi
+        if [ ! -d "$h" ]; then
+          mkdir -p "$h" || exit 1
+          chown "$u:" "$h" 2>/dev/null || chown "$u" "$h" 2>/dev/null
+        fi
+        if [ -h "$h/.ssh" ]; then
+          echo "portside: $h/.ssh is a symbolic link; refusing" >&2
+          exit 1
+        fi
+        # Root-owned ~/.ssh is a broken state sshd's StrictModes rejects. Say so
+        # rather than chown it, which is the unsafe pattern this avoids.
+        if [ -d "$h/.ssh" ] && [ ! -O "$h/.ssh" ] && [ -n "$(find "$h/.ssh" -maxdepth 0 ! -user "$u" 2>/dev/null)" ]; then
+          echo "portside: $h/.ssh is not owned by $u; fix its ownership first" >&2
+          exit 1
+        fi
+        __pi=\(ShellQuoting.quote(inner))
+        # Drop to the account for everything that touches its files. sudo never
+        # prompts when the caller is already root, and -n keeps it that way.
+        sudo -n -u "$u" /bin/sh -c "$(printf %s "$__pi" | base64 -d 2>/dev/null \
+          || printf %s "$__pi" | base64 -D 2>/dev/null)" portside "$h"
         """
     }
 
