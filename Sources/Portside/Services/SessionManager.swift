@@ -1794,8 +1794,8 @@ final class SessionManager: ObservableObject {
     ///
     /// Reuses the workspace-restore path rather than a second replay: a group
     /// *is* a saved tab, and that machinery already rebuilds pane trees,
-    /// restores split fractions and membership, and leaves everything
-    /// disarmed. A group inherits that last part deliberately — the grid comes
+    /// restores orientation and membership, and leaves everything
+    /// disarmed. (Not proportions — splits open evenly; see `PaneNode`.) A group inherits that last part deliberately — the grid comes
     /// back assembled and ready, and arming stays a deliberate act.
     ///
     /// A member that's no longer in the library is skipped rather than failing

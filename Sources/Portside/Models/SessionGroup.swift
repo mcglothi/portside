@@ -7,9 +7,12 @@ import Foundation
 ///
 /// The layout is a `WorkspaceSnapshot.TabSnapshot` rather than anything new,
 /// because that already models exactly this — a pane tree with orientations,
-/// split fractions, per-leaf host-or-local-shell, and per-leaf MultiExec
-/// membership — and the machinery that replays it on launch already exists and
-/// is already tested. A group is a named one of those with a folder path.
+/// per-leaf host-or-local-shell, and per-leaf MultiExec membership — and the
+/// machinery that replays it on launch already exists and is already tested.
+/// A group is a named one of those with a folder path.
+///
+/// Not split proportions: splits open evenly and always have. `PaneNode`
+/// explains why storing them was removed rather than honoured.
 struct SessionGroup: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
@@ -17,7 +20,7 @@ struct SessionGroup: Identifiable, Codable, Equatable {
     /// tree beside the hosts they're made of.
     var folder: String = ""
     var isFavorite = false
-    /// The pane tree to reopen: arrangement, split fractions, membership.
+    /// The pane tree to reopen: arrangement, orientation, membership.
     ///
     /// Note what this deliberately does not carry: whether the tab was *armed*.
     /// `WorkspaceSnapshot` leaves that out so a relaunch never auto-broadcasts

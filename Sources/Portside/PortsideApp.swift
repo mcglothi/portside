@@ -244,9 +244,11 @@ struct PortsideApp: App {
             // window or the session in front of you. They lived in View
             // because there was nowhere better; key distribution made that
             // untenable — "changes forty remote machines" does not belong
-            // among view toggles — and rotation lands here next.
+            // among view toggles — and rotation has now landed beside it.
             CommandMenu("Hosts") {
                 Button("Copy SSH Key to Hosts…") { library.requestCopyKeyToHosts() }
+                    .disabled(store.entries.allSatisfy { $0.kind != .host })
+                Button("Rotate SSH Key…") { library.requestRotateKey() }
                     .disabled(store.entries.allSatisfy { $0.kind != .host })
                 Divider()
                 Button("Inventory Coverage…") { library.requestShowCoverage() }
@@ -294,6 +296,7 @@ struct PortsideApp: App {
                 Button("Groups") { open(Docs.groups) }
                 Button("Credential Profiles") { open(Docs.credentialProfiles) }
                 Button("Key Distribution") { open(Docs.keyDistribution) }
+                Button("Key Rotation") { open(Docs.keyRotation) }
                 Button("Terminal Compatibility") { open(Docs.compatibility) }
                 Button("Port Forwarding") { open(Docs.portForwarding) }
                 Divider()

@@ -228,14 +228,14 @@ enum KeyDistributor {
     /// No privileges are involved and nothing needs explaining.
     ///
     /// With an `account`, the login is unchanged and the script runs under
-    /// `sudo -H -u <account>`. **This is the only honest way to reach an
-    /// account you cannot log in as** — a key-only service account being
-    /// bootstrapped is exactly the case, and it is why Ansible's
-    /// `authorized_key` module pairs its `user:` parameter with `become`.
-    /// `-H` sets `HOME` to the target's, so the untouched script resolves the
-    /// right `~/.ssh`, and running *as* the target rather than as root means
-    /// every file is created with the right ownership — no `chown` afterwards,
-    /// and nothing for sshd's `StrictModes` to reject.
+    /// `sudo` **as root**. **This is the only honest way to reach an account you
+    /// cannot log in as** — a key-only service account being bootstrapped is
+    /// exactly the case, and it is why Ansible's `authorized_key` module pairs
+    /// its `user:` parameter with `become`.
+    ///
+    /// Root rather than `sudo -H -u <account>`, which was the first design and
+    /// cannot bootstrap — see `remoteScript`, which resolves the target's home
+    /// from the passwd database and chowns what it creates.
     ///
     /// The script travels base64-encoded through a command substitution rather
     /// than being interpolated into `sh -c '…'`: it contains single quotes of
@@ -290,9 +290,16 @@ enum KeyDistributor {
     /// ssh is chatty on failure and the first line is rarely the informative
     /// one ("Warning: Permanently added…" precedes the actual error), so this
     /// prefers a line that names a known failure over simply taking the first.
+    /// Splitting on `\.isNewline`, not on `"\n"` — **`\r\n` is a single Swift
+    /// `Character`**, so `split(separator: "\n")` finds no separator at all in
+    /// CRLF output and returns the whole blob as one line. ssh's verbose logger
+    /// writes CRLF, which would turn the search below into a match on everything
+    /// and put ssh's entire debug transcript in a UI row as the "reason". Found
+    /// while building `KeyRotator`, where the same mistake made an uninstalled
+    /// key report as verified.
     static func failureReason(status: Int32, err: String) -> String {
         let lines = err
-            .split(separator: "\n")
+            .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("Warning: Permanently added") }
 

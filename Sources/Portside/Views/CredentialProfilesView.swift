@@ -8,6 +8,7 @@ struct CredentialProfilesView: View {
     @EnvironmentObject var store: SessionStore
     @State private var editingProfile: CredentialProfile?
     @State private var copyingKey: KeyPush?
+    @State private var rotatingKey: KeyPush?
 
     /// A pending "push this profile's key to its hosts" trip through the
     /// key-distribution sheet.
@@ -71,6 +72,17 @@ struct CredentialProfilesView: View {
                                                              hosts: Set(hosts.map(\.id)))
                                     }
                                     .help(CredentialProfileKey.actionTitle(hostCount: hosts.count))
+                                    // The profile's current key is
+                                    // self-evidently the one being replaced, so
+                                    // it arrives pre-chosen as the *old* key.
+                                    // The new one is never guessed at.
+                                    Button("Rotate Key…") {
+                                        rotatingKey = KeyPush(keyPath: key,
+                                                              hosts: Set(hosts.map(\.id)))
+                                    }
+                                    .help("Replace this profile's key across the "
+                                          + "\(hosts.count) host\(hosts.count == 1 ? "" : "s") "
+                                          + "that use it.")
                                 }
                             }
                             Button("Edit…") { editingProfile = profile }
@@ -95,6 +107,10 @@ struct CredentialProfilesView: View {
         .settingsPageSizing()
         .sheet(item: $copyingKey) { push in
             KeyDistributionView(preselected: push.hosts, preselectedKeyPath: push.keyPath)
+                .environmentObject(store)
+        }
+        .sheet(item: $rotatingKey) { push in
+            KeyRotationView(preselected: push.hosts, preselectedOldKeyPath: push.keyPath)
                 .environmentObject(store)
         }
         .sheet(item: $editingProfile) { profile in

@@ -3,6 +3,20 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.24.0
+
+**Rotate an SSH key across a fleet.** Hosts ▸ Rotate SSH Key… replaces one key with another in three stages you drive yourself: add the new key, verify each host really authenticates it, then retire the old one — only from the hosts that just passed. Rotation's first stage *is* key distribution, which is why it waited until that had real-fleet mileage rather than shipping alongside it. See [docs/key-rotation.md](docs/key-rotation.md).
+
+**The rule the feature is built around: the old key is never removed from a host that hasn't just proved the new one works.** "The push reported success" is not proof — it says a line was appended, not that sshd will authenticate with it. A home directory `StrictModes` rejects, an `AuthorizedKeysFile` pointing somewhere else, or a `Match` block restricting key types each leaves a correct-looking `authorized_keys` that authenticates nothing. So the proof is a real login, and it is enforced three times: the sheet offers retirement only for hosts verified in that sheet, the host refuses to remove the old key unless the new one is active in the file it's about to rewrite, and if a rewrite ever loses the new key the host restores from its own backup.
+
+**Verification says which key the host accepted, not merely that it connected.** Three ways a naive check passes while proving nothing, all measured against real hosts: a connection riding an existing `ControlMaster` authenticates *nothing at all*, so `ControlPath=none` is set rather than just `ControlMaster=no`; the host's own configured `-i` — usually the key being retired — is not offered; and `IdentitiesOnly=yes` does **not** suppress an `IdentityFile` from `~/.ssh/config`, which on an aliased host is the common case. So a pass requires ssh's own verbose output to report the server accepting a key with the new key's fingerprint, *and* the session to have run a command. A key that was offered and declined is reported as rejected, which is the expected answer before it has been added.
+
+**Before contacting anything, it checks the new key is usable from this Mac.** A passphrase-protected key that isn't loaded in the agent fails every host identically, and forty hosts reporting "key not accepted" for a local problem is the most misleading output this feature could produce. You get one sentence telling you to run `ssh-add`.
+
+**Retirement is careful with the file it rewrites.** `authorized_keys` is copied aside first and *nothing* is rewritten if that copy fails — an append with no backup is survivable, a rewrite with no backup is not. The file is rewritten through the original rather than renamed over it, so its inode, permissions and ownership survive and a symlinked `authorized_keys` is followed rather than replaced. Comment lines are preserved exactly, including a commented-out copy of the old key. Keys are matched by type and blob, so a comment edit isn't a different key and a longer key that merely starts with the old blob is left alone.
+
+**Fixed: ssh's error output could arrive as one unreadable blob.** `\r\n` is a single Swift `Character`, so splitting ssh's verbose output on `"\n"` found no line breaks at all and treated the whole transcript as one line. In key distribution that could have put an entire debug transcript into a result row as the "reason" a host failed.
+
 ## 0.23.0
 
 **Copy an SSH key to a selection of hosts at once.** Hosts ▸ Copy SSH Key to Hosts…, or right-click a host, a selection, or a folder. It adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.

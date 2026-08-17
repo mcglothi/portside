@@ -47,12 +47,14 @@ enum ShellIntegrationInjection {
     /// interactive session is still bringing up. Letting the remote decide
     /// costs bytes instead of a round trip, and bytes are the cheaper problem.
     ///
-    /// **On size:** the line is ~2.3 KB, which is long enough to be worth
+    /// **On size:** the line is 2346 bytes, which is long enough to be worth
     /// checking against the tty rather than assuming. Measured rather than
     /// taken from the POSIX `MAX_CANON` folklore — a real bash and a real zsh
     /// on a Darwin pty both accept the whole line and report correctly, so the
     /// 1024-byte figure that number suggests is not what the line discipline
-    /// actually enforces here.
+    /// actually enforces here. Confirmed against **Linux** hosts too by
+    /// `ShellIntegrationRemoteTests`, which is the line discipline that
+    /// actually receives it in the field.
     ///
     /// What *does* bite at this length is the writer: a pty deadlocks if you
     /// push a long line in without draining the echo coming back, because the

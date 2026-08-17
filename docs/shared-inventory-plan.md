@@ -49,7 +49,9 @@ Servers", one click to open them all back into the grid they were in.
 
 `WorkspaceSnapshot` already models exactly this. `TabSnapshot` is a pane tree
 with orientations, split fractions, per-leaf `host(UUID)` / `localShell`, and
-per-leaf MultiExec membership; `wasGridView` sits alongside. A saved group is a
+per-leaf MultiExec membership; `wasGridView` sits alongside. (The fractions were
+removed after this was written — see "What's left in 1 and 2" below. Nothing
+else here depends on them.) A saved group is a
 **named, persisted `TabSnapshot`** plus a folder path. The restore machinery
 that replays it already exists and is already tested.
 
@@ -290,13 +292,29 @@ count, double-click opens, the context menu offers open/rename/delete, and
 File ▸ Save Tab as Group… captures the selected tab. A partial launch says so
 rather than opening quietly smaller.
 
-One thing surfaced and *not* fixed: split proportions are never applied when
-a layout is rendered. `PaneNodeView` discards the fractions, and HSplitView
-sizes by its own rules — so a restored group (or a restored workspace) reopens
-with the splitter's proportions, not the ones you left. The model records and
-round-trips them faithfully; nothing consumes them. Fixing it means driving
-widths explicitly or replacing the split containers, which is a real change to
-the pane tree and wants doing on its own.
+One thing surfaced here and was **resolved by deletion** in `c1a0425`
+(2026-07-31), which is worth recording because the original note was wrong in a
+way that would have sent someone off to write a pointless fix.
+
+The note said split proportions were never *applied* when a layout is rendered
+— `PaneNodeView` discarded the fractions — and concluded the model recorded them
+faithfully while nothing consumed them. Half right. Nothing ever *wrote* a real
+one either: the only three sources were `[0.5, 0.5]` on split, an even split for
+Grid View, and a renormalise on close. There was no drag gesture and no divider
+feedback anywhere, because `HSplitView` does not report positions to SwiftUI at
+all. So the stored value was always 0.5/0.5 or 1/n and never once what anyone
+dragged to — which makes the obvious fix worthless, since applying it restores
+exactly what the splitter already gives.
+
+The field is therefore gone rather than wired up. Splits open evenly, which is
+what they always did. Old snapshots and saved groups still decode, because a
+synthesized enum decoder ignores associated-value keys it doesn't know, and a
+test pins that.
+
+**If layouts should remember a hand-dragged size, that is a feature, not a
+repair.** It needs a splitter that both reports and accepts divider positions —
+an `NSSplitView` bridge or a custom SwiftUI one — at which point the field comes
+back with a real source and a real consumer.
 
 **Manifest — done.** Exports carry credential profile definitions, and the
 split has landed: `workspace`, `recents`, appearance, custom themes, terminal

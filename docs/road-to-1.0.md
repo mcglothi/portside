@@ -181,22 +181,59 @@ The maintainer's call, not a readiness question.
   `isProtected` never swept in by Select All, per-host results rather than one
   "done", and no auth retry ever.
 
-  **Not yet validated against a real fleet.** The remote script is exercised
-  against `/bin/sh` with a throwaway `HOME` on every build — which is how two
-  real bugs in it were caught, an unexpanded `$HOME` in the backup path and an
-  append that welded the key onto an `authorized_keys` with no trailing newline
-  — but no push has been run against actual hosts. That is the mileage this
-  feature needs before rotation is built on top of it.
+  **Validated against a real fleet on 2026-08-11**, which was the mileage
+  rotation was waiting on. `KeyDistributorIntegrationTests` drives the real
+  `defaultRunner` against two Linux hosts — one with passwordless sudo, one
+  requiring a password it deliberately doesn't supply — so a single run covers
+  both outcomes of a fleet push. All four cases pass, and the side effects were
+  checked independently of what the tests believe:
 
-- **Key rotation** (after key distribution has mileage) — generate a new key,
-  add it everywhere the old one is used, verify, then retire the old one.
+  - The `authorized_keys.portside-backup` written on each host is byte-identical
+    to the pre-push file (sha256 compared against a baseline taken beforehand).
+    That is the first real-host proof of the backup path, which the
+    single-quoted `$HOME` bug had silently disabled until 0.23.0.
+  - A service account's `~/.ssh` owned by a **non-default group** came through
+    the push unchanged, group included.
+  - The throwaway key used for the reversible cases was gone afterwards, and
+    both hosts' own `authorized_keys` hashed identical to their baseline.
+  - A host that refuses sudo is reported in sudo's own words and does not stop
+    the run; an unknown account is named rather than returning an exit code.
 
-  Deliberately *after*, because rotation's first phase **is** key distribution;
-  shipping them together would mean the first time anyone retires a key, the
-  code that installed it is also new. Three phases the user drives, never one
-  button: **add** (non-destructive, repeatable), **verify** (connect with
-  `IdentitiesOnly=yes` and the new key alone), **retire** (only from hosts that
-  passed verify *in this session*).
+  Before this, the remote script was exercised only against `/bin/sh` with a
+  throwaway `HOME` on every build — which is how two real bugs in it were
+  caught, the unexpanded `$HOME` above and an append that welded the key onto an
+  `authorized_keys` with no trailing newline.
+
+- **Key rotation** — **built at 0.24.0**, see [key-rotation.md](key-rotation.md).
+  Add the new key everywhere, verify, then retire the old one. Three phases the
+  user drives, never one button, and it waited for key distribution's real-fleet
+  mileage as planned.
+
+  One thing this plan got wrong, worth recording. It said verify meant
+  "connect with `IdentitiesOnly=yes` and the new key alone" — **that does not
+  work**, and believing it would have shipped a feature that locks people out of
+  fleets. `IdentitiesOnly=yes` does not mean "only the key I passed": identity
+  files configured in `ssh_config` count as configured, so an aliased host's
+  `IdentityFile` is still offered and reported as `explicit`. There is no option
+  that suppresses it while keeping the alias resolvable, and every host in the
+  maintainer's library is aliased.
+
+  Two further ways a verify passes while proving nothing, both measured against
+  real hosts: a connection joining an existing `ControlMaster` authenticates
+  *nothing at all* (`ssh -v` prints `mux_client_request_session` and no
+  `Server accepts key` line), and the session entry's own `-i` — during a
+  rotation, usually the key being retired — would otherwise be offered too.
+
+  So the assertion is not "the connection succeeded" but **"the server accepted a
+  key with this fingerprint"**, read from ssh's own verbose output, plus the
+  session having actually run a command. The lesson generalises: *a connection
+  succeeding says nothing about which credential succeeded, and any check built
+  on the former is vacuous.*
+
+  The rule is enforced in three independent places — the sheet, the remote script
+  (which refuses unless the new key is active in the file it's rewriting), and a
+  post-rewrite check that restores from the backup if the new key ever goes
+  missing.
 
   Two hard rules. The old key is never removed from a host that hasn't just
   proved the new one works — "the push reported success" is not proof. And

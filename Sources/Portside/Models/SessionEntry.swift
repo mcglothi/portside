@@ -283,6 +283,33 @@ struct SessionEntry: Identifiable, Hashable {
         return args
     }
 
+    /// Where to connect and on which port — and **no `-i`**.
+    ///
+    /// `sshArgs` bakes the entry's own `identityFile` in, which is right for
+    /// connecting and wrong for proving that one *particular* key works. With
+    /// the entry's key also offered, `IdentitiesOnly=yes` permits both, and a
+    /// verify would happily pass on the very key it is about to retire. See
+    /// `KeyRotator.verifyArguments`.
+    ///
+    /// `account` replaces the login user, and goes **in the destination** rather
+    /// than as `-l`: a `user@host` destination overrides `-l`, so `-l` would be
+    /// silently ignored on exactly the hosts that spell a user out. Putting it
+    /// in the destination also works for an alias — `account@alias` still
+    /// matches the `Host` block while overriding its `User`.
+    func sshTargetArgs(loggingInAs account: String? = nil) -> [String] {
+        let account = (account ?? "").trimmingCharacters(in: .whitespaces)
+        if let alias = sshAlias, !alias.isEmpty {
+            return [account.isEmpty ? alias : "\(account)@\(alias)"]
+        }
+        var args: [String] = []
+        if let port {
+            args += ["-p", String(port)]
+        }
+        let login: String? = account.isEmpty ? user : account
+        args.append(login.map { "\($0)@\(hostname)" } ?? hostname)
+        return args
+    }
+
     /// mosh bootstraps over its own ssh, so identity/port ride inside --ssh
     /// (which mosh word-splits — hence the quoting around the key path).
     /// Aliases resolve through ~/.ssh/config exactly like plain ssh.

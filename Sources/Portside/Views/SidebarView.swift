@@ -58,6 +58,7 @@ struct SidebarView: View {
     @State private var keyDistributionPreselection: Set<UUID> = []
     /// Set only when the trip started from a credential profile.
     @State private var keyDistributionKeyPath: String?
+    @State private var showingKeyRotation = false
 
     /// Held as a constant rather than concatenated inline: a chain of `+` on
     /// string literals inside a `Text` is surprisingly expensive to type-check,
@@ -197,6 +198,12 @@ struct SidebarView: View {
                 keyDistributionPreselection = selection
                 keyDistributionKeyPath = nil
                 showingKeyDistribution = true
+            },
+            onRotateKey: {
+                // Same starting point as a push: the sidebar selection is a
+                // proposal, and the sheet's own confirmation names every host.
+                keyDistributionPreselection = selection
+                showingKeyRotation = true
             }
         ))
         .sheet(item: $editingEntry) { entry in
@@ -221,6 +228,7 @@ struct SidebarView: View {
             logSearch: $showingLogSearch,
             portForwarding: $showingPortForwarding,
             keyDistribution: $showingKeyDistribution,
+            keyRotation: $showingKeyRotation,
             keyPreselection: keyDistributionPreselection,
             keyPath: keyDistributionKeyPath,
             store: store, library: library, tunnels: tunnels
@@ -363,6 +371,10 @@ struct SidebarView: View {
                     keyDistributionPreselection = ids
                     keyDistributionKeyPath = keyPath
                     showingKeyDistribution = true
+                },
+                rotateKeyOnHosts: { ids in
+                    keyDistributionPreselection = ids
+                    showingKeyRotation = true
                 },
                 newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
@@ -759,6 +771,7 @@ private struct LibraryCommandRouter: ViewModifier {
     let onShowHistory: () -> Void
     let onSaveTabAsGroup: () -> Void
     let onCopyKeyToHosts: () -> Void
+    let onRotateKey: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -774,6 +787,7 @@ private struct LibraryCommandRouter: ViewModifier {
             .onChange(of: library.showHistory) { _, _ in onShowHistory() }
             .onChange(of: library.saveTabAsGroup) { _, _ in onSaveTabAsGroup() }
             .onChange(of: library.copyKeyToHosts) { _, _ in onCopyKeyToHosts() }
+            .onChange(of: library.rotateKey) { _, _ in onRotateKey() }
     }
 }
 
@@ -790,6 +804,7 @@ private struct LibrarySheets: ViewModifier {
     @Binding var logSearch: Bool
     @Binding var portForwarding: Bool
     @Binding var keyDistribution: Bool
+    @Binding var keyRotation: Bool
     let keyPreselection: Set<UUID>
     let keyPath: String?
     let store: SessionStore
@@ -817,6 +832,9 @@ private struct LibrarySheets: ViewModifier {
                 // the sheet's own confirmation names every host either way.
                 KeyDistributionView(preselected: keyPreselection, preselectedKeyPath: keyPath)
                     .environmentObject(store)
+            }
+            .sheet(isPresented: $keyRotation) {
+                KeyRotationView(preselected: keyPreselection).environmentObject(store)
             }
     }
 }

@@ -44,6 +44,10 @@ struct HostOutlineView: NSViewRepresentable {
     /// optionally a specific public key already chosen (a credential
     /// profile's, where picking a different one would defeat the point).
     var copyKeyToHosts: (Set<UUID>, String?) -> Void = { _, _ in }
+    /// Opens the rotation sheet with these hosts already ticked. No key
+    /// argument: a rotation needs *two* keys and which pair to use is the whole
+    /// decision, so it is never pre-made from a right-click.
+    var rotateKeyOnHosts: (Set<UUID>) -> Void = { _ in }
     let newSubfolder: (String) -> Void
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
@@ -643,6 +647,8 @@ struct HostOutlineView: NSViewRepresentable {
                 })
                 addCopyKeyItem(menu, hosts: selectedEntries.filter { selected.contains($0.id) },
                                title: "Copy SSH Key to \(selected.count) Selected…")
+                addRotateKeyItem(menu, hosts: selectedEntries.filter { selected.contains($0.id) },
+                                 title: "Rotate SSH Key on \(selected.count) Selected…")
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
                     if self.confirmDelete(hosts: selected.count, groups: 0) { store.delete(ids: selected) }
@@ -663,6 +669,7 @@ struct HostOutlineView: NSViewRepresentable {
             addCredentialProfileMenu(menu, forSelection: [entry.id])
             addEnvironmentMenu(menu, forSelection: [entry.id])
             addCopyKeyItem(menu, hosts: [entry], title: "Copy SSH Key…")
+            addRotateKeyItem(menu, hosts: [entry], title: "Rotate SSH Key…")
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
         }
@@ -705,6 +712,23 @@ struct HostOutlineView: NSViewRepresentable {
             guard !targets.isEmpty else { return }
             menu.addItem(ClosureMenuItem(title: title) {
                 self.parent.copyKeyToHosts(Set(targets.map(\.id)), nil)
+            })
+        }
+
+        /// "Rotate SSH Key…" — the same targets as Copy SSH Key, and the same
+        /// rule about protected hosts: naming a host by right-clicking it is
+        /// the deliberate act `isProtected` asks for, so they are pre-ticked
+        /// here and never by Select All.
+        ///
+        /// Opening the sheet contacts nothing and removes nothing. Rotation's
+        /// destructive stage is behind a verification the sheet will not let
+        /// you skip, so the entry point can sit beside the others rather than
+        /// being hidden for fear of it.
+        private func addRotateKeyItem(_ menu: NSMenu, hosts: [SessionEntry], title: String) {
+            let targets = KeyDistributionPlan.candidates(from: hosts)
+            guard !targets.isEmpty else { return }
+            menu.addItem(ClosureMenuItem(title: title) {
+                self.parent.rotateKeyOnHosts(Set(targets.map(\.id)))
             })
         }
 
@@ -788,6 +812,8 @@ struct HostOutlineView: NSViewRepresentable {
                 addEnvironmentMenu(menu, forSelection: Set(inFolder.map(\.id)))
                 addCopyKeyItem(menu, hosts: inFolder,
                                title: "Copy SSH Key to \(folder.name)…")
+                addRotateKeyItem(menu, hosts: inFolder,
+                                 title: "Rotate SSH Key in \(folder.name)…")
                 menu.addItem(.separator())
             }
             // Scoped to this folder's own subtree rather than the whole
