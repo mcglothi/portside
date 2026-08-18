@@ -17,6 +17,29 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Fixed: ssh's error output could arrive as one unreadable blob.** `\r\n` is a single Swift `Character`, so splitting ssh's verbose output on `"\n"` found no line breaks at all and treated the whole transcript as one line. In key distribution that could have put an entire debug transcript into a result row as the "reason" a host failed.
 
+## 0.23.2
+
+**Copying a key no longer risks deleting a different one.** Portside decided whether a host already had a key by looking for the key's data in *any* field of a line in `authorized_keys` — including the trailing comment. So a host that merely mentioned the key in a comment was reported as already having it, and the copy silently did nothing while telling you it had worked. The same check decides which line to *remove*, so an unrelated key whose comment mentioned yours could be deleted along with it.
+
+Portside now reads the line the way sshd does — skipping any options, honouring quoted values that contain spaces, and taking the key type and data from the positions they actually occupy. A key written inside a comment or an option is a mention of that key, not permission to use it.
+
+**Copying a key to another account no longer involves root at all.** Reaching an account you can't log in as needs `sudo`, and the whole operation used to run as root inside a directory that account controls. An account able to edit its own home could point `~/.ssh` — or the backup file Portside writes — somewhere else entirely, and root would follow it: at best a key installed in the wrong place, at worst a file it should never have touched.
+
+Portside now escalates once, straight to the target account, and does everything as that account. Nothing runs as root, so there is nothing for a redirected path to capture; files the account creates are already owned correctly, with no ownership repair anywhere; and a `~/.ssh` the account cannot write simply fails, because the system refuses it rather than because Portside remembered to check.
+
+**Portside no longer creates a missing home directory.** It reports one and asks you to create it. That capability is why the old design ran as root in the first place, and doing it safely turns out to be beyond what a shell can promise: an ancestor directory can look untouchable — owned by root, permissions `0755` — and still grant write access to somebody through an ACL that ordinary permission checks cannot see. Creating a home safely needs guarantees a shell script cannot make, so it will come back as its own piece of work rather than riding along here.
+
+## 0.23.1
+
+**A multi-command paste copied from Windows could reach every pane without asking.** MultiExec holds a paste for confirmation when it contains more than one command, because a half-read clipboard run on twelve hosts at once is the thing that guard exists to prevent. It counted commands by splitting on line breaks — and missed the Windows convention entirely, so a paste using carriage-return-plus-newline counted as a single command and went straight out to every pane. Clipboards from Windows, RDP sessions, most web pages and Excel all use that convention, so this was reachable by ordinary copy-and-paste rather than anything exotic. The identical text with Unix line endings was correctly held. The confirmation now counts commands the same way whatever produced the text, and its preview no longer runs those commands together on one line.
+
+**Importing `~/.ssh/config` no longer chokes on a Windows-style file.** The same line-break assumption meant a config written or edited on Windows was read as one enormous line: instead of your hosts, the import produced a single nonsense entry with the rest of the file as its hostname.
+
+**A failed key copy says why again.** ssh writes its *own* errors — "could not resolve hostname", "connection refused", "permission denied" — using the Windows convention, so those failures were misread the same way: the real message was discarded and the host reported a bare exit code instead. Messages relayed from the remote host were never affected, which is why sudo's refusals always read correctly and this stayed hidden.
+
+These all come from one cause. In Swift, a carriage return and newline together count as a *single* character, so asking to split text on "newline" finds nothing at all in Windows-style text and hands back the whole thing as one line. It is invisible on inspection and silent at runtime — the code looks right and simply sees one line where there are ten. Every place Portside splits text into lines has been audited; the affected ones are fixed and covered by tests that fail without the fix.
+
+
 ## 0.23.0
 
 **Copy an SSH key to a selection of hosts at once.** Hosts ▸ Copy SSH Key to Hosts…, or right-click a host, a selection, or a folder. It adds one of your public keys to each host's `authorized_keys`, using the passwords Portside already holds. Pushing a key to one host is a single `ssh-copy-id` and never needed a GUI — doing it to twenty is the feature.

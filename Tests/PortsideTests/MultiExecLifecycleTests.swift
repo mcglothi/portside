@@ -38,6 +38,59 @@ final class MultiExecLifecycleTests: XCTestCase {
         }
     }
 
+    // MARK: - Line endings
+    //
+    // These exist because a two-command CRLF paste was **sent to every pane
+    // with no confirmation**, while the identical paste with LF endings was
+    // correctly held. `\r\n` is a single Swift `Character`, so the old
+    // `split(separator: "\n")` found no separator in CRLF text and reported one
+    // line. Clipboards from Windows, RDP, browsers and Excel are all CRLF, so
+    // the bypass was reachable by ordinary copy-and-paste.
+
+    func testACRLFMultiCommandPasteIsConfirmed() {
+        let text = "cd /var/log\r\nrm -rf ./*\r\nsystemctl restart nginx"
+        guard case .confirm(let lines, _) = BroadcastPasteReview.review(text: text, targetCount: 4) else {
+            return XCTFail("a CRLF multi-command paste must be confirmed like any other")
+        }
+        XCTAssertEqual(lines, 3)
+    }
+
+    /// The one that was actually broken in the field: short enough to miss the
+    /// size threshold, so line counting was the only thing standing between it
+    /// and every pane.
+    func testAShortCRLFPasteCannotSlipUnderTheSizeThreshold() {
+        let text = "rm -rf /var/log/app\r\nsystemctl restart nginx\r\n"
+        XCTAssertLessThan(text.count, BroadcastPasteReview.largePasteThreshold,
+                          "this test is only meaningful below the size threshold")
+        guard case .confirm(let lines, _) = BroadcastPasteReview.review(text: text, targetCount: 12) else {
+            return XCTFail("two CRLF commands across 12 panes must be confirmed")
+        }
+        XCTAssertEqual(lines, 2)
+    }
+
+    /// Line endings must not change the verdict, whichever convention the
+    /// clipboard used.
+    func testEveryLineEndingReachesTheSameVerdict() {
+        let commands = ["cd /var/log", "rm -rf ./*"]
+        for (name, terminator) in [("LF", "\n"), ("CRLF", "\r\n"), ("CR", "\r")] {
+            let text = commands.joined(separator: terminator)
+            guard case .confirm(let lines, _) = BroadcastPasteReview.review(text: text,
+                                                                           targetCount: 4) else {
+                XCTFail("\(name): two commands must be confirmed")
+                continue
+            }
+            XCTAssertEqual(lines, 2, "\(name): wrong line count")
+        }
+    }
+
+    /// A trailing CRLF is a terminator, exactly as a trailing LF is — so a
+    /// genuine one-command paste must still not nag.
+    func testATrailingCRLFIsStillOneCommand() {
+        XCTAssertEqual(BroadcastPasteReview.review(text: "systemctl restart nginx\r\n",
+                                                   targetCount: 8), .send,
+                       "a single trailing CRLF is a terminator, not a second command")
+    }
+
     func testALargeSingleLinePasteIsConfirmed() {
         // No newline at all, but nobody means to run 600 characters of
         // something on every host.

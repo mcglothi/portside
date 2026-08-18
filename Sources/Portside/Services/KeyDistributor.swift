@@ -98,79 +98,152 @@ enum KeyDistributor {
     /// need a key pushed to them are exactly the hosts least likely to have a
     /// modern shell.
     ///
-    /// Idempotency is checked with `awk` over the blob rather than `grep -F`
-    /// over the whole line. `grep` would match the blob inside a *commented
-    /// out* entry and report the host as already trusting a key it does not,
-    /// and it would miss a match whose comment had been edited. Scanning
-    /// non-comment lines field by field also handles entries carrying
-    /// `command=`/`from=` options, where the algorithm is not the first field.
-    /// `account` is set only for a sudo push, where the script runs **as root**
-    /// and must therefore find the target's home itself and repair ownership
-    /// afterwards. Without it the script runs as the login user in `$HOME`.
+    /// Idempotency is checked with `awk` over the type/blob pair rather than
+    /// `grep -F` over the whole line — see `installedCheck`. `grep` would match
+    /// inside a *commented out* entry and report the host as already trusting a
+    /// key it does not, and it would miss a match whose comment had been
+    /// edited; scanning fields also handles entries carrying `command=`/`from=`
+    /// options, where the algorithm is not the first field.
+    /// The script is the same whether or not an `account` is given; escalation
+    /// lives in `remoteCommand`, which runs it under `sudo -H -u <account>`.
     ///
-    /// ## Why root, and not `sudo -u <account>`
+    /// ## Root does not appear in this path at all
     ///
-    /// Running *as* the target gets file ownership for free and was the first
-    /// design. It cannot bootstrap: `mkdir -p /home/svc_goose` as `svc_goose`
-    /// fails because `/home` isn't theirs to write, and a `~/.ssh` someone
-    /// created earlier with a bare `sudo mkdir` is owned by root, so the target
-    /// can't create `authorized_keys` inside it either. Both were hit on a real
-    /// host within minutes of trying, and both are the normal state of an
-    /// account being *set up* — which is the case this feature exists for.
+    /// 0.23.0 ran the whole thing as root so it could create a missing home,
+    /// then chowned what it made. That was a privilege escalation: root working
+    /// inside a directory the account controls follows whatever that account
+    /// points `~/.ssh`, `authorized_keys` or the predictable backup name at.
     ///
-    /// So it runs as root and fixes ownership explicitly, the same thing
-    /// Ansible's `authorized_key` does with `become`. The cost is that ownership
-    /// is now something to get right rather than something that happens: root
-    /// leaving root-owned files in someone's `~/.ssh` is silent breakage,
-    /// because sshd's `StrictModes` refuses them and the key simply never works.
+    /// The obvious repair — validate the path first — cannot be made sound in
+    /// a shell. Ownership plus POSIX mode bits do not prove a directory has no
+    /// unprivileged writer: an ACL can grant `add_file`/`delete_child` to
+    /// somebody while the mode still reads `0755 root root`, so the check
+    /// passes and the component can still be swapped before the write. Doing it
+    /// properly needs fd-relative (`openat`) semantics, which is a helper
+    /// binary and a platform threat model, not a line of `find`.
+    ///
+    /// So Portside no longer creates homes. It requires one that already exists
+    /// and is **usable by** the account, and does everything **as** that
+    /// account — which removes the symlink question, the ownership repair and
+    /// the nested escalation together, rather than guarding each one.
+    ///
+    /// Note the property precisely: the script checks that the home *exists*
+    /// and then lets the account's own permissions decide. It does not prove
+    /// ownership, and saying so would claim more than the code does. What is
+    /// guaranteed is that every write happens as the target account — which is
+    /// the property that matters, and a stronger one than an ownership check
+    /// could give, since a check can be raced and an identity cannot.
+    /// An `awk` program that finds a key at its **real position** in an
+    /// `authorized_keys` line, and the predicate built on it.
+    ///
+    /// ## Why this is a parser
+    ///
+    /// The format is `[options] keytype base64 [comment]`. Two cheaper rules
+    /// were tried and both were wrong in ways that destroy access:
+    ///
+    /// - **Blob anywhere.** A blob appearing in another key's *comment*
+    ///   satisfied the check, so a push reported a key installed that was not,
+    ///   and the retire path deleted the unrelated key whose comment mentioned
+    ///   it.
+    /// - **Type and blob adjacent anywhere.** Also insufficient, and this one
+    ///   looked convincing enough to ship. Both of these falsely match a target
+    ///   of `ssh-ed25519 AAAATARGET` while the line actually grants
+    ///   `ssh-rsa AAAAOTHER`:
+    ///   ```
+    ///   ssh-rsa AAAAOTHER note ssh-ed25519 AAAATARGET
+    ///   command="echo ssh-ed25519 AAAATARGET now",no-pty ssh-rsa AAAAOTHER real
+    ///   ```
+    ///   A key quoted inside a comment or an option is a *reference* to it, not
+    ///   an authorization for it.
+    ///
+    /// So the options field is skipped properly: it ends at the first
+    /// whitespace that is not inside a double-quoted section, honouring
+    /// backslash escapes, exactly as sshd reads it. The type is the token after
+    /// that, and the blob the token after the type. A line beginning with a key
+    /// type has no options at all.
+    ///
+    /// **Shared with retirement deliberately.** The question "does this line
+    /// grant this key" must have one answer, because one side installs on it
+    /// and the other deletes on it.
+    static let authorizedKeysMatcher = """
+    {
+      line = $0
+      sub(/\\r$/, "", line)
+      sub(/^[ \\t]+/, "", line)
+      if (line ~ /^#/ || line == "") next
+      split(line, f, /[ \\t]+/)
+      if (f[1] ~ /^(ssh-|ecdsa-|sk-)/) { t = f[1]; b = f[2] }
+      else {
+        inq = 0
+        for (i = 1; i <= length(line); i++) {
+          c = substr(line, i, 1)
+          if (c == "\\\\") { i++; continue }
+          if (c == "\\"") { inq = !inq; continue }
+          if (!inq && (c == " " || c == "\\t")) break
+        }
+        rest = substr(line, i + 1)
+        sub(/^[ \\t]+/, "", rest)
+        split(rest, g, /[ \\t]+/)
+        t = g[1]; b = g[2]
+      }
+      if (t == T && b == B) { found = 1; exit }
+    }
+    END { exit !found }
+    """
+
+    /// True (exit 0) when `file` grants `key`.
+    static func installedCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
+        "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "
+            + "'\(authorizedKeysMatcher)' \(file)"
+    }
+
     static func remoteScript(for key: PublicKey, nonce: String = "",
                              account: String? = nil) -> String {
-        let blob = ShellQuoting.quote(key.blob)
+        // `account` no longer changes the script. It used to select a root
+        // variant that created the home and repaired ownership; that is gone,
+        // and escalation now lives entirely in `remoteCommand`. The parameter
+        // stays so callers read the same either way.
+        _ = account
+        return installPhase(for: key, nonce: nonce, home: #""$HOME""#)
+    }
+
+    /// Everything that touches `authorized_keys`, run **as the account that
+    /// owns it** — the login user directly, or the target account via
+    /// `sudo -H -u`.
+    ///
+    /// Running as the owner is what makes the symlink questions go away. A
+    /// symlinked `authorized_keys` is followed rather than replaced, which is
+    /// correct and is what the tests pin; it was only dangerous when *root* did
+    /// the following. Nothing here chowns anything, because a file created by
+    /// its owner already has the right owner.
+    static func installPhase(for key: PublicKey, nonce: String, home: String) -> String {
         let line = ShellQuoting.quote(key.line)
         // Built from `$f` in the script rather than quoted in from here: a
         // quoted "$HOME/..." is a literal, so the copy would land in a relative
         // directory named `$HOME`, fail, and be swallowed by `2>/dev/null` —
         // leaving every push reporting success with no backup ever written.
         let backup = "\"$f\(backupSuffix)\""
-        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
-
-        // Where the key is going, and who must end up owning it.
-        let locate: String
-        if target.isEmpty {
-            locate = #"h="$HOME""#
-        } else {
-            locate = """
-            u=\(ShellQuoting.quote(target))
-            # The account's real home, from passwd rather than a guess — `~u`
-            # isn't expandable from a variable in POSIX sh, and assuming
-            # /home/$u is wrong on any host that doesn't do it that way.
-            h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
-            [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
-            if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
-            """
-        }
-
-        // Root creating files in someone's ~/.ssh leaves them root-owned, which
-        // sshd's StrictModes rejects — the key installs "successfully" and then
-        // silently never works. Only what we create is chowned; an existing
-        // file's ownership is not ours to change.
-        let claim = target.isEmpty ? "" : #"chown "$u:" "$1" 2>/dev/null || chown "$u" "$1" 2>/dev/null"#
-        let ownFunction = target.isEmpty
-            ? "own() { :; }"
-            : "own() { \(claim); }"
-
         return """
         umask 077
-        \(locate)
-        \(ownFunction)
+        h=\(home)
+        # No apostrophes in these messages: an unescaped ' inside a ${...}
+        # expansion inside double quotes fails to parse, and `sh -n` on the
+        # generated script is the only thing that shows it.
+        if [ -z "$h" ]; then
+          echo "portside: no home directory is set for this account" >&2
+          exit 1
+        fi
+        if [ ! -d "$h" ]; then
+          echo "portside: $h does not exist; create the home directory first" >&2
+          exit 1
+        fi
         d="$h/.ssh"; f="$d/authorized_keys"
-        if [ ! -d "$h" ]; then mkdir -p "$h" || exit 1; own "$h"; fi
-        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; own "$d"; fi
-        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; own "$f"; fi
-        if awk -v b=\(blob) '/^[[:space:]]*#/ {next} {for (i = 1; i <= NF; i++) if ($i == b) {found = 1; exit}} END {exit !found}' "$f"; then
+        if [ ! -d "$d" ]; then mkdir -p "$d" || exit 1; chmod 700 "$d" 2>/dev/null; fi
+        if [ ! -f "$f" ]; then : > "$f" || exit 1; chmod 600 "$f" 2>/dev/null; fi
+        if \(installedCheck(for: key)); then
           printf '%s%s present\\n' '\(resultMarker)' '\(nonce)'
         else
-          cp "$f" \(backup) 2>/dev/null && own \(backup)
+          cp "$f" \(backup) 2>/dev/null
           # A file not ending in a newline is common (hand-edited, or written
           # by something that didn't bother) and appending straight onto it
           # welds our key to the end of the last entry — breaking that host's
@@ -228,14 +301,14 @@ enum KeyDistributor {
     /// No privileges are involved and nothing needs explaining.
     ///
     /// With an `account`, the login is unchanged and the script runs under
-    /// `sudo` **as root**. **This is the only honest way to reach an account you
-    /// cannot log in as** — a key-only service account being bootstrapped is
-    /// exactly the case, and it is why Ansible's `authorized_key` module pairs
-    /// its `user:` parameter with `become`.
+    /// `sudo -H -u <account>` — **one hop, directly to the target**, never via
+    /// root. `-H` sets `HOME` from the passwd database, so the script resolves
+    /// the right `~/.ssh`, and because it runs as the account every file it
+    /// creates is already owned correctly.
     ///
-    /// Root rather than `sudo -H -u <account>`, which was the first design and
-    /// cannot bootstrap — see `remoteScript`, which resolves the target's home
-    /// from the passwd database and chowns what it creates.
+    /// This was the design before 0.23.0, abandoned then for one reason: it
+    /// cannot create a missing home. Portside no longer tries to — see
+    /// `remoteScript` — so the reason is gone and the escalation goes with it.
     ///
     /// The script travels base64-encoded through a command substitution rather
     /// than being interpolated into `sh -c '…'`: it contains single quotes of
@@ -245,20 +318,18 @@ enum KeyDistributor {
     ///
     /// `-S` reads the sudo password from stdin, which `push` supplies once and
     /// never again; `-p ''` silences the prompt so it can't be mistaken for
-    /// output. Hosts where sudo is unavailable or needs a password we don't
-    /// have fail and are reported, like any other failure.
+    /// output. A host where sudo is unavailable, or where policy forbids this
+    /// RunAs target, fails and is reported like any other failure.
     static func remoteCommand(for key: PublicKey, nonce: String,
                               account: String? = nil) -> String {
         guard let account = account?.trimmingCharacters(in: .whitespaces),
               !account.isEmpty else {
             return remoteScript(for: key, nonce: nonce)
         }
-        // Root, not `-u account` — see `remoteScript`. The script resolves the
-        // target's home from passwd and chowns what it creates.
-        let script = remoteScript(for: key, nonce: nonce, account: account)
+        let script = remoteScript(for: key, nonce: nonce)
         let encoded = Data(script.utf8).base64EncodedString()
         return "__pk=\(ShellQuoting.quote(encoded)); "
-            + "sudo -S -p '' sh -c "
+            + "sudo -S -p '' -H -u \(ShellQuoting.quote(account)) sh -c "
             + "\"$(printf %s \"$__pk\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__pk\" | base64 -D 2>/dev/null)\""
     }
@@ -292,11 +363,13 @@ enum KeyDistributor {
     /// prefers a line that names a known failure over simply taking the first.
     /// Splitting on `\.isNewline`, not on `"\n"` — **`\r\n` is a single Swift
     /// `Character`**, so `split(separator: "\n")` finds no separator at all in
-    /// CRLF output and returns the whole blob as one line. ssh's verbose logger
-    /// writes CRLF, which would turn the search below into a match on everything
-    /// and put ssh's entire debug transcript in a UI row as the "reason". Found
-    /// while building `KeyRotator`, where the same mistake made an uninstalled
-    /// key report as verified.
+    /// CRLF output and returns the whole blob as one line. ssh writes its own
+    /// client errors with CRLF (measured: "Could not resolve hostname" arrives
+    /// as `\r\n`), so this degraded every failure ssh itself reported: either a
+    /// leading `Warning:` swallowed the entire transcript and left only the exit
+    /// code, or the whole multi-line transcript came back as one host's
+    /// "reason". Messages relayed from the *remote* side use plain `\n`, which
+    /// is why sudo's refusals looked correct and hid this.
     static func failureReason(status: Int32, err: String) -> String {
         let lines = err
             .split(whereSeparator: \.isNewline)

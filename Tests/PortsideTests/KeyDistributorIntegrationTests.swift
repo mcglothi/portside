@@ -192,6 +192,63 @@ final class KeyDistributorIntegrationTests: XCTestCase {
         }
     }
 
+    /// **The privilege drop, exercised end to end.** The other sudo cases here
+    /// push a key the account already has, so they prove the *check* runs after
+    /// dropping but never the write. This installs a throwaway key into the
+    /// account's `authorized_keys` and removes it again.
+    ///
+    /// It is the only test that can show the drop works at all: `sudo -n -u`
+    /// inside an already-root context cannot be reproduced with stubs, and if it
+    /// failed on a real host the whole cross-account feature would be dead.
+    func testAThrowawayKeyIsWrittenIntoTheAccountAfterDroppingPrivileges() async throws {
+        let key = try scratchKey()
+        // Only hosts whose sudo we can actually use without a password.
+        var exercised = false
+        for host in hosts {
+            let probe = try? await remote(host, "sudo -n true 2>/dev/null && echo yes || echo no")
+            guard probe == "yes" else { continue }
+            exercised = true
+
+            defer {
+                let group = DispatchGroup()
+                group.enter()
+                Task {
+                    defer { group.leave() }
+                    _ = try? await self.remote(host, """
+                    sudo -n sh -c 'f=~\(self.account)/.ssh/authorized_keys; \
+                    [ -f "$f" ] && grep -v '"'"'\(key.blob)'"'"' "$f" > "$f.itest" \
+                    && cat "$f.itest" > "$f" && rm -f "$f.itest"'; echo done
+                    """)
+                }
+                _ = group.wait(timeout: .now() + 30)
+            }
+
+            let before = try await remote(
+                host, "sudo -n stat -c '%U:%G %a' ~\(account)/.ssh 2>/dev/null || echo unknown")
+
+            let outcome = await push(key, to: host, account: account)
+            XCTAssertEqual(outcome, .added, "\(host): \(outcome.label)")
+
+            let count = try await remote(
+                host,
+                "sudo -n awk -v t='\(key.algorithm)' -v b='\(key.blob)' "
+                + "'{for (i=1;i<NF;i++) if ($i==t && $(i+1)==b) n++} END{print n+0}' "
+                + "~\(account)/.ssh/authorized_keys")
+            XCTAssertEqual(count, "1", "\(host): the key was not written under the drop")
+
+            // The file the account created must belong to the account, with no
+            // chown involved — that is the whole point of dropping first.
+            let owner = try await remote(
+                host, "sudo -n stat -c '%U' ~\(account)/.ssh/authorized_keys")
+            XCTAssertEqual(owner, account, "\(host): authorized_keys is owned by \(owner)")
+
+            let after = try await remote(
+                host, "sudo -n stat -c '%U:%G %a' ~\(account)/.ssh 2>/dev/null || echo unknown")
+            XCTAssertEqual(after, before, "\(host): ~/.ssh ownership or mode changed")
+        }
+        try XCTSkipUnless(exercised, "no host with passwordless sudo to test the drop against")
+    }
+
     /// A typo must be a sentence, not a mystery — and must write nothing.
     func testAnUnknownAccountFailsWithItsName() async throws {
         let key = try keyUnderTest()
