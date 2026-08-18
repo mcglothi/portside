@@ -109,11 +109,14 @@ else
     echo "==> Release gate passed (branch $BRANCH @ ${LOCAL_HEAD:0:9}, signed + notarized)"
 fi
 
-# 7. Tests, before anything is packaged. A release is the one build where
-#    "I'll run them in a minute" is not good enough.
+# 7. Tests and the Swift 6 warning ratchet, before anything is packaged. CI
+#    runs both; a release must not be the path that quietly skips the stricter
+#    concurrency build.
 if [ -z "$UNSAFE" ]; then
     echo "==> Running tests"
     swift test
+    echo "==> Running Swift 6 strict-concurrency ratchet"
+    Scripts/strict-concurrency-check.sh
 fi
 
 echo "==> Building Portside $VERSION (build $BUILD)"
