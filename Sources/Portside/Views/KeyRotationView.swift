@@ -39,6 +39,14 @@ struct KeyRotationView: View {
     @State private var confirming: KeyRotation.Phase?
     @State private var work: Task<Void, Never>?
     @State private var readiness: PrivateKeyReadiness?
+    /// Bumped whenever work starts or the configuration changes. Progress
+    /// callbacks from a superseded run carry an old token and are dropped.
+    ///
+    /// Without it, a callback arriving after the pickers moved reassigned the
+    /// rotation it had captured — putting verifications for a *different* key
+    /// back on screen, and back into the gate. That was a fourth route through
+    /// "never retire from a host that has not just proved the new one works".
+    @State private var generation = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -110,6 +118,11 @@ struct KeyRotationView: View {
                     Divider()
                     hostList
                 }
+                // Nothing that defines *what* is being done may move while it
+                // is being done. The alternative is reconciling a changed
+                // configuration against results already on screen, which is
+                // where the stale-gate bug lived.
+                .disabled(running != nil)
             }
         }
     }
@@ -497,7 +510,13 @@ struct KeyRotationView: View {
             readiness = nil
             return
         }
-        readiness = await KeyRotator.readiness(of: newKey)
+        // Two key changes in quick succession race, and the slower lookup can
+        // land last and describe the key that is no longer chosen.
+        generation += 1
+        let token = generation
+        let result = await KeyRotator.readiness(of: newKey)
+        guard token == generation else { return }
+        readiness = result
     }
 
     /// Rebuilds the rotation when its identity changes.
@@ -533,16 +552,38 @@ struct KeyRotationView: View {
     }
 
     private func start(_ stage: KeyRotation.Phase) {
-        guard let newKey, var current = rotation else { return }
+        guard var current = rotation else { return }
+
+        // **Everything the operation uses comes from the rotation that supplied
+        // the gate**, never from the pickers. Reading `self.newKey` here is what
+        // allowed a retire to be authorised by proofs for one key and then run
+        // against another.
+        let newKey = current.newKey
+        let oldKey = current.oldKey
+        let accountOrNil = current.account.isEmpty ? nil : current.account
+
+        // And refuse outright if the two have drifted apart. Belt as well as
+        // braces: the controls are disabled while running, so this should be
+        // unreachable — which is exactly why it is cheap to assert.
+        guard current.matches(newKey: self.newKey, oldKey: self.oldKey,
+                              account: accountOverride,
+                              hosts: plan.selectedEntries) else { return }
+
         confirming = nil
         running = stage
+        generation += 1
+        let token = generation
 
-        let account = accountOverride.trimmingCharacters(in: .whitespaces)
-        let accountOrNil = account.isEmpty ? nil : account
         let defaults = store.defaults
         let defaultProfileID = store.defaultProfileID
         let targets = targets(for: stage)
-        let oldKey = self.oldKey
+
+        // Applies a result only if this run is still the current one.
+        @MainActor func record(_ apply: (inout KeyRotation) -> Void) {
+            guard token == generation else { return }
+            apply(&current)
+            rotation = current
+        }
 
         work = Task { @MainActor in
             switch stage {
@@ -553,15 +594,13 @@ struct KeyRotationView: View {
                                                             defaultProfileID: defaultProfileID) },
                     defaults: defaults, account: accountOrNil,
                     progress: { result in
-                        current.record(result.outcome, forHost: result.entryID)
-                        rotation = current
+                        record { $0.record(result.outcome, forHost: result.entryID) }
                     })
             case .verify:
                 _ = await KeyRotator.verify(
                     key: newKey, on: targets, defaults: defaults, account: accountOrNil,
                     progress: { result in
-                        current.record(result.outcome, forHost: result.entryID)
-                        rotation = current
+                        record { $0.record(result.outcome, forHost: result.entryID) }
                     })
             case .retire:
                 guard let oldKey else { break }
@@ -571,10 +610,10 @@ struct KeyRotationView: View {
                                                             defaultProfileID: defaultProfileID) },
                     defaults: defaults, account: accountOrNil,
                     progress: { result in
-                        current.record(result.outcome, forHost: result.entryID)
-                        rotation = current
+                        record { $0.record(result.outcome, forHost: result.entryID) }
                     })
             }
+            guard token == generation else { return }
             running = nil
             // Land on the next stage, so the order is walked rather than
             // remembered. Never past verify — reaching stage three is something

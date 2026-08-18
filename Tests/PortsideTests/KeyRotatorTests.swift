@@ -482,6 +482,39 @@ final class KeyRotationGateTests: XCTestCase {
         XCTAssertEqual(r.retirementBlocker, "Choose the key you want to retire.")
     }
 
+    /// **A failed retirement must stay retryable.** Any result at all used to
+    /// remove a host from the pending list, so one timeout meant starting the
+    /// whole rotation over.
+    func testAFailedRetirementCanBeRetried() {
+        var r = rotation()
+        r.record(KeyVerifyOutcome.verified, forHost: hosts[0].id)
+        r.record(KeyRetireOutcome.failed("connection reset"), forHost: hosts[0].id)
+        XCTAssertEqual(r.awaitingRetirement.map(\.name), ["web1"],
+                       "a failure must not drop the host from the retire targets")
+    }
+
+    /// Refusal is the host's own guard firing; the operator fixes the cause and
+    /// tries again.
+    func testARefusedRetirementCanBeRetried() {
+        var r = rotation()
+        r.record(KeyVerifyOutcome.verified, forHost: hosts[0].id)
+        r.record(KeyRetireOutcome.refused("the new key is not active"), forHost: hosts[0].id)
+        XCTAssertEqual(r.awaitingRetirement.map(\.name), ["web1"])
+    }
+
+    /// **Stop was the worst case.** It marks every remaining host skipped, which
+    /// emptied the retire targets for the rest of the sheet's life.
+    func testStoppingMidRunLeavesTheRestRetryable() {
+        var r = rotation()
+        for host in hosts { r.record(KeyVerifyOutcome.verified, forHost: host.id) }
+        r.record(KeyRetireOutcome.removed(1), forHost: hosts[0].id)
+        for host in hosts.dropFirst() {
+            r.record(KeyRetireOutcome.skipped("cancelled"), forHost: host.id)
+        }
+        XCTAssertEqual(r.awaitingRetirement.map(\.name), ["web2", "db1"],
+                       "cancelling must not permanently drop the hosts it skipped")
+    }
+
     /// A host already retired drops out of the pending list but keeps its
     /// permission, so re-running is a no-op rather than an error.
     func testARetiredHostLeavesTheAwaitingList() {
@@ -548,6 +581,51 @@ final class KeyRotationGateTests: XCTestCase {
         let fresh = KeyRotation(hosts: r.hosts, newKey: other, oldKey: r.oldKey)
         XCTAssertTrue(fresh.retirable.isEmpty,
                       "a proof about one key says nothing about another")
+    }
+
+    // MARK: - The gate and the operation must describe the same thing
+
+    /// **The fourth route through the invariant.** The sheet let keys, account
+    /// and host selection change while work was in flight, and a progress
+    /// callback from the superseded run reassigned the rotation it had
+    /// captured — putting verifications for a *different* key back into the
+    /// gate while the pickers said something else.
+    ///
+    /// Checked on the model so it is testable at all; the view additionally
+    /// disables the controls and drops stale callbacks by generation.
+    func testARotationKnowsWhenTheConfigurationHasMovedOn() {
+        let r = rotation()
+        XCTAssertTrue(r.matches(newKey: newRotationKey, oldKey: oldRotationKey,
+                                account: "", hosts: hosts))
+
+        let third = PublicKey(path: "/tmp/third.pub", line: "ssh-ed25519 AAAATHIRD t@n",
+                              algorithm: "ssh-ed25519", blob: "AAAATHIRD", comment: "t@n",
+                              fingerprint: "SHA256:third", bits: 256)
+        XCTAssertFalse(r.matches(newKey: third, oldKey: oldRotationKey,
+                                 account: "", hosts: hosts), "new key changed")
+        XCTAssertFalse(r.matches(newKey: newRotationKey, oldKey: third,
+                                 account: "", hosts: hosts), "old key changed")
+        XCTAssertFalse(r.matches(newKey: newRotationKey, oldKey: oldRotationKey,
+                                 account: "svc_goose", hosts: hosts), "account changed")
+        XCTAssertFalse(r.matches(newKey: newRotationKey, oldKey: oldRotationKey,
+                                 account: "", hosts: Array(hosts.dropLast())),
+                       "host selection changed")
+    }
+
+    /// Host *order* is identity here, because the confirmation lists hosts in
+    /// order and the operation walks them in order.
+    func testHostOrderIsPartOfTheConfiguration() {
+        let r = rotation()
+        XCTAssertFalse(r.matches(newKey: newRotationKey, oldKey: oldRotationKey,
+                                 account: "", hosts: hosts.reversed()))
+    }
+
+    /// Whitespace around an account name is not a change.
+    func testSurroundingWhitespaceIsNotAConfigurationChange() {
+        let r = KeyRotation(hosts: hosts, newKey: newRotationKey,
+                            oldKey: oldRotationKey, account: "svc_goose")
+        XCTAssertTrue(r.matches(newKey: newRotationKey, oldKey: oldRotationKey,
+                                account: "  svc_goose  ", hosts: hosts))
     }
 
     func testBlockerNamesVerifyWhenNothingHasVerified() {

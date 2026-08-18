@@ -126,8 +126,15 @@ struct KeyRotation: Equatable {
 
     /// Hosts that verified but whose old key is still in place — what the retire
     /// button acts on.
+    ///
+    /// Filters on **success**, not on "has a result". Any result at all used to
+    /// remove a host from this list, so a failure, a refusal, or a host skipped
+    /// by pressing Stop dropped out permanently and could not be retried
+    /// without starting the whole rotation again. Stop was the worst of it: it
+    /// marks every remaining host skipped, which quietly emptied the retire
+    /// targets for the rest of the sheet's life.
     var awaitingRetirement: [SessionEntry] {
-        retirable.filter { retired[$0.id] == nil }
+        retirable.filter { retired[$0.id]?.isSuccess != true }
     }
 
     /// Why retirement is unavailable at all, if it is. Separate from the
@@ -151,6 +158,22 @@ struct KeyRotation: Equatable {
         // backup if a rewrite ever loses the new key — but a mistake this
         // consequential should not need the host to catch it.
         return oldKey.identityFields != newKey.identityFields
+    }
+
+    /// Whether this rotation still describes the configuration on screen.
+    ///
+    /// The gate and the operation must agree. A rotation earns permission to
+    /// retire under one pair of keys, one account and one host set; if any of
+    /// those has moved on, the permission belongs to something that is no
+    /// longer being asked for. Checked immediately before a destructive stage
+    /// rather than trusted, because the sheet lets all four change while work
+    /// is in flight.
+    func matches(newKey candidateNew: PublicKey?, oldKey candidateOld: PublicKey?,
+                 account candidateAccount: String, hosts candidateHosts: [SessionEntry]) -> Bool {
+        newKey == candidateNew
+            && oldKey == candidateOld
+            && account == candidateAccount.trimmingCharacters(in: .whitespaces)
+            && hosts.map(\.id) == candidateHosts.map(\.id)
     }
 
     // MARK: - Counts, for the UI and the confirmation
