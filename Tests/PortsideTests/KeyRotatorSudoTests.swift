@@ -4,16 +4,9 @@ import XCTest
 
 /// The retire script aimed at *another account*, executed for real.
 ///
-/// Stub binaries on `PATH` are what make this testable at all: a fake `sudo`
-/// that execs the rest proves two layers of quoting survive, a fake `getent`
-/// points the script at a home we control, and a fake `chown` records instead of
-/// acting — the only way to assert ownership repair without being root.
-///
-/// This mirrors `KeyDistributorSudoExecutionTests`, because the retire path
-/// reuses the same locate-and-claim machinery and inherits the same risks: the
-/// one real-host finding from the push work was that a service account's
-/// `~/.ssh` can belong to a **non-default group**, so an unconditional
-/// `chown "$u:$u"` would silently move it.
+/// Stub binaries on `PATH` make this testable without actually changing users:
+/// fake `sudo` records the direct hop and execs the target-account script, while
+/// fake `chown` proves the removed root phase never returns.
 final class KeyRotatorSudoTests: XCTestCase {
 
     private var home: URL!
@@ -55,15 +48,11 @@ final class KeyRotatorSudoTests: XCTestCase {
         exec "$@"
         """.write(to: bin.appendingPathComponent("sudo"), atomically: true, encoding: .utf8)
 
-        // A passwd database naming the home this test can write to.
-        try "#!/bin/sh\necho '\(account):x:900:900::\(home.path):/bin/sh'\n"
-            .write(to: bin.appendingPathComponent("getent"), atomically: true, encoding: .utf8)
-
-        // Records what would have been chowned, rather than acting.
+        // Present so its absence from the generated script is meaningful.
         try "#!/bin/sh\necho \"$@\" >> \(chownLog.path)\nexit 0\n"
             .write(to: bin.appendingPathComponent("chown"), atomically: true, encoding: .utf8)
 
-        for tool in ["sudo", "getent", "chown"] {
+        for tool in ["sudo", "chown"] {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent(tool).path)
         }
@@ -135,81 +124,36 @@ final class KeyRotatorSudoTests: XCTestCase {
         XCTAssertTrue(try contents().contains(newKey.blob))
     }
 
-    /// The home comes from the passwd database, not from `$HOME` and not from a
-    /// guess at `/home/<account>`. Proven by pointing `getent` somewhere
-    /// unexpected and seeing the script follow.
-    func testTheAccountsHomeComesFromPasswdRatherThanAGuess() throws {
-        let elsewhere = home.appendingPathComponent("unexpected-home")
-        try FileManager.default.createDirectory(
-            at: elsewhere.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
-        try "\(oldKey.line)\n\(newKey.line)\n".write(
-            to: elsewhere.appendingPathComponent(".ssh/authorized_keys"),
-            atomically: true, encoding: .utf8)
-        try "#!/bin/sh\necho '\(account):x:900:900::\(elsewhere.path):/bin/sh'\n"
-            .write(to: bin.appendingPathComponent("getent"), atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent("getent").path)
-
-        XCTAssertEqual(try runWrapped().outcome, .removed(1))
-        let rewritten = try String(
-            contentsOf: elsewhere.appendingPathComponent(".ssh/authorized_keys"), encoding: .utf8)
-        XCTAssertFalse(rewritten.contains(oldKey.blob),
-                       "the script did not follow the home passwd gave it")
+    /// One escalation goes straight to the account; root never writes inside a
+    /// directory controlled by that account.
+    func testEscalationGoesDirectlyToTheAccountAndNeverViaRoot() {
+        let command = KeyRotator.retireCommand(
+            removing: oldKey, keeping: newKey, nonce: nonce, account: account)
+        XCTAssertTrue(command.contains("sudo -S -p '' -H -u \(account)"), command)
+        XCTAssertEqual(command.components(separatedBy: "sudo ").count - 1, 1)
     }
 
-    /// An account that isn't in the passwd database is named, not reported as an
-    /// exit code.
-    func testAnUnknownAccountIsNamed() throws {
-        try "#!/bin/sh\nexit 2\n"
-            .write(to: bin.appendingPathComponent("getent"), atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent("getent").path)
-
-        let result = try runWrapped(account: "svc_definitely_not_a_user")
-        XCTAssertFalse(result.outcome.isSuccess)
-        XCTAssertTrue(result.err.contains("unknown user svc_definitely_not_a_user"),
-                      "stderr should name the account: \(result.err)")
+    func testTheScriptResolvesNothingAndIsIdenticalForAnAccount() {
+        let targeted = KeyRotator.retireScript(
+            removing: oldKey, keeping: newKey, nonce: nonce, account: account)
+        let plain = KeyRotator.retireScript(
+            removing: oldKey, keeping: newKey, nonce: nonce)
+        XCTAssertEqual(targeted, plain)
+        XCTAssertTrue(targeted.contains(#"h="$HOME""#))
+        for gone in ["getent", "/etc/passwd", "chown", "sudo"] {
+            XCTAssertFalse(targeted.contains(gone), "\(gone) belongs to the removed root phase")
+        }
     }
 
     // MARK: - Ownership
 
-    /// Root writing a backup into someone's `~/.ssh` leaves it root-owned. The
-    /// backup is the one file this script creates, so it is the one that needs
-    /// claiming.
-    func testTheBackupIsHandedToTheAccount() throws {
+    /// Files created by the account already have the right owner; nothing is
+    /// repaired afterward with root.
+    func testNothingIsEverChowned() throws {
         try seed("\(oldKey.line)\n\(newKey.line)\n")
         try runWrapped()
 
-        let claimed = chownCalls()
-        XCTAssertTrue(claimed.contains { $0.contains("authorized_keys\(KeyDistributor.backupSuffix)") },
-                      "the backup was left owned by root: \(claimed)")
-    }
-
-    /// **The real-host finding, pinned.** `~svc_goose/.ssh` was owned
-    /// `svc_goose:ai_agents` on a live host and survived a push unchanged. The
-    /// group must never be forced, so the chown is `"$u:"` — which asks for the
-    /// user's *login* group only when the file is being created by us, and here
-    /// applies solely to the backup.
-    func testOwnershipNeverForcesAGroup() throws {
-        try seed("\(oldKey.line)\n\(newKey.line)\n")
-        try runWrapped()
-
-        for call in chownCalls() {
-            XCTAssertFalse(call.contains("\(account):\(account)"),
-                           "an explicit group would move a non-default one: \(call)")
-        }
-    }
-
-    /// Nothing the script did not create is re-owned. The `authorized_keys`
-    /// file itself already existed, so it must not appear in the chown log.
-    func testAnExistingAuthorizedKeysIsNotReowned() throws {
-        try seed("\(oldKey.line)\n\(newKey.line)\n")
-        try runWrapped()
-
-        for call in chownCalls() {
-            XCTAssertFalse(call.hasSuffix("/authorized_keys"),
-                           "an existing file's ownership is not ours to change: \(call)")
-        }
+        XCTAssertTrue(chownCalls().isEmpty, "something was chowned: \(chownCalls())")
     }
 
     // MARK: - Injection
@@ -258,12 +202,10 @@ final class KeyRotatorSudoTests: XCTestCase {
                        "a key comment escaped its quoting and executed")
     }
 
-    // MARK: - The guard still applies under sudo
+    // MARK: - The guard still applies under direct account execution
 
-    /// Escalating to root does not waive the rule. This is the most dangerous
-    /// combination in the feature — root, rewriting someone else's
-    /// `authorized_keys` — so the check has to hold here above all.
-    func testTheGuardStillRefusesWhenRunningAsRoot() throws {
+    /// Changing users does not waive the new-key guard.
+    func testTheGuardStillRefusesForATargetAccount() throws {
         let original = "\(oldKey.line)\n"
         try seed(original)
 

@@ -165,28 +165,37 @@ enum KeyDistributor {
     /// **Shared with retirement deliberately.** The question "does this line
     /// grant this key" must have one answer, because one side installs on it
     /// and the other deletes on it.
-    static let authorizedKeysMatcher = """
-    {
+    /// Parses the key fields from the current authorized_keys record. It works
+    /// on a copy so removal callers can preserve the original record exactly.
+    static let authorizedKeysFieldParser = """
       line = $0
       sub(/\\r$/, "", line)
       sub(/^[ \\t]+/, "", line)
-      if (line ~ /^#/ || line == "") next
-      split(line, f, /[ \\t]+/)
-      if (f[1] ~ /^(ssh-|ecdsa-|sk-)/) { t = f[1]; b = f[2] }
-      else {
-        inq = 0
-        for (i = 1; i <= length(line); i++) {
-          c = substr(line, i, 1)
-          if (c == "\\\\") { i++; continue }
-          if (c == "\\"") { inq = !inq; continue }
-          if (!inq && (c == " " || c == "\\t")) break
+      t = ""; b = ""; hasKeyFields = 0
+      if (line !~ /^#/ && line != "") {
+        split(line, f, /[ \\t]+/)
+        if (f[1] ~ /^(ssh-|ecdsa-|sk-)/) { t = f[1]; b = f[2] }
+        else {
+          inq = 0
+          for (i = 1; i <= length(line); i++) {
+            c = substr(line, i, 1)
+            if (c == "\\\\") { i++; continue }
+            if (c == "\\"") { inq = !inq; continue }
+            if (!inq && (c == " " || c == "\\t")) break
+          }
+          rest = substr(line, i + 1)
+          sub(/^[ \\t]+/, "", rest)
+          split(rest, g, /[ \\t]+/)
+          t = g[1]; b = g[2]
         }
-        rest = substr(line, i + 1)
-        sub(/^[ \\t]+/, "", rest)
-        split(rest, g, /[ \\t]+/)
-        t = g[1]; b = g[2]
+        if (t != "" && b != "") hasKeyFields = 1
       }
-      if (t == T && b == B) { found = 1; exit }
+    """
+
+    static let authorizedKeysMatcher = """
+    {
+      \(authorizedKeysFieldParser)
+      if (hasKeyFields && t == T && b == B) { found = 1; exit }
     }
     END { exit !found }
     """

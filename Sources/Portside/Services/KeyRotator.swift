@@ -560,57 +560,77 @@ enum KeyRotator {
     ///   commented entry as installed.
     static func retireScript(removing oldKey: PublicKey, keeping newKey: PublicKey,
                              nonce: String = "", account: String? = nil) -> String {
-        let old = ShellQuoting.quote(oldKey.blob)
-        let new = ShellQuoting.quote(newKey.blob)
+        let oldAlgorithm = ShellQuoting.quote(oldKey.algorithm)
+        let oldBlob = ShellQuoting.quote(oldKey.blob)
         let backup = "\"$f\(KeyDistributor.backupSuffix)\""
         let temp = "\"$f.portside-rewrite\""
-        let target = account?.trimmingCharacters(in: .whitespaces) ?? ""
-
-        let locate: String
-        if target.isEmpty {
-            locate = #"h="$HOME""#
-        } else {
-            locate = """
-            u=\(ShellQuoting.quote(target))
-            h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
-            [ -n "$h" ] || h=$(awk -F: -v u="$u" '$1 == u {print $6}' /etc/passwd 2>/dev/null)
-            if [ -z "$h" ]; then echo "portside: unknown user $u" >&2; exit 1; fi
-            """
-        }
-        let claim = target.isEmpty
-            ? ""
-            : #"chown "$u:" "$1" 2>/dev/null || chown "$u" "$1" 2>/dev/null"#
-        let ownFunction = target.isEmpty ? "own() { :; }" : "own() { \(claim); }"
-
-        // Active (non-comment) presence of a blob, field by field — the same
-        // test the append path uses, for the same reasons.
-        func present(_ blob: String) -> String {
-            "awk -v b=\(blob) '/^[[:space:]]*#/ {next} "
-                + "{for (i = 1; i <= NF; i++) if ($i == b) {found = 1; exit}} END {exit !found}' \"$f\""
-        }
+        _ = account
+        let newKeyIsInstalled = KeyDistributor.installedCheck(for: newKey)
 
         return """
         umask 077
-        \(locate)
-        \(ownFunction)
+        h="$HOME"
+        if [ -z "$h" ]; then
+          echo "portside: no home directory is set for this account" >&2
+          exit 1
+        fi
         d="$h/.ssh"; f="$d/authorized_keys"
         if [ ! -f "$f" ]; then printf '%s%s absent 0\\n' '\(retireMarker)' '\(nonce)'; exit 0; fi
-        if ! \(present(new)); then
+        if ! \(newKeyIsInstalled); then
           echo "portside: the new key is not active in $f; refusing to remove the old one" >&2
           exit 3
         fi
-        n=$(awk -v b=\(old) '/^[[:space:]]*#/ {next} {for (i = 1; i <= NF; i++) if ($i == b) {c++; next}} END {print c+0}' "$f")
+        n=$(awk -v T=\(oldAlgorithm) -v B=\(oldBlob) '
+        {
+          \(KeyDistributor.authorizedKeysFieldParser)
+          if (hasKeyFields && t == T && b == B) matches++
+        }
+        END {print matches+0}' "$f")
         if [ "$n" -eq 0 ]; then printf '%s%s absent 0\\n' '\(retireMarker)' '\(nonce)'; exit 0; fi
         cp "$f" \(backup) || { echo "portside: could not back up $f; nothing was changed" >&2; exit 1; }
-        own \(backup)
-        awk -v b=\(old) '/^[[:space:]]*#/ {print; next} {for (i = 1; i <= NF; i++) if ($i == b) next} {print}' "$f" > \(temp) || exit 1
+        phase=prepared
+        restore_from_backup() {
+          phase=restoring
+          if cat \(backup) > "$f"; then
+            phase=restored
+            echo "portside: $f was restored from the backup" >&2
+            return 0
+          fi
+          phase=restore_failed
+          echo "portside: restore FAILED; recover $f manually from \(backup)" >&2
+          return 1
+        }
+        finish_retirement() {
+          status=$?
+          trap - 0 HUP INT TERM
+          rm -f \(temp)
+          case "$phase" in
+            rewriting|restoring)
+              if ! restore_from_backup; then status=5
+              elif [ "$status" -eq 0 ]; then status=1
+              fi
+              ;;
+          esac
+          exit "$status"
+        }
+        trap finish_retirement 0
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        awk -v T=\(oldAlgorithm) -v B=\(oldBlob) '
+        {
+          original = $0
+          \(KeyDistributor.authorizedKeysFieldParser)
+          if (hasKeyFields && t == T && b == B) next
+          print original
+        }' "$f" > \(temp) || exit 1
+        phase=rewriting
         cat \(temp) > "$f" || exit 1
-        rm -f \(temp)
-        if ! \(present(new)); then
-          cat \(backup) > "$f" 2>/dev/null
-          echo "portside: the rewrite lost the new key, so $f was restored from the backup" >&2
-          exit 4
+        if ! \(newKeyIsInstalled); then
+          if restore_from_backup; then exit 4; else exit 5; fi
         fi
+        phase=committed
+        rm -f \(temp)
         printf '%s%s removed %s\\n' '\(retireMarker)' '\(nonce)' "$n"
         """
     }
@@ -624,11 +644,10 @@ enum KeyRotator {
               !account.isEmpty else {
             return retireScript(removing: oldKey, keeping: newKey, nonce: nonce)
         }
-        let script = retireScript(removing: oldKey, keeping: newKey,
-                                  nonce: nonce, account: account)
+        let script = retireScript(removing: oldKey, keeping: newKey, nonce: nonce)
         let encoded = Data(script.utf8).base64EncodedString()
         return "__pk=\(ShellQuoting.quote(encoded)); "
-            + "sudo -S -p '' sh -c "
+            + "sudo -S -p '' -H -u \(ShellQuoting.quote(account)) sh -c "
             + "\"$(printf %s \"$__pk\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__pk\" | base64 -D 2>/dev/null)\""
     }
@@ -653,6 +672,9 @@ enum KeyRotator {
         }
         if let restored = reasons.first(where: { $0.contains("restored from the backup") }) {
             return .failed(Self.tidy(restored))
+        }
+        if let failedRestore = reasons.first(where: { $0.contains("restore FAILED") }) {
+            return .failed(Self.tidy(failedRestore))
         }
         if let noBackup = reasons.first(where: { $0.contains("could not back up") }) {
             return .failed(Self.tidy(noBackup))
@@ -719,16 +741,26 @@ enum KeyRotator {
         password: @Sendable (SessionEntry) -> String?,
         defaults: ConnectionDefaults = ConnectionDefaults(),
         account: String? = nil,
-        runner: KeyDistributor.Runner = KeyDistributor.defaultRunner,
+        runner: @escaping KeyDistributor.Runner = KeyDistributor.defaultRunner,
         progress: @MainActor (KeyRetireResult) -> Void
     ) async -> [KeyRetireResult] {
         var results: [KeyRetireResult] = []
         for entry in entries {
-            let outcome: KeyRetireOutcome = Task.isCancelled
-                ? .skipped("cancelled")
-                : await retire(oldKey: oldKey, keeping: newKey, on: entry,
-                               password: password(entry), defaults: defaults,
-                               account: account, runner: runner)
+            let outcome: KeyRetireOutcome
+            if Task.isCancelled {
+                outcome = .skipped("cancelled")
+            } else {
+                // Once a host begins its destructive interval, Stop applies to
+                // the next host. Cancelling ssh mid-rewrite is exactly the
+                // truncation window the remote transaction is designed to
+                // close, and SIGKILL cannot run its restore trap.
+                let hostPassword = password(entry)
+                outcome = await Task.detached {
+                    await retire(oldKey: oldKey, keeping: newKey, on: entry,
+                                 password: hostPassword, defaults: defaults,
+                                 account: account, runner: runner)
+                }.value
+            }
             let result = KeyRetireResult(entryID: entry.id, hostName: entry.name, outcome: outcome)
             results.append(result)
             await progress(result)
