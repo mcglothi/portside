@@ -555,10 +555,12 @@ enum KeyRotator {
     ///   writing through the existing file keeps all three — the same reason
     ///   `ShellIntegrationSnippet.repairCommand` does it, and the reason a
     ///   symlinked `authorized_keys` is followed rather than replaced.
-    /// - **Comment lines are preserved exactly.** A commented-out copy of the
-    ///   old key grants nothing, and someone's annotations are not ours to
-    ///   delete. This matches the append path, which likewise does not count a
-    ///   commented entry as installed.
+    /// - **Comment lines are kept.** A commented-out copy of the old key grants
+    ///   nothing, and someone's annotations are not ours to delete. This matches
+    ///   the append path, which likewise does not count a commented entry as
+    ///   installed. Their content survives unchanged — though `print` supplies a
+    ///   trailing newline, so a final comment lacking one gains it. The backup is
+    ///   byte-exact; "preserved exactly" was too strong a claim for the rewrite.
     static func retireScript(removing oldKey: PublicKey, keeping newKey: PublicKey,
                              nonce: String = "", account: String? = nil) -> String {
         let oldAlgorithm = ShellQuoting.quote(oldKey.algorithm)
@@ -566,7 +568,7 @@ enum KeyRotator {
         let backup = "\"$f\(KeyDistributor.backupSuffix)\""
         let temp = "\"$f.portside-rewrite\""
         _ = account
-        let newKeyIsInstalled = KeyDistributor.installedCheck(for: newKey)
+        let newKeyIsInstalled = KeyDistributor.unconditionalGrantCheck(for: newKey)
 
         return """
         umask 077
@@ -578,7 +580,7 @@ enum KeyRotator {
         d="$h/.ssh"; f="$d/authorized_keys"
         if [ ! -f "$f" ]; then printf '%s%s absent 0\\n' '\(retireMarker)' '\(nonce)'; exit 0; fi
         if ! \(newKeyIsInstalled); then
-          echo "portside: the new key is not active in $f; refusing to remove the old one" >&2
+          echo "portside: the new key is not present as an unconditional entry in $f; refusing to remove the old one" >&2
           exit 3
         fi
         n=$(awk -v T=\(oldAlgorithm) -v B=\(oldBlob) '

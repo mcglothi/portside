@@ -232,3 +232,126 @@ final class KeyRotatorRetirementSafetyTests: XCTestCase {
         XCTAssertEqual(results[1].outcome, .skipped("cancelled"))
     }
 }
+
+/// The keep-key guard must prove the new key **grants access**, not merely that
+/// its fields appear somewhere in a line.
+///
+/// Found by Codex reading the branch as one feature, and reproduced against a
+/// fixture host running OpenSSH 9.2p1: prefixing a working `authorized_keys`
+/// line with `portside-unknown-option` makes sshd deny the login outright,
+/// because it refuses a line carrying an option it does not recognise. Portside's
+/// field locator happily skipped the token and found the key behind it, so both
+/// the pre-rewrite and post-rewrite guards passed for a line that authenticates
+/// nothing — and those guards are what permit deleting the old key.
+final class KeepKeyGuardTests: XCTestCase {
+
+    private let key = PublicKey(
+        path: "/n.pub", line: "ssh-ed25519 AAAAKEEPTHIS tim@newton",
+        algorithm: "ssh-ed25519", blob: "AAAAKEEPTHIS", comment: "tim@newton",
+        fingerprint: "SHA256:k", bits: 256)
+
+    private func grants(_ contents: String) throws -> Bool {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-guard-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let keys = dir.appendingPathComponent("authorized_keys")
+        try contents.write(to: keys, atomically: true, encoding: .utf8)
+        let script = dir.appendingPathComponent("g.sh")
+        try("f=\(ShellQuoting.quote(keys.path))\n"
+            + "if \(KeyDistributor.unconditionalGrantCheck(for: key)); then exit 0; else exit 1; fi\n")
+            .write(to: script, atomically: true, encoding: .utf8)
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = [script.path]
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        try p.run(); p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    /// The shape Portside installs, and the only shape it will retire against.
+    func testABareEntryGrants() throws {
+        XCTAssertTrue(try grants("\(key.line)\n"))
+        XCTAssertTrue(try grants("ssh-ed25519 AAAAKEEPTHIS\n"), "a comment is optional")
+        XCTAssertTrue(try grants("  \(key.line)\r\n"), "leading space and CRLF are not options")
+    }
+
+    /// **The reproduction.** sshd denies this line; the guard must too.
+    func testAnUnknownOptionMeansNoGrant() throws {
+        XCTAssertFalse(try grants("portside-unknown-option \(key.line)\n"),
+                       "sshd refuses a line with an unrecognised option; so must the guard")
+    }
+
+    /// A *valid* option may still not authorize this connection — an expiry in
+    /// the past, a `from=` that excludes you. Portside cannot evaluate those
+    /// from here, so it fails closed rather than guessing.
+    func testAValidButUnevaluatableOptionMeansNoGrant() throws {
+        for line in ["expiry-time=\"19990101\" \(key.line)",
+                     "from=\"10.0.0.0/8\" \(key.line)",
+                     "command=\"/usr/bin/true\",no-pty \(key.line)",
+                     "restrict \(key.line)"] {
+            XCTAssertFalse(try grants(line + "\n"),
+                           "must not treat a constrained entry as an unconditional grant: \(line)")
+        }
+    }
+
+    func testACommentedOutEntryDoesNotGrant() throws {
+        XCTAssertFalse(try grants("# \(key.line)\n"))
+    }
+
+    func testADifferentKeyDoesNotGrant() throws {
+        XCTAssertFalse(try grants("ssh-ed25519 AAAASOMETHINGELSE other@host\n"))
+        XCTAssertFalse(try grants("ssh-rsa AAAAKEEPTHIS other@host\n"), "wrong type")
+    }
+
+    /// **Pins the wiring, not just the helper.** Reverting `retireScript` to the
+    /// field locator left every other test in this file green, because they all
+    /// call `unconditionalGrantCheck` directly. This one runs the real script.
+    func testTheRetireScriptItselfRefusesAnOptionGuardedKeepKey() throws {
+        let old = PublicKey(path: "/o.pub", line: "ssh-rsa AAAAOLDVICTIM old@host",
+                            algorithm: "ssh-rsa", blob: "AAAAOLDVICTIM",
+                            comment: "old@host", fingerprint: "f2", bits: 2048)
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-wiring-\(UUID().uuidString)")
+        let ssh = home.appendingPathComponent(".ssh")
+        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let keys = ssh.appendingPathComponent("authorized_keys")
+        // The old key, and the keep-key sitting behind an option sshd refuses.
+        try "\(old.line)\nportside-unknown-option \(key.line)\n"
+            .write(to: keys, atomically: true, encoding: .utf8)
+        let before = try String(contentsOf: keys, encoding: .utf8)
+
+        let script = home.appendingPathComponent("retire.sh")
+        try KeyRotator.retireScript(removing: old, keeping: key, nonce: "wire1")
+            .write(to: script, atomically: true, encoding: .utf8)
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = [script.path]
+        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+        let err = Pipe()
+        p.standardOutput = Pipe(); p.standardError = err
+        try p.run()
+        let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
+                             as: UTF8.self)
+        p.waitUntilExit()
+
+        XCTAssertNotEqual(p.terminationStatus, 0, "the script must refuse")
+        XCTAssertTrue(message.contains("refusing to remove the old one"), message)
+        XCTAssertEqual(try String(contentsOf: keys, encoding: .utf8), before,
+                       "the old key was removed while the new one does not authenticate")
+    }
+
+    /// Failing closed costs a manual step. The guard existing at all is what
+    /// stops the alternative, so a bare entry further down the file still counts.
+    func testABareEntryAmongConstrainedOnesStillGrants() throws {
+        try XCTAssertTrue(grants("""
+        from="10.0.0.0/8" \(key.line)
+        \(key.line)
+        """ + "\n"))
+    }
+}

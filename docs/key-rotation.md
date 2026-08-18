@@ -83,19 +83,22 @@ On the host, the rewrite is transactional:
 - `authorized_keys` is copied to `authorized_keys.portside-backup` first, and if
   that copy fails **nothing is rewritten**.
 - The rewrite is guarded by a trap on interruption. Redirecting into a file
-  truncates it *before* anything is written, so an interrupt — including
-  pressing Stop, which kills the ssh process — would otherwise leave a truncated
-  `authorized_keys` and exit without restoring. The original is put back
-  instead, and if *that* fails you are told plainly to recover from the backup
-  by hand rather than being shown a success.
-- Stop takes effect **between** hosts, never in the middle of one host's
-  rewrite.
+  truncates it *before* anything is written, so losing the connection in that
+  gap — or the process being killed from outside — would otherwise leave a
+  truncated `authorized_keys` and exit without restoring. The original is put
+  back instead, and if *that* fails you are told plainly to recover from the
+  backup by hand rather than being shown a success.
+- **Stop does not interrupt a rewrite in progress.** It waits for the host
+  currently being written to finish, then skips the rest. The trap above is for
+  interruptions Portside does not control; Stop is not one of them, deliberately,
+  because the safest moment to stop is between hosts rather than inside one.
 - The file is rewritten *through* the original rather than renamed over it, so
   its inode, permissions and ownership survive and a symlinked `authorized_keys`
   is followed rather than replaced.
-- Comment lines are preserved exactly, including a commented-out copy of the old
-  key: a commented entry grants nothing, and your annotations are not Portside's
-  to delete.
+- Comment lines are kept, including a commented-out copy of the old key: a
+  commented entry grants nothing, and your annotations are not Portside's to
+  delete. Their *content* survives unchanged, though a final comment with no
+  trailing newline will gain one. The backup beside the file is byte-exact.
 
 **Which line counts as the key** is decided by reading the line the way sshd
 does — skipping any options, honouring quoted values that contain spaces, and

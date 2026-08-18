@@ -200,7 +200,63 @@ enum KeyDistributor {
     END { exit !found }
     """
 
-    /// True (exit 0) when `file` grants `key`.
+    /// True (exit 0) when `file` contains this key as a **bare entry** — the key
+    /// type in the first field, no options at all.
+    ///
+    /// ## Why "found the key's fields" is not "the key works"
+    ///
+    /// `installedCheck` locates a key by field position, which is right for
+    /// deciding whether to append. It is **not** a statement that the host will
+    /// authenticate with it, and using it as one is a way to remove somebody's
+    /// old key while the new one does not work. sshd does more than locate
+    /// fields: it parses the options and refuses the line outright if any is
+    /// unknown, and enforces the ones it understands.
+    ///
+    /// Measured on a fixture host running OpenSSH 9.2p1 — the same
+    /// `authorized_keys` line, prefixed with `portside-unknown-option`:
+    ///
+    /// ```text
+    /// bare entry                              → sshd: authenticates
+    /// portside-unknown-option ssh-ed25519 …   → sshd: Permission denied
+    /// expiry-time="19990101" ssh-ed25519 …    → sshd: Permission denied
+    /// ```
+    ///
+    /// `installedCheck` says the key is there in all three.
+    ///
+    /// So the retirement guard uses this instead, and **fails closed**: it
+    /// accepts only the shape Portside itself installs. A key sitting behind
+    /// options might be perfectly valid, or might have expired an hour ago, and
+    /// nothing short of reimplementing sshd's option parser can tell the
+    /// difference from here. Refusing to retire in that case costs the user a
+    /// manual step; guessing wrong costs them the host.
+    ///
+    /// Removal stays option-aware — an old key must be removable wherever it
+    /// sits — because being over-eager there is safe and being under-eager
+    /// leaves a key behind.
+    static func unconditionalGrantCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
+        "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "
+            + "'\(bareEntryMatcher)' \(file)"
+    }
+
+    /// Deliberately does not reuse `authorizedKeysFieldParser`: the whole point
+    /// is to reject anything the parser would helpfully skip past.
+    static let bareEntryMatcher = """
+    {
+      line = $0
+      sub(/\\r$/, "", line)
+      sub(/^[ \\t]+/, "", line)
+      if (line ~ /^#/ || line == "") next
+      split(line, f, /[ \\t]+/)
+      if (f[1] == T && f[2] == B) { found = 1; exit }
+    }
+    END { exit !found }
+    """
+
+    /// True (exit 0) when `file` contains this key in a key position.
+    ///
+    /// **Locates a key; does not prove it authorizes.** See
+    /// `unconditionalGrantCheck` for the difference and why anything
+    /// destructive must use that one.
     static func installedCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
         "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "
             + "'\(authorizedKeysMatcher)' \(file)"
