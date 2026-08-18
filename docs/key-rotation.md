@@ -1,6 +1,8 @@
 # Key rotation
 
-**Hosts ▸ Rotate SSH Key…**
+**Hosts ▸ Rotate SSH Key…**, or right-click a host, a selection, or a folder.
+A credential profile also offers **Rotate Key…**, which arrives with that
+profile's current key already chosen as the one to retire.
 
 Replaces one key with another across a selection of hosts, in three stages you
 drive yourself: **add** the new key, **verify** each host really authenticates
@@ -48,71 +50,129 @@ Non-destructive and repeatable. Run it as often as you like.
 
 ### 2. Verify
 
-Logs into each host **with the new key alone** and confirms the host accepted
-*that key*. Changes nothing, sends no password, and is the only thing that
-unlocks stage three.
+Logs into each host **with the new key** and confirms that key is the one the
+host authenticated with. Changes nothing, sends no password, and is the only
+thing that unlocks stage three.
 
-Before contacting anything it checks the key can be used from this Mac at all: a
-passphrase-protected key that isn't loaded in the agent would fail every host
-identically, and forty hosts reporting "key not accepted" for a local problem is
-the most misleading output this feature could produce. You get one sentence
-telling you to run `ssh-add` instead.
+Note the wording: *the key that authenticated*, not *a key that was accepted*.
+Those are different questions, and getting them confused is how this stage
+becomes decorative — see [below](#what-makes-a-verification-real).
+
+Before contacting anything it checks the key can be used from this Mac at all.
+Two local faults would otherwise be reported as forty hosts rejecting the key:
+
+- a passphrase-protected key that isn't loaded in the agent, and
+- a `.pub` that doesn't match the private key beside it. `ssh-keygen -y`
+  succeeds whenever it can *read* the private key and says nothing about the
+  `.pub`, so a stale or swapped one used to sail through and fail much later,
+  in the wrong place. Portside now compares the derived key.
+
+Either way you get one sentence naming the local problem instead of a fleet of
+misleading rejections.
 
 ### 3. Retire
 
 Removes the old key from the hosts that passed stage two, and no others. Hosts
 that didn't pass are listed on the confirmation as keeping their old key, so a
-partial rotation is visible rather than silent.
+partial rotation is visible rather than silent. A retirement that *fails* — a
+dropped connection, a host that refused — stays on the list and can be retried;
+only a successful one removes a host from it.
 
-On the host: `authorized_keys` is copied to `authorized_keys.portside-backup`
-first — and if that copy fails, **nothing is rewritten**. The file is then
-rewritten *through* the original rather than renamed over it, so its inode,
-permissions and ownership survive and a symlinked `authorized_keys` is followed
-rather than replaced. Comment lines are preserved exactly, including a
-commented-out copy of the old key: a commented entry grants nothing, and your
-annotations are not Portside's to delete.
+On the host, the rewrite is transactional:
 
-A key is matched by **type and blob**, never by comment and never by substring.
-Editing a key's comment does not make it a different key, and a longer key whose
-blob merely starts with the old one is not the old one.
+- `authorized_keys` is copied to `authorized_keys.portside-backup` first, and if
+  that copy fails **nothing is rewritten**.
+- The rewrite is guarded by a trap on interruption. Redirecting into a file
+  truncates it *before* anything is written, so an interrupt — including
+  pressing Stop, which kills the ssh process — would otherwise leave a truncated
+  `authorized_keys` and exit without restoring. The original is put back
+  instead, and if *that* fails you are told plainly to recover from the backup
+  by hand rather than being shown a success.
+- Stop takes effect **between** hosts, never in the middle of one host's
+  rewrite.
+- The file is rewritten *through* the original rather than renamed over it, so
+  its inode, permissions and ownership survive and a symlinked `authorized_keys`
+  is followed rather than replaced.
+- Comment lines are preserved exactly, including a commented-out copy of the old
+  key: a commented entry grants nothing, and your annotations are not Portside's
+  to delete.
 
-## Three ways a verification can lie
+**Which line counts as the key** is decided by reading the line the way sshd
+does — skipping any options, honouring quoted values that contain spaces, and
+taking the key type and data from the positions they actually occupy. A key
+written inside a comment or an option is a *mention* of that key, not permission
+to use it, and must not be deleted as though it were the real entry. The same
+parser decides whether a push needs to happen, because "does this line grant
+this key" has to have one answer.
 
-These are the reason stage two asserts *which key was accepted* rather than
-merely that the connection worked. Each was measured against real hosts, and each
-one — unnoticed — would have turned this feature into a way to lock yourself out
-of a fleet.
+## What makes a verification real
 
-**Connection multiplexing.** Portside opens a `ControlMaster` for interactive
-sessions. A second connection over that socket authenticates *nothing at all* —
-`ssh -v` through a live master prints `mux_client_request_session` and not one
-`Server accepts key` line. Verifying a host you happen to have a session open to
-would otherwise pass unconditionally. Rotation therefore sets `ControlPath=none`;
-`ControlMaster=no` alone does not prevent *joining* an existing master.
+Stage three deletes access. The only thing standing between it and a locked-out
+fleet is stage two actually meaning something, so it is worth being precise
+about what it checks.
 
-**The host's own identity file.** A session entry carries the `-i` it normally
-connects with, which during a rotation is usually the key being retired. Offering
-it alongside the new one lets the old key satisfy the check that justifies
-deleting it. Verification uses the destination and nothing else.
+**A connection succeeding says nothing about which credential succeeded.** That
+is the whole problem in one sentence, and every trap below is a version of it.
 
-**`~/.ssh/config`.** `IdentitiesOnly=yes` does not mean "only the key I passed on
-the command line" — identity files configured in `ssh_config` count as
-configured, and an aliased host's `IdentityFile` is duly offered and reported as
-`explicit`. There is no option that suppresses it while still resolving the
-alias.
+**`Server accepts key` is not authentication.** OpenSSH logs it when the server
+accepts an *unsigned probe*; ssh then signs and sends the real request, and the
+signature can still be rejected — after which ssh quietly moves to the next
+identity and may well get in with that one. A check asking "was our fingerprint
+accepted anywhere" answers yes to a key that authenticated nothing. Portside
+reads the transcript in order and takes **the key named on the last acceptance
+before the connection reports being authenticated**, because anything accepted
+earlier had its signature refused.
 
-So a verification passes only when ssh's own verbose output reports that the
-server accepted a key **with the new key's fingerprint**, *and* the session
-actually ran a command. Either proof missing is a failure, never a pass. A key
-that was offered and declined is reported as rejected — a plain fact, and the
-expected answer before the key has been added.
+**A connection that rides an existing multiplexed session authenticates
+nothing at all.** Portside opens a shared connection for interactive sessions,
+and a second connection over that socket skips authentication entirely, so
+verifying a host you happen to have a terminal open to would pass
+unconditionally. Verification opts out of sharing.
+
+**The host's own configured key gets offered too.** A session entry carries the
+key it normally connects with — during a rotation, usually the very key being
+retired — and `~/.ssh/config` may name another. `IdentitiesOnly` does not
+suppress those: the manual is explicit that configured identity files count as
+configured, and on an aliased host that is the common case rather than the
+corner. There is no option that suppresses them while still resolving the alias,
+which is exactly why the check has to be about *which key won* rather than about
+the connection succeeding.
+
+**The evidence is read from a channel the host cannot write to.** ssh's stderr
+is shared with the remote host's, and a host can print a convincing acceptance
+line of its own. Verification sends ssh's log to a private file instead, and
+matches lines by their beginning rather than searching anywhere in them — ssh
+also logs the command *we* send, and a search would happily match text we handed
+it ourselves.
+
+So a verification passes only when the transcript shows this key authenticating
+**and** the session actually ran something. Either proof missing is a failure,
+never a pass.
+
+Two failures that look identical are reported differently, because they send you
+to different machines:
+
+- **Offered and never accepted** — the host declined this key. A definite
+  negative about that host, and the expected answer before the key is added.
+- **Accepted and then the signature refused** — the host *does* trust the key;
+  the private key on this Mac is a different one. A local fault.
 
 ## Rotating a key for another account
 
 Fill in **Account** and the key is added to, verified against, and retired from
-that account rather than each host's login user. Add and retire escalate with
-`sudo`, exactly as key distribution does; verification logs in *as* that account
-using the new key, which is the honest test of whether the account is usable.
+that account rather than each host's login user.
+
+Add and retire escalate **once, straight to that account** — never via root, and
+exactly as key distribution does since 0.23.2. Root working inside a directory
+the account controls is a privilege escalation, and validating the path first
+cannot be made safe in a shell, so Portside does not try. One consequence
+follows: **the account's home must already exist.** Portside will not create it,
+and says so rather than guessing.
+
+Verification logs in *as* that account using the new key, which is the honest
+test of whether the account is usable at all — and the one case where a
+key-only service account with no shell will authenticate and still be unable to
+run anything, which is reported as exactly that rather than as a rejection.
 
 ## What Portside knows, and what it doesn't
 

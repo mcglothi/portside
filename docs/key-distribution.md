@@ -185,11 +185,13 @@ So the host list is a proposal. The per-host result is what makes it true.
 
 ## What this is not
 
-It does not remove keys, and it does not rotate them. **Key rotation** — generate
-a new key, add it everywhere, verify, then retire the old one — is deliberately a
-later feature, because rotation's first phase *is* key distribution, and shipping
-both together would mean the first time anyone retires a key, the code that
-installed it is also new. See `docs/road-to-1.0.md`.
+It does not remove keys. Adding one is all this does.
+
+Replacing a key — add the new one everywhere, prove each host authenticates it,
+then retire the old one — is [key rotation](key-rotation.md), built at 0.24.0.
+It deliberately shipped a release later than this one: rotation's first stage
+*is* key distribution, and shipping both together would have meant that the
+first time anyone retired a key, the code that installed it was also new.
 
 ## Testing it against real hosts
 

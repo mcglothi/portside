@@ -224,11 +224,23 @@ The maintainer's call, not a readiness question.
   `Server accepts key` line), and the session entry's own `-i` — during a
   rotation, usually the key being retired — would otherwise be offered too.
 
-  So the assertion is not "the connection succeeded" but **"the server accepted a
-  key with this fingerprint"**, read from ssh's own verbose output, plus the
-  session having actually run a command. The lesson generalises: *a connection
-  succeeding says nothing about which credential succeeded, and any check built
-  on the former is vacuous.*
+  And a third, deeper than the other two, which was found only by building the
+  check and then attacking it: **"the server accepted this key" is itself not
+  authentication.** OpenSSH logs that line when it accepts an unsigned *probe*;
+  signing happens after and can still be refused, at which point ssh moves on and
+  may authenticate with something else. Reproduced on a fixture host by putting
+  one key's `.pub` beside another's private key — the probe was accepted, the
+  signature refused, a different key got in, and the command exited 0.
+
+  So the assertion is not "the connection succeeded", and not "this key was
+  accepted", but **"this key is the one that authenticated"** — the key named on
+  the last acceptance before the connection reports being authenticated, since
+  anything accepted earlier had its signature refused. Plus the session having
+  actually run a command, read from a private channel the host cannot write to.
+
+  The lesson generalises, and it took three attempts to state correctly: *a
+  connection succeeding says nothing about which credential succeeded, and
+  neither does a credential being accepted.*
 
   The rule is enforced in three independent places — the sheet, the remote script
   (which refuses unless the new key is active in the file it's rewriting), and a
