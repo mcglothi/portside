@@ -57,6 +57,41 @@ can be produced on a healthy host.
 `pstest_nologin` is a third variant worth knowing: the key authenticates and the
 session still cannot run, which is the "accepted but no session" branch.
 
+## Login shells are a separate portability boundary
+
+`ssh host '<command>'` is parsed by the **target user's login shell**, not by
+`sh`. That is a different question from "which `/bin/sh` does this host have",
+and nothing exercised it until `pstest_zsh`, `pstest_tcsh` and `pstest_fish`
+existed.
+
+Sending the real key-push script the way ssh sends it:
+
+| login shell | result |
+|---|---|
+| dash / sh | installs |
+| zsh | installs |
+| **tcsh** | `else: endif not found.` |
+| **fish** | parse error |
+
+So the push path does not work for a user whose login shell is tcsh or fish.
+This is pre-existing in 0.23.0 and 0.23.1, not something the 0.23.2 work
+introduced.
+
+Measurements toward a fix, so the next attempt starts from evidence:
+
+- `echo <base64>|base64 -d|sh` parses correctly in **all four** shells. Base64's
+  alphabet contains no shell metacharacters, and every shell here understands a
+  pipeline, so this is a viable delivery form.
+- Adding `2>/dev/null` breaks it: tcsh answers `Ambiguous output redirect`. So
+  the usual `base64 -d 2>/dev/null || base64 -D` fallback for BSD cannot live in
+  the outer command.
+- A pipeline gives the final `sh` its stdin **from the pipe**, and that is
+  exactly where `sudo -S` currently reads the password. So the pipeline form
+  works for the login-user path and breaks the cross-account path, which needs a
+  different answer for password delivery.
+- `sh -c "$(...)"` is not an option: `$(...)` is not portable to csh, and fish
+  spells command substitution differently again.
+
 ## Cross-distro findings so far
 
 - **debian** gives real `dash` as `/bin/sh` and `mawk`; **alpine** gives busybox

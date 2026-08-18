@@ -60,7 +60,7 @@ build_image() {
         cat <<'DOCKERFILE'
 FROM debian:12
 RUN apt-get -qq update \
- && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y openssh-server sudo \
+ && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y openssh-server sudo zsh tcsh fish \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /run/sshd && ssh-keygen -A
 CMD ["/usr/sbin/sshd", "-D", "-e"]
@@ -71,7 +71,7 @@ DOCKERFILE
         # have, and the closest thing to an appliance or a container host.
         cat <<'DOCKERFILE'
 FROM alpine:3.20
-RUN apk add --no-cache openssh-server sudo shadow \
+RUN apk add --no-cache openssh-server sudo shadow zsh tcsh fish \
  && ssh-keygen -A
 CMD ["/usr/sbin/sshd", "-D", "-e"]
 DOCKERFILE
@@ -244,6 +244,18 @@ if ! grep -q "pstest_elsewherekeys" /etc/ssh/sshd_config; then
   printf '\nMatch User pstest_elsewherekeys\n    AuthorizedKeysFile /etc/ssh/authorized/%%u\n' \
       >> /etc/ssh/sshd_config
 fi
+
+# 18-20. LOGIN SHELLS THAT ARE NOT sh. `ssh host '<command>'` is parsed by the
+#        target user's login shell, so a POSIX script sent to a csh or fish user
+#        is parsed by csh or fish. This is a different portability boundary from
+#        "which /bin/sh does the host have", and nothing exercised it before.
+for pair in "zsh:/bin/zsh" "tcsh:/bin/tcsh" "fish:/usr/bin/fish"; do
+  name=${pair%%:*}; shell=${pair#*:}
+  [ -x "$shell" ] || shell=$(command -v "$name" 2>/dev/null) || continue
+  [ -n "$shell" ] || continue
+  mk "pstest_$name" "$shell"
+  authorize "pstest_$name"
+done
 
 # A login account the harness itself uses, with passwordless sudo, standing in
 # for the operator's own account.
