@@ -34,7 +34,7 @@ Three steps, and nothing is contacted before the second one.
 2. **Confirm.** Every host is named, not counted. Protected hosts included in
    the selection are called out separately.
 3. **Push.** One host at a time, with a per-host result: *key added*, *already
-   had it*, or *failed* with the reason.
+   present*, or *failed* with the reason.
 
 ## The rules
 
