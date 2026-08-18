@@ -116,7 +116,7 @@ enum PrivateKeyReadiness: Equatable {
 /// `Match` block restricting key types — each leaves a correct-looking
 /// `authorized_keys` that authenticates nothing. So the proof is a real login.
 ///
-/// ## Three ways a verify can pass while proving nothing
+/// ## Four ways a verify can pass while proving nothing
 ///
 /// All three were measured against real hosts, and each one, unnoticed, would
 /// have turned this feature into a way to lock yourself out of a fleet.
@@ -139,11 +139,16 @@ enum PrivateKeyReadiness: Equatable {
 ///    resolving the alias, and every host in the maintainer's own library is
 ///    aliased, so this is the common case rather than the corner.
 ///
-/// (3) is why the assertion is not "the connection succeeded" but **"the server
-/// accepted a key with this fingerprint"**, read from ssh's own verbose output.
-/// That is a direct statement about which key authenticated, so it holds no
-/// matter how many other identities were offered alongside — and it fails
-/// closed under (1), where the line is absent entirely.
+/// 4. **Acceptance is not authentication.** `Server accepts key` is the reply to
+///    an *unsigned probe*; signing happens after and can still be refused, at
+///    which point ssh moves on and may authenticate with something else
+///    entirely. Measured, so this is not theory — see `authenticatingFingerprint`.
+///
+/// So the assertion is not "the connection succeeded", and not "a key with this
+/// fingerprint was accepted", but **"this key is the one that authenticated"**,
+/// read in order from a transcript the host cannot write to. It holds no matter
+/// how many other identities were offered alongside, and fails closed under (1),
+/// where the lines are absent entirely.
 enum KeyRotator {
 
     static let verifyMarker = "PORTSIDE-VERIFY:"
@@ -533,12 +538,17 @@ enum KeyRotator {
     ///
     /// ## The guard is on the host, not only in the UI
     ///
-    /// The script refuses unless `newKey` is *active* in the very file it is
-    /// about to rewrite. The app already refuses to offer retirement for a host
-    /// that hasn't verified, so this is deliberate duplication: the UI check
-    /// tests what this session believes, and the script tests what the file
-    /// actually says at the moment of the rewrite. Only the second one is true
-    /// where it matters, and it costs one `awk`.
+    /// The script refuses unless a **bare entry** for `newKey` is present in the
+    /// very file it is about to rewrite.
+    ///
+    /// Be precise about what that proves, because the name of this check used to
+    /// claim more than it tested. It is **not** authentication — a bare entry can
+    /// still be refused by `StrictModes`, by an `AuthorizedKeysFile` pointing
+    /// elsewhere, or by `RevokedKeys`. Authentication was established earlier, by
+    /// Verify. What this adds is that the thing Verify vouched for is *still in
+    /// the file* at the instant of the rewrite, which the UI cannot know: the UI
+    /// tests what this session believes, and the file may have moved on since.
+    /// Two different questions, and the rewrite needs both answered.
     ///
     /// After rewriting it checks again, and **restores from the backup** if the
     /// new key somehow went missing. A rewrite that loses both keys is the one
@@ -568,7 +578,7 @@ enum KeyRotator {
         let backup = "\"$f\(KeyDistributor.backupSuffix)\""
         let temp = "\"$f.portside-rewrite\""
         _ = account
-        let newKeyIsInstalled = KeyDistributor.unconditionalGrantCheck(for: newKey)
+        let newKeyIsInstalled = KeyDistributor.bareEntryCheck(for: newKey)
 
         return """
         umask 077

@@ -179,7 +179,7 @@ struct KeyRotation: Equatable {
     // MARK: - Counts, for the UI and the confirmation
 
     var verifiedCount: Int { hosts.filter { verified[$0.id]?.provesKeyWorks == true }.count }
-    var addedCount: Int { hosts.filter { added[$0.id]?.hostTrustsKey == true }.count }
+    var addedCount: Int { hosts.filter { added[$0.id]?.keyEntryPresent == true }.count }
     var retiredCount: Int { hosts.filter { retired[$0.id]?.isSuccess == true }.count }
 
     /// Hosts that verified but where the push had *not* reported the key as
@@ -188,7 +188,7 @@ struct KeyRotation: Equatable {
     /// verification is riding on something other than what was pushed.
     var verifiedWithoutSuccessfulPush: [SessionEntry] {
         hosts.filter {
-            verified[$0.id]?.provesKeyWorks == true && added[$0.id]?.hostTrustsKey != true
+            verified[$0.id]?.provesKeyWorks == true && added[$0.id]?.keyEntryPresent != true
         }
     }
 

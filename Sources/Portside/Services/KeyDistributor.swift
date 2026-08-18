@@ -4,7 +4,13 @@ import Foundation
 enum KeyPushOutcome: Equatable {
     /// The key was appended to `authorized_keys`.
     case added
-    /// The host already trusted this key; nothing was written.
+    /// A matching entry was already in `authorized_keys`; nothing was written.
+    ///
+    /// **Not "the host trusts this key".** The check locates the key's fields;
+    /// the line it found may carry an option sshd refuses, or one that has since
+    /// stopped authorizing. Appending a bare copy anyway would be worse — it
+    /// would quietly widen access past an intentional `from=` or `command=` — so
+    /// not writing is right. The status just must not overstate what it means.
     case alreadyPresent
     /// Excluded before anything was attempted. Carries why, because "skipped"
     /// on its own reads as a bug when you were expecting a push.
@@ -19,15 +25,16 @@ enum KeyPushOutcome: Equatable {
         }
     }
 
-    /// Whether the host ended up trusting the key, whoever put it there.
-    var hostTrustsKey: Bool {
+    /// Whether `authorized_keys` ends up holding an entry for this key, whoever
+    /// put it there. **Presence, not trust** — see `alreadyPresent`.
+    var keyEntryPresent: Bool {
         self == .added || self == .alreadyPresent
     }
 
     var label: String {
         switch self {
         case .added: return "Key added"
-        case .alreadyPresent: return "Already had it"
+        case .alreadyPresent: return "Already present"
         case .skipped(let why): return "Skipped — \(why)"
         case .failed(let why): return "Failed — \(why)"
         }
@@ -158,13 +165,17 @@ enum KeyDistributor {
     ///
     /// So the options field is skipped properly: it ends at the first
     /// whitespace that is not inside a double-quoted section, honouring
-    /// backslash escapes, exactly as sshd reads it. The type is the token after
-    /// that, and the blob the token after the type. A line beginning with a key
-    /// type has no options at all.
+    /// backslash escapes. The type is the token after that, and the blob the
+    /// token after the type. A line beginning with a key type has no options.
     ///
-    /// **Shared with retirement deliberately.** The question "does this line
-    /// grant this key" must have one answer, because one side installs on it
-    /// and the other deletes on it.
+    /// **This locates key fields. It does not validate options and does not
+    /// prove authorization.** sshd parses the options too, refuses the whole
+    /// line if any is unrecognised, and enforces the ones it understands — so a
+    /// line this finds may be one sshd rejects outright. Anything *destructive*
+    /// must therefore use `bareEntryCheck` instead, which is deliberately **not**
+    /// this parser: the whole point there is to reject what this helpfully skips
+    /// past. Removal shares this one, because finding an old key wherever it
+    /// sits is exactly what removal wants.
     /// Parses the key fields from the current authorized_keys record. It works
     /// on a copy so removal callers can preserve the original record exactly.
     static let authorizedKeysFieldParser = """
@@ -233,7 +244,7 @@ enum KeyDistributor {
     /// Removal stays option-aware — an old key must be removable wherever it
     /// sits — because being over-eager there is safe and being under-eager
     /// leaves a key behind.
-    static func unconditionalGrantCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
+    static func bareEntryCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
         "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "
             + "'\(bareEntryMatcher)' \(file)"
     }
@@ -255,7 +266,7 @@ enum KeyDistributor {
     /// True (exit 0) when `file` contains this key in a key position.
     ///
     /// **Locates a key; does not prove it authorizes.** See
-    /// `unconditionalGrantCheck` for the difference and why anything
+    /// `bareEntryCheck` for the difference and why anything
     /// destructive must use that one.
     static func installedCheck(for key: PublicKey, file: String = "\"$f\"") -> String {
         "awk -v T=\(ShellQuoting.quote(key.algorithm)) -v B=\(ShellQuoting.quote(key.blob)) "

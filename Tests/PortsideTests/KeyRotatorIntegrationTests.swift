@@ -144,7 +144,7 @@ final class KeyRotatorIntegrationTests: XCTestCase {
 
             // Phase 1: add. This is KeyDistributor unchanged.
             let added = await KeyDistributor.push(key: throwaway, to: target, password: nil)
-            XCTAssertTrue(added.hostTrustsKey, "\(host): push failed — \(added.label)")
+            XCTAssertTrue(added.keyEntryPresent, "\(host): push failed — \(added.label)")
             let installed = try await activeCount(of: throwaway, on: host)
             XCTAssertEqual(installed, "1",
                            "\(host): expected exactly one copy of the throwaway key")

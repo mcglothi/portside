@@ -24,8 +24,9 @@ somewhere else, a `Match` block restricting key types — each leaves a
 correct-looking file that authenticates nothing. So the proof is a real login,
 and nothing else counts.
 
-That rule is enforced three times over, because the cost of getting it wrong is
-a trip to a console:
+Only one thing actually proves it: stage two, a real login. What surrounds that
+proof is three **safety layers**, because the cost of getting this wrong is a
+trip to a console and one check at one moment is a thin thing to rest it on:
 
 1. **The sheet** offers retirement only for hosts showing a verified result in
    *that* sheet. Change either key and every verification is discarded —
@@ -100,13 +101,20 @@ On the host, the rewrite is transactional:
   delete. Their *content* survives unchanged, though a final comment with no
   trailing newline will gain one. The backup beside the file is byte-exact.
 
-**Which line counts as the key** is decided by reading the line the way sshd
-does — skipping any options, honouring quoted values that contain spaces, and
-taking the key type and data from the positions they actually occupy. A key
-written inside a comment or an option is a *mention* of that key, not permission
-to use it, and must not be deleted as though it were the real entry. The same
-parser decides whether a push needs to happen, because "does this line grant
-this key" has to have one answer.
+**Which line counts as the key** is decided by reading it with
+`authorized_keys`'s own quoting rules — skipping any options, honouring quoted
+values that contain spaces, and taking the key type and data from the positions
+they actually occupy. A key written inside a comment or an option is a *mention*
+of that key, not permission to use it, and must not be deleted as though it were
+the real entry. Copying a key uses the same reading, because finding an existing
+entry wherever it sits is exactly what both want.
+
+The guard protecting the key you are **keeping** deliberately does not. It
+accepts only a plain entry with no options at all — the shape Portside itself
+installs. An entry behind `from=` or `command=` may be perfectly good or may have
+expired an hour ago, and that is a question only sshd can answer. Portside
+refuses to retire rather than guess, which costs you a manual step; guessing
+wrong would cost you the host.
 
 ## What makes a verification real
 

@@ -250,7 +250,7 @@ final class KeepKeyGuardTests: XCTestCase {
         algorithm: "ssh-ed25519", blob: "AAAAKEEPTHIS", comment: "tim@newton",
         fingerprint: "SHA256:k", bits: 256)
 
-    private func grants(_ contents: String) throws -> Bool {
+    private func matchesBareEntry(_ contents: String) throws -> Bool {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("portside-guard-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -260,7 +260,7 @@ final class KeepKeyGuardTests: XCTestCase {
         try contents.write(to: keys, atomically: true, encoding: .utf8)
         let script = dir.appendingPathComponent("g.sh")
         try("f=\(ShellQuoting.quote(keys.path))\n"
-            + "if \(KeyDistributor.unconditionalGrantCheck(for: key)); then exit 0; else exit 1; fi\n")
+            + "if \(KeyDistributor.bareEntryCheck(for: key)); then exit 0; else exit 1; fi\n")
             .write(to: script, atomically: true, encoding: .utf8)
 
         let p = Process()
@@ -272,43 +272,43 @@ final class KeepKeyGuardTests: XCTestCase {
     }
 
     /// The shape Portside installs, and the only shape it will retire against.
-    func testABareEntryGrants() throws {
-        XCTAssertTrue(try grants("\(key.line)\n"))
-        XCTAssertTrue(try grants("ssh-ed25519 AAAAKEEPTHIS\n"), "a comment is optional")
-        XCTAssertTrue(try grants("  \(key.line)\r\n"), "leading space and CRLF are not options")
+    func testABareEntryMatches() throws {
+        XCTAssertTrue(try matchesBareEntry("\(key.line)\n"))
+        XCTAssertTrue(try matchesBareEntry("ssh-ed25519 AAAAKEEPTHIS\n"), "a comment is optional")
+        XCTAssertTrue(try matchesBareEntry("  \(key.line)\r\n"), "leading space and CRLF are not options")
     }
 
     /// **The reproduction.** sshd denies this line; the guard must too.
-    func testAnUnknownOptionMeansNoGrant() throws {
-        XCTAssertFalse(try grants("portside-unknown-option \(key.line)\n"),
+    func testAnUnknownOptionDoesNotMatch() throws {
+        XCTAssertFalse(try matchesBareEntry("portside-unknown-option \(key.line)\n"),
                        "sshd refuses a line with an unrecognised option; so must the guard")
     }
 
     /// A *valid* option may still not authorize this connection — an expiry in
     /// the past, a `from=` that excludes you. Portside cannot evaluate those
     /// from here, so it fails closed rather than guessing.
-    func testAValidButUnevaluatableOptionMeansNoGrant() throws {
+    func testAValidButUnevaluatableOptionDoesNotMatch() throws {
         for line in ["expiry-time=\"19990101\" \(key.line)",
                      "from=\"10.0.0.0/8\" \(key.line)",
                      "command=\"/usr/bin/true\",no-pty \(key.line)",
                      "restrict \(key.line)"] {
-            XCTAssertFalse(try grants(line + "\n"),
+            XCTAssertFalse(try matchesBareEntry(line + "\n"),
                            "must not treat a constrained entry as an unconditional grant: \(line)")
         }
     }
 
-    func testACommentedOutEntryDoesNotGrant() throws {
-        XCTAssertFalse(try grants("# \(key.line)\n"))
+    func testACommentedOutEntryDoesNotMatch() throws {
+        XCTAssertFalse(try matchesBareEntry("# \(key.line)\n"))
     }
 
-    func testADifferentKeyDoesNotGrant() throws {
-        XCTAssertFalse(try grants("ssh-ed25519 AAAASOMETHINGELSE other@host\n"))
-        XCTAssertFalse(try grants("ssh-rsa AAAAKEEPTHIS other@host\n"), "wrong type")
+    func testADifferentKeyDoesNotMatch() throws {
+        XCTAssertFalse(try matchesBareEntry("ssh-ed25519 AAAASOMETHINGELSE other@host\n"))
+        XCTAssertFalse(try matchesBareEntry("ssh-rsa AAAAKEEPTHIS other@host\n"), "wrong type")
     }
 
     /// **Pins the wiring, not just the helper.** Reverting `retireScript` to the
     /// field locator left every other test in this file green, because they all
-    /// call `unconditionalGrantCheck` directly. This one runs the real script.
+    /// call `bareEntryCheck` directly. This one runs the real script.
     func testTheRetireScriptItselfRefusesAnOptionGuardedKeepKey() throws {
         let old = PublicKey(path: "/o.pub", line: "ssh-rsa AAAAOLDVICTIM old@host",
                             algorithm: "ssh-rsa", blob: "AAAAOLDVICTIM",
@@ -348,8 +348,8 @@ final class KeepKeyGuardTests: XCTestCase {
 
     /// Failing closed costs a manual step. The guard existing at all is what
     /// stops the alternative, so a bare entry further down the file still counts.
-    func testABareEntryAmongConstrainedOnesStillGrants() throws {
-        try XCTAssertTrue(grants("""
+    func testABareEntryAmongConstrainedOnesStillMatches() throws {
+        try XCTAssertTrue(matchesBareEntry("""
         from="10.0.0.0/8" \(key.line)
         \(key.line)
         """ + "\n"))

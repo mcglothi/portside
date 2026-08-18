@@ -165,7 +165,7 @@ final class KeyDistributorIntegrationTests: XCTestCase {
             }
         }
 
-        XCTAssertTrue(results.contains { $0.outcome.hostTrustsKey },
+        XCTAssertTrue(results.contains { $0.outcome.keyEntryPresent },
                       "at least one host should have succeeded")
     }
 
