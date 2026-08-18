@@ -100,7 +100,7 @@ struct KeyDistributionView: View {
         let bad = results.filter { !$0.outcome.isSuccess }.count
         var parts: [String] = []
         if added > 0 { parts.append("\(added) added") }
-        if had > 0 { parts.append("\(had) already had it") }
+        if had > 0 { parts.append("\(had) already present") }
         if bad > 0 { parts.append("\(bad) failed") }
         return parts.isEmpty ? "Nothing to do" : parts.joined(separator: " · ")
     }

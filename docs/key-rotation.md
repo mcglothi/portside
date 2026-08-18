@@ -32,12 +32,13 @@ trip to a console and one check at one moment is a thin thing to rest it on:
    *that* sheet. Change either key and every verification is discarded —
    structurally, because a rotation's keys are fixed at creation and a different
    key is necessarily a different rotation.
-2. **The host itself** refuses to remove the old key unless the new one is
-   *active* in the very file it is about to rewrite. The app's belief and the
-   file's contents are different things, and only the second one matters at the
-   moment of the rewrite.
-3. **After the rewrite**, the host checks again, and restores `authorized_keys`
-   from its own backup if the new key somehow went missing.
+2. **The host itself** refuses to remove the old key unless a plain entry for
+   the new one — no options at all — is in the very file it is about to
+   rewrite. The app's belief about what a host holds and what the file actually
+   says are different things, and at the moment of a rewrite only the file can
+   answer.
+3. **After the rewrite**, the host looks again, and restores `authorized_keys`
+   from its own backup if that entry somehow went missing.
 
 ## The three stages
 
@@ -45,7 +46,8 @@ trip to a console and one check at one moment is a thin thing to rest it on:
 
 Exactly a key push — same engine, same rules. Each host is contacted once, a
 password is never tried twice, and `authorized_keys` is copied aside before it
-is touched. A host that already has the key is a no-op rather than a duplicate.
+is touched. A host whose `authorized_keys` already holds a matching entry is a no-op
+rather than a duplicate.
 
 Non-destructive and repeatable. Run it as often as you like.
 

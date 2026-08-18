@@ -97,7 +97,7 @@ enum RotationPreview {
             rotation.record(KeyPushOutcome.alreadyPresent, forHost: id)
             rotation.record(KeyVerifyOutcome.verified, forHost: id)
             rotation.record(
-                KeyRetireOutcome.refused("the new key is not active in authorized_keys"),
+                KeyRetireOutcome.refused("the new key is not present as a plain entry in authorized_keys"),
                 forHost: id)
         }
         // 5: verified, retirement failed outright — must stay retryable.

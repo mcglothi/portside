@@ -65,22 +65,27 @@ socket and costs no authentication at all.
 umask 077
 # ~/.ssh and authorized_keys are created if missing — and only then given
 # 0700/0600. An existing file's permissions are yours, not Portside's.
-# The key is appended only if the host doesn't already have it.
+# The key is appended only if no matching entry is there already.
 # authorized_keys is copied to authorized_keys.portside-backup first.
 ```
 
 Two details worth knowing:
 
-- **"Already has it" compares the key type and blob, never the comment.** That
-  pair is what `authorized_keys` actually authenticates on, so the same key
-  under a different comment is correctly recognised as already installed and is
-  not appended twice.
+- **"Already present" compares the key type and blob, never the comment.** The
+  same key under a different comment is correctly recognised as the same entry
+  and is not appended twice.
+
+  Note what that does and does not tell you. It finds a *matching entry*; it
+  does not establish that sshd will honour it. A line carrying an option sshd
+  refuses, or one that has since stopped authorizing, still counts as present —
+  and not appending is the right answer there anyway, since adding a plain copy
+  would quietly widen access past an intentional `from=` or `command=`.
 - **A commented-out entry does not count as installed.** Matching is done over
   non-comment lines field by field, which also handles entries carrying
   `command=` or `from=` options, where the key type isn't the first field.
 
-Re-running a push is therefore safe and does nothing on hosts that already have
-the key.
+Re-running a push is therefore safe and does nothing on hosts whose
+`authorized_keys` already holds a matching entry.
 
 The success marker carries a random per-push tag, so a host's banner or `motd`
 can't be mistaken for a result — a report of success means this push's script
@@ -225,7 +230,7 @@ disposable containers instead; see `Scripts/testhost/`.
 **"Permission denied"** — Portside had no password for that host, or the one it
 had was wrong. It will not try again on its own. Check the host's credentials
 (or its credential profile) and re-run; the hosts that succeeded will report
-"already had it" the second time.
+"already present" the second time.
 
 **"Host key verification failed"** — the host isn't in `known_hosts` and
 Settings ▸ Connection ▸ accept new host keys is off. Connect a terminal session

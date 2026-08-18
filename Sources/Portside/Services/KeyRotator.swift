@@ -118,7 +118,7 @@ enum PrivateKeyReadiness: Equatable {
 ///
 /// ## Four ways a verify can pass while proving nothing
 ///
-/// All three were measured against real hosts, and each one, unnoticed, would
+/// All four were measured against real hosts, and each one, unnoticed, would
 /// have turned this feature into a way to lock yourself out of a fleet.
 ///
 /// 1. **Connection multiplexing.** Portside opens a `ControlMaster` for
@@ -155,7 +155,9 @@ enum KeyRotator {
     static let retireMarker = "PORTSIDE-RETIRE:"
 
     /// ssh prints `Server accepts key: <path> <ALGO> SHA256:<fp> <source>` at
-    /// `-v`. The fingerprint on *that* line is the proof.
+    /// `-v`. **Not proof on its own** — it reports an accepted *probe*, and the
+    /// signature can still be refused. `authenticatingFingerprint` reads these
+    /// in order to work out which key actually got in.
     static let acceptedKeyPrefix = "Server accepts key:"
 
     /// The fingerprint of the key that **actually authenticated**, if one did.
@@ -590,7 +592,7 @@ enum KeyRotator {
         d="$h/.ssh"; f="$d/authorized_keys"
         if [ ! -f "$f" ]; then printf '%s%s absent 0\\n' '\(retireMarker)' '\(nonce)'; exit 0; fi
         if ! \(newKeyIsInstalled); then
-          echo "portside: the new key is not present as an unconditional entry in $f; refusing to remove the old one" >&2
+          echo "portside: the new key is not present as a plain entry (no options) in $f; refusing to remove the old one" >&2
           exit 3
         fi
         n=$(awk -v T=\(oldAlgorithm) -v B=\(oldBlob) '

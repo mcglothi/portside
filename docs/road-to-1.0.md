@@ -242,8 +242,9 @@ The maintainer's call, not a readiness question.
   connection succeeding says nothing about which credential succeeded, and
   neither does a credential being accepted.*
 
-  The rule is enforced in three independent places — the sheet, the remote script
-  (which refuses unless the new key is active in the file it's rewriting), and a
+  One thing proves the rule — the login in stage two. Around it sit three safety
+  layers: the sheet, the remote script (which refuses unless a plain entry for
+  the new key is in the file it's rewriting), and a
   post-rewrite check that restores from the backup if the new key ever goes
   missing.
 
