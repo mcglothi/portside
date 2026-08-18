@@ -83,13 +83,17 @@ enum PrivateKeyReadiness: Equatable {
     case missing(String)
     /// Encrypted and not in the agent, so nothing here can use it.
     case locked(String)
+    /// The private key beside the `.pub` is a **different key**. Signing then
+    /// fails after the server has already accepted the probe, which reads as
+    /// the host rejecting the key when the fault is entirely local.
+    case mismatched(String)
 
     var isReady: Bool { self == .ready }
 
     var problem: String? {
         switch self {
         case .ready: return nil
-        case .missing(let why), .locked(let why): return why
+        case .missing(let why), .locked(let why), .mismatched(let why): return why
         }
     }
 }
@@ -149,51 +153,103 @@ enum KeyRotator {
     /// `-v`. The fingerprint on *that* line is the proof.
     static let acceptedKeyPrefix = "Server accepts key:"
 
-    /// Every `SHA256:…` fingerprint ssh reported as **accepted**.
+    /// The fingerprint of the key that **actually authenticated**, if one did.
     ///
-    /// ## Why this is a parser and not two `contains` calls
+    /// ## Why this reads the transcript in order
     ///
-    /// The first version asked whether some line contained both the prefix and
-    /// the fingerprint. Against a real host that reported an **uninstalled key
-    /// as verified** — the exact vacuous pass the whole design is built to
-    /// prevent — for a reason that has nothing to do with ssh:
+    /// `Server accepts key` does not mean the key authenticated. OpenSSH logs it
+    /// from `input_userauth_pk_ok` — the reply to an *unsigned probe* — and only
+    /// then signs and sends the real request. Signing can still fail, and ssh
+    /// moves on to the next identity when it does.
     ///
-    /// **`\r\n` is a single Swift `Character`.** It is one extended grapheme
-    /// cluster, so `split(separator: "\n")` finds *no* separator in CRLF text
-    /// and hands back the entire blob as one line. ssh's verbose logger writes
-    /// CRLF, so the per-line check quietly became a whole-output check — and the
-    /// output contains both strings: the prefix on the accepted key's line, and
-    /// the *rejected* key's fingerprint on its own `Offering public key:` line.
+    /// Measured against a fixture host, presenting one key's `.pub` beside
+    /// another's private key:
     ///
-    /// So the split is on `isNewline` (which does recognise the `\r\n` cluster),
-    /// and the fingerprint is read as a **field of the accepted line** rather
-    /// than sought anywhere within it.
-    static func acceptedFingerprints(in verboseOutput: String) -> [String] {
-        fingerprints(in: verboseOutput, onLinesContaining: acceptedKeyPrefix)
+    /// ```text
+    /// Offering public key: …/mismatch ED25519 SHA256:ZK52…
+    /// Server accepts key:  …/mismatch ED25519 SHA256:ZK52…
+    /// identity_sign: private key …/mismatch contents do not match public
+    /// Offering public key: …/id_testhost ED25519 SHA256:wr2F…
+    /// Server accepts key:  …/id_testhost ED25519 SHA256:wr2F…
+    /// Authenticated to 172.16.0.2 using "publickey".
+    /// ```
+    ///
+    /// The command ran and exited 0. A check asking "was our fingerprint
+    /// accepted anywhere" says yes, and is wrong: `ZK52` never authenticated
+    /// anything. So the rule is positional — **the key that authenticated is
+    /// the one on the last accept line before `Authenticated to`** — because any
+    /// key accepted earlier had its signature rejected, or authentication would
+    /// have finished there.
+    ///
+    /// ## Anchoring, not searching
+    ///
+    /// Lines are matched with `hasPrefix` after stripping ssh's `debugN: `
+    /// prefix, never with `contains`. ssh logs the command it sends
+    /// (`debug1: Sending command: …`), so a `contains` test can be satisfied by
+    /// text we handed it. Measured: a remote printing a fake accept line to its
+    /// own stderr never reaches the `-E` log at all, but the *command echo* does,
+    /// and anchoring is what separates the two.
+    static func authenticatingFingerprint(in verboseLog: String) -> String? {
+        var lastAccepted: String?
+        for raw in verboseLog.split(whereSeparator: \.isNewline) {
+            let line = stripDebugPrefix(String(raw))
+            if line.hasPrefix(acceptedKeyPrefix) {
+                lastAccepted = fingerprint(in: line)
+            } else if line.hasPrefix("Authenticated to ") {
+                // Only a public key counts. Falling through to a password would
+                // prove the password works, which is a different question.
+                return line.contains("\"publickey\"") ? lastAccepted : nil
+            }
+        }
+        return nil
     }
 
-    /// Every fingerprint ssh reported **offering**.
+    /// Every fingerprint ssh reported *accepting*, in order.
     ///
-    /// Offered-but-not-accepted is the server saying no to that specific key,
+    /// Not proof of authentication on its own — that is the whole point of
+    /// `authenticatingFingerprint`. It is kept for one narrow question: was this
+    /// key accepted at some point even though something else ultimately got in?
+    /// Yes means the host trusts the key and the *signature* failed, which is a
+    /// local fault; no means the host declined it.
+    static func acceptedFingerprints(in verboseLog: String) -> [String] {
+        verboseLog.split(whereSeparator: \.isNewline).compactMap { raw in
+            let line = stripDebugPrefix(String(raw))
+            guard line.hasPrefix(acceptedKeyPrefix) else { return nil }
+            return fingerprint(in: line)
+        }
+    }
+
+    /// Fingerprints ssh reported **offering**, in order.
+    ///
+    /// Offered-and-not-authenticated is the server declining that specific key,
     /// which is a more precise answer than "the connection failed" — and it
-    /// stays true on a host where some *other* identity then succeeds, which is
-    /// the normal case for an aliased host.
-    static func offeredFingerprints(in verboseOutput: String) -> [String] {
-        fingerprints(in: verboseOutput, onLinesContaining: offeredKeyPrefix)
+    /// stays true when some *other* identity then succeeds, the normal shape on
+    /// an aliased host.
+    static func offeredFingerprints(in verboseLog: String) -> [String] {
+        verboseLog.split(whereSeparator: \.isNewline).compactMap { raw in
+            let line = stripDebugPrefix(String(raw))
+            guard line.hasPrefix(offeredKeyPrefix) else { return nil }
+            return fingerprint(in: line)
+        }
     }
 
     static let offeredKeyPrefix = "Offering public key:"
 
-    private static func fingerprints(in verboseOutput: String,
-                                     onLinesContaining prefix: String) -> [String] {
-        verboseOutput
-            .split(whereSeparator: \.isNewline)
-            .filter { $0.contains(prefix) }
-            .compactMap { line in
-                line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                    .first { $0.hasPrefix("SHA256:") || $0.hasPrefix("MD5:") }
-                    .map(String.init)
-            }
+    /// `debug1: `, `debug2: `, … removed. Everything else is left alone.
+    private static func stripDebugPrefix(_ line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("debug") else { return trimmed }
+        guard let colon = trimmed.firstIndex(of: ":") else { return trimmed }
+        let level = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 5)..<colon]
+        guard !level.isEmpty, level.allSatisfy(\.isNumber) else { return trimmed }
+        return String(trimmed[trimmed.index(after: colon)...])
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func fingerprint(in line: String) -> String? {
+        line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .first { $0.hasPrefix("SHA256:") || $0.hasPrefix("MD5:") }
+            .map(String.init)
     }
 
     // MARK: - The key itself
@@ -224,9 +280,28 @@ enum KeyRotator {
         }
         if let result = try? await runner("/usr/bin/ssh-keygen", ["-y", "-f", path], nil, ""),
            result.status == 0 {
+            // **Exit status is not enough.** `ssh-keygen -y` succeeds whenever it
+            // can read the private key, and says nothing about the `.pub` sitting
+            // beside it. A stale or swapped `.pub` therefore passes, and the
+            // failure surfaces much later and in the wrong place: the server
+            // accepts the probe for the advertised key, signing fails because the
+            // private key is a different one, and every host reports "key not
+            // accepted" for a fault that is entirely local. Reproduced on a
+            // fixture host before this check existed.
+            let derived = PublicKey.parse(line: result.out, path: path, fingerprint: "", bits: nil)
+            guard let derived else {
+                return .mismatched("could not read a public key out of \(path)")
+            }
+            guard derived.identityFields == key.identityFields else {
+                return .mismatched(
+                    "\((path as NSString).lastPathComponent) is a different key from "
+                    + "\(key.filename) — the private key and the .pub beside it do not match, so "
+                    + "every host would report this key as rejected when the problem is here")
+            }
             return .ready
         }
-        // Encrypted, or unreadable. The agent is the remaining way to use it.
+        // Encrypted, or unreadable. The agent is the remaining way to use it,
+        // and it identifies keys by fingerprint rather than by path.
         if !key.fingerprint.isEmpty,
            let listed = try? await runner("/usr/bin/ssh-add", ["-l"], nil, ""),
            listed.out.contains(key.fingerprint) {
@@ -246,13 +321,21 @@ enum KeyRotator {
     /// three ways this passes vacuously without them.
     static func verifyArguments(
         for entry: SessionEntry, privateKeyPath: String,
+        logFile: String,
         defaults: ConnectionDefaults = ConnectionDefaults(),
         account: String? = nil
     ) -> [String] {
         var args = [
             // Verbose, because the answer this function needs — which key the
-            // server accepted — exists nowhere else.
+            // server accepted — exists nowhere else. `-E` alone logs at default
+            // verbosity and does not include the authentication trace; the two
+            // flags are only useful together.
             "-v",
+            // **The transcript goes to a private file, not to stderr.** ssh's
+            // stderr is shared with the remote host's, and a host can print a
+            // convincing `Server accepts key` line of its own. Reading the
+            // decision out of a channel the host can write to is not evidence.
+            "-E", logFile,
             // Key-only, and never a prompt. A verify that fell back to a
             // password would report the *password* working.
             "-o", "PreferredAuthentications=publickey",
@@ -287,48 +370,87 @@ enum KeyRotator {
 
     /// Reads one completed verify run.
     ///
-    /// Requires **both** proofs: the marker (a session ran) and the fingerprint
-    /// on ssh's `Server accepts key` line (that key authenticated). Missing
-    /// either is a failure, never a pass.
+    /// `transcript` is ssh's own `-E` log, which is a **different channel** from
+    /// `err`. Both used to be the same pipe, and a host can print whatever it
+    /// likes to its stderr — including a convincing `Server accepts key` line.
+    /// Keeping them apart is what makes the transcript evidence rather than
+    /// hearsay.
+    ///
+    /// Requires two independent proofs: the key that *authenticated* is ours,
+    /// and a session actually ran. Missing either is a failure, never a pass.
     static func verifyOutcome(
-        status: Int32, out: String, err: String, nonce: String, fingerprint: String
+        status: Int32, out: String, err: String, transcript: String,
+        nonce: String, fingerprint: String
     ) -> KeyVerifyOutcome {
         guard !fingerprint.isEmpty else {
             return .failed("the new key has no fingerprint, so there is no way to tell which "
                            + "key a host accepted")
         }
-        let acceptedThisKey = acceptedFingerprints(in: err).contains(fingerprint)
-        let offeredThisKey = offeredFingerprints(in: err).contains(fingerprint)
+        let authenticated = authenticatingFingerprint(in: transcript)
+        let offeredOurs = offeredFingerprints(in: transcript).contains(fingerprint)
         let ranSomething = out.contains("\(verifyMarker)\(nonce) ok")
 
-        if acceptedThisKey && ranSomething { return .verified }
-
-        if acceptedThisKey {
-            return .failed("the host accepted the key but the session did not run — "
-                           + KeyDistributor.failureReason(status: status, err: err))
+        if authenticated == fingerprint {
+            guard ranSomething else {
+                // The key works; the session is what failed — a nologin shell, a
+                // ForceCommand, a full disk. Report the REMOTE's words, not the
+                // transcript's: the transcript's first line is ssh's version
+                // banner, which `failureReason` will happily return when nothing
+                // in it looks like an error.
+                // Only append a reason when the remote actually gave one.
+                // `failureReason` falls back to describing the exit code, and
+                // "the host rejected the change" is nonsense here — a verify
+                // changes nothing.
+                let remote = err.trimmingCharacters(in: .whitespacesAndNewlines)
+                let why = remote.isEmpty ? "" : KeyDistributor.failureReason(status: status, err: err)
+                return .failed("the host authenticated the key but the session did not run"
+                               + (why.isEmpty ? "" : " — \(why)"))
+            }
+            return .verified
         }
 
-        // Offered and not accepted is a direct statement by the server about
-        // *this* key, and stays true whether or not some other key then got in —
-        // which is the normal shape on an aliased host, where `~/.ssh/config`
-        // supplies a second identity that `IdentitiesOnly` still permits.
-        if offeredThisKey {
+        // Was this key accepted at *any* point, even though something else
+        // ultimately authenticated? That distinguishes two very different
+        // situations which look identical if you only ask "did it authenticate".
+        let probeAccepted = acceptedFingerprints(in: transcript).contains(fingerprint)
+
+        if probeAccepted {
+            // The host DOES trust this key — it accepted the probe — and the
+            // signature was still rejected. That is a local fault, not a host
+            // one: the private key beside the `.pub` is a different key.
+            // `readiness` catches this before any host is contacted; reaching
+            // here means something changed underneath, so say which way round it
+            // is rather than blaming the host.
+            return .failed("the host accepted this key but the signature was rejected — the "
+                           + "private key beside \(fingerprint) is a different key")
+        }
+
+        if offeredOurs {
+            // Offered and never accepted is the server declining this specific
+            // key: a definite negative, and the expected answer before the key
+            // has been added. True whether or not some other identity then got
+            // in, which is the normal shape on an aliased host.
             return .rejected("the host would not authenticate this key")
         }
 
-        let lower = err.lowercased()
+        if let authenticated {
+            // Something authenticated and this key was never even offered — so
+            // nothing here speaks to it either way.
+            return .failed("connected using a different key (\(authenticated)) without ever "
+                           + "offering this one, so this proves nothing about \(fingerprint)")
+        }
+
+        let lower = transcript.lowercased() + " " + err.lowercased()
         if lower.contains("permission denied") || lower.contains("no supported authentication") {
             return .rejected("the host would not authenticate this key")
         }
-
-        // The key was never even put to the host. A session that ran anyway is
-        // the vacuous pass this function exists to refuse — most likely a
-        // multiplexed connection, which authenticates nothing at all.
         if ranSomething {
+            // A session ran without this key ever being offered — most likely a
+            // multiplexed connection, which authenticates nothing at all.
             return .failed("connected without ever offering the new key, so this proves "
                            + "nothing — most likely a multiplexed session")
         }
-        return .failed(KeyDistributor.failureReason(status: status, err: err))
+        return .failed(KeyDistributor.failureReason(status: status, err: transcript.isEmpty ? err : transcript))
     }
 
     /// Proves one host accepts `key`. Never sends a password: a verify is
@@ -341,18 +463,41 @@ enum KeyRotator {
         runner: KeyDistributor.Runner = KeyDistributor.defaultRunner
     ) async -> KeyVerifyOutcome {
         let nonce = KeyDistributor.newNonce()
+        guard let log = makePrivateLogFile() else {
+            return .failed("could not create a private file for ssh's transcript")
+        }
+        defer { try? FileManager.default.removeItem(at: log.deletingLastPathComponent()) }
+
         let args = verifyArguments(for: entry, privateKeyPath: privateKeyPath(for: key),
-                                   defaults: defaults, account: account)
+                                   logFile: log.path, defaults: defaults, account: account)
             + [verifyCommand(nonce: nonce)]
         do {
             let result = try await runner("/usr/bin/ssh", args, nil, "")
+            let transcript = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
             return verifyOutcome(status: result.status, out: result.out, err: result.err,
-                                 nonce: nonce, fingerprint: key.fingerprint)
+                                 transcript: transcript, nonce: nonce,
+                                 fingerprint: key.fingerprint)
         } catch is CancellationError {
             return .skipped("cancelled")
         } catch {
             return .failed(error.localizedDescription)
         }
+    }
+
+    /// A 0700 directory holding the transcript, mirroring `CredentialStore`'s
+    /// askpass handling. The transcript names hosts and key paths, so it is not
+    /// something to leave in a world-readable temp file.
+    static func makePrivateLogFile() -> URL? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-verify-" + UUID().uuidString)
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        } catch {
+            return nil
+        }
+        return dir.appendingPathComponent("ssh.log")
     }
 
     /// Verifies every host in turn.

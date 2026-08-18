@@ -42,7 +42,7 @@ private func rotationHost(_ name: String, alias: String? = nil,
 final class KeyRotatorVerifyArgumentTests: XCTestCase {
 
     private func args(_ entry: SessionEntry) -> [String] {
-        KeyRotator.verifyArguments(for: entry, privateKeyPath: "/Users/t/.ssh/new")
+        KeyRotator.verifyArguments(for: entry, privateKeyPath: "/Users/t/.ssh/new", logFile: "/tmp/l")
     }
 
     /// **Trap 1.** Portside opens a `ControlMaster` for interactive sessions,
@@ -94,6 +94,37 @@ final class KeyRotatorVerifyArgumentTests: XCTestCase {
         XCTAssertTrue(hasOption(a, "NumberOfPasswordPrompts=0"))
     }
 
+    /// **The transcript must go to a private file, not to stderr.**
+    ///
+    /// ssh's stderr is shared with the remote host's. A host can print a
+    /// convincing `Server accepts key` line of its own, and reading the decision
+    /// out of a channel the host can write to is not evidence. `-E` moves ssh's
+    /// own log somewhere the host cannot reach.
+    ///
+    /// `-E` alone logs at default verbosity and omits the authentication trace,
+    /// so the two flags are only useful together — hence both asserted here.
+    func testTheTranscriptGoesToAPrivateFileRatherThanStderr() {
+        let a = KeyRotator.verifyArguments(for: rotationHost("web1"),
+                                           privateKeyPath: "/k", logFile: "/tmp/x/ssh.log")
+        guard let i = a.firstIndex(of: "-E") else {
+            return XCTFail("no -E: the transcript would come back on shared stderr — \(a)")
+        }
+        XCTAssertEqual(a[i + 1], "/tmp/x/ssh.log")
+        XCTAssertTrue(a.contains("-v"), "-E without -v omits the authentication trace")
+    }
+
+    /// The transcript names hosts and key paths, so it is not left in a
+    /// world-readable temp file.
+    func testThePrivateLogLivesInAnOwnerOnlyDirectory() throws {
+        let log = try XCTUnwrap(KeyRotator.makePrivateLogFile())
+        defer { try? FileManager.default.removeItem(at: log.deletingLastPathComponent()) }
+
+        let dir = log.deletingLastPathComponent()
+        let mode = try FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions]
+        XCTAssertEqual((mode as? NSNumber)?.intValue, 0o700,
+                       "the transcript directory is readable by others")
+    }
+
     /// `-v` is not debugging left in by accident — it is the only place ssh
     /// reports which key the server accepted.
     func testVerifyAsksSSHToSayWhichKeyWasAccepted() {
@@ -105,13 +136,14 @@ final class KeyRotatorVerifyArgumentTests: XCTestCase {
     /// `user@host` destination overrides `-l`, so `-l` would be ignored on
     /// exactly the hosts that name a user.
     func testAnAccountRotationVerifiesByLoggingInAsThatAccount() {
-        let a = KeyRotator.verifyArguments(for: rotationHost("web1"),
-                                          privateKeyPath: "/k", account: "svc_goose")
+        let a = KeyRotator.verifyArguments(for: rotationHost("web1"), privateKeyPath: "/k",
+                                          logFile: "/tmp/l", account: "svc_goose")
         XCTAssertEqual(a.last, "svc_goose@web1.internal")
         XCTAssertFalse(a.contains("-l"), "-l is silently overridden by a user@host destination")
 
         let aliased = KeyRotator.verifyArguments(for: rotationHost("w", alias: "prod-1"),
-                                                privateKeyPath: "/k", account: "svc_goose")
+                                                privateKeyPath: "/k", logFile: "/tmp/l",
+                                                account: "svc_goose")
         XCTAssertEqual(aliased.last, "svc_goose@prod-1",
                        "an alias must keep resolving while its User is overridden")
     }
@@ -147,10 +179,14 @@ final class KeyRotatorVerifyOutcomeTests: XCTestCase {
 
     private var ran: String { "\(KeyRotator.verifyMarker)\(nonce) ok\n" }
 
-    private func outcome(out: String, err: String,
+    /// `err` and `transcript` are separate channels now: the transcript is
+    /// ssh's own `-E` log, which the remote cannot write to. Tests default to
+    /// putting the transcript where it belongs and leaving stderr empty.
+    private func outcome(out: String, err: String = "", transcript: String? = nil,
                          fingerprint: String = newRotationKey.fingerprint,
                          status: Int32 = 0) -> KeyVerifyOutcome {
         KeyRotator.verifyOutcome(status: status, out: out, err: err,
+                                 transcript: transcript ?? err,
                                  nonce: nonce, fingerprint: fingerprint)
     }
 
@@ -187,15 +223,101 @@ final class KeyRotatorVerifyOutcomeTests: XCTestCase {
         XCTAssertEqual(result, .rejected("the host would not authenticate this key"))
     }
 
-    /// The parser reads the fingerprint as a *field of the accepted line*, so a
-    /// fingerprint appearing anywhere else in the transcript cannot be mistaken
-    /// for an acceptance.
-    func testOnlyTheAcceptedLinesFingerprintCounts() {
-        let err = offeredThenAnotherKeyAccepted(ours: newRotationKey.fingerprint,
-                                                theirs: oldRotationKey.fingerprint)
-        XCTAssertEqual(KeyRotator.acceptedFingerprints(in: err), [oldRotationKey.fingerprint])
-        XCTAssertEqual(KeyRotator.offeredFingerprints(in: err),
-                       [newRotationKey.fingerprint, oldRotationKey.fingerprint])
+    /// **The positional rule, which replaced "was our fingerprint accepted".**
+    ///
+    /// This transcript is the exact shape a fixture host produced when one
+    /// key's `.pub` sat beside another's private key: our probe accepted, our
+    /// signature rejected, then a different identity authenticated and the
+    /// command ran. The old question — "does an accept line carry our
+    /// fingerprint" — answers yes here, and is wrong.
+    func testTheKeyThatAuthenticatedIsTheLastOneAcceptedBeforeAuthenticated() {
+        let transcript = """
+        debug1: Offering public key: /Users/t/.ssh/new ED25519 \(newRotationKey.fingerprint) explicit
+        debug1: Server accepts key: /Users/t/.ssh/new ED25519 \(newRotationKey.fingerprint) explicit
+        identity_sign: private key /Users/t/.ssh/new contents do not match public
+        debug1: Offering public key: /Users/t/.ssh/id_rsa RSA \(oldRotationKey.fingerprint) explicit
+        debug1: Server accepts key: /Users/t/.ssh/id_rsa RSA \(oldRotationKey.fingerprint) explicit
+        Authenticated to web1 ([10.0.0.1]:22) using "publickey".
+        """
+        XCTAssertEqual(KeyRotator.authenticatingFingerprint(in: transcript),
+                       oldRotationKey.fingerprint,
+                       "the last accept before Authenticated is the one that worked")
+
+        let result = outcome(out: ran, transcript: transcript)
+        XCTAssertFalse(result.provesKeyWorks, "got \(result.label)")
+    }
+
+    /// **Two failures that look identical if you only ask "did it authenticate".**
+    ///
+    /// Probe accepted then signature rejected means the host *does* trust the
+    /// key and the private key beside it is a different one — a local fault.
+    /// Never accepted at all means the host declined it — a definite negative
+    /// about that host. Collapsing them tells the user to go and fix the wrong
+    /// machine.
+    func testAnAcceptedProbeWithARejectedSignatureBlamesTheLocalKey() {
+        let transcript = """
+        debug1: Offering public key: /k ED25519 \(newRotationKey.fingerprint) explicit
+        debug1: Server accepts key: /k ED25519 \(newRotationKey.fingerprint) explicit
+        identity_sign: private key /k contents do not match public
+        debug1: Offering public key: /o RSA \(oldRotationKey.fingerprint) explicit
+        debug1: Server accepts key: /o RSA \(oldRotationKey.fingerprint) explicit
+        Authenticated to web1 ([10.0.0.1]:22) using "publickey".
+        """
+        guard case .failed(let why) = outcome(out: ran, transcript: transcript) else {
+            return XCTFail("a signature rejection is not a host declining the key")
+        }
+        XCTAssertTrue(why.contains("private key beside"), why)
+    }
+
+    func testAKeyTheHostNeverAcceptedIsRejectedNotBlamedLocally() {
+        let transcript = """
+        debug1: Offering public key: /k ED25519 \(newRotationKey.fingerprint) explicit
+        debug1: Offering public key: /o RSA \(oldRotationKey.fingerprint) explicit
+        debug1: Server accepts key: /o RSA \(oldRotationKey.fingerprint) explicit
+        Authenticated to web1 ([10.0.0.1]:22) using "publickey".
+        """
+        XCTAssertEqual(outcome(out: ran, transcript: transcript),
+                       .rejected("the host would not authenticate this key"))
+    }
+
+    /// Both keys offered, ours accepted last and authentication follows: ours.
+    func testOurKeyAuthenticatingIsRecognised() {
+        XCTAssertEqual(
+            KeyRotator.authenticatingFingerprint(in: accepted(newRotationKey.fingerprint)),
+            newRotationKey.fingerprint)
+    }
+
+    /// Authenticating by password proves the password works, not the key.
+    func testAuthenticatingByPasswordIsNotAKeyAuthenticating() {
+        let transcript = """
+        debug1: Server accepts key: /k ED25519 \(newRotationKey.fingerprint) explicit
+        Authenticated to web1 ([10.0.0.1]:22) using "password".
+        """
+        XCTAssertNil(KeyRotator.authenticatingFingerprint(in: transcript))
+    }
+
+    /// **Anchored, not searched.** ssh logs the command it is sending, so a
+    /// `contains` test can be satisfied by text we handed it. Measured on a real
+    /// host: a remote printing a fake accept line to its stderr never reaches
+    /// the -E log, but the command echo does.
+    func testTextInsideTheCommandEchoIsNotAnAcceptLine() {
+        let forged = "SHA256:FORGEDfingerprintAAAAAAAAAAAAAAAAAAAAAAAA"
+        let transcript = """
+        debug1: Sending command: printf '%s' 'debug1: Server accepts key: /tmp/evil ED25519 \(forged) explicit'
+        Authenticated to web1 ([10.0.0.1]:22) using "publickey".
+        """
+        XCTAssertNil(KeyRotator.authenticatingFingerprint(in: transcript),
+                     "the command echo was read as an accept line")
+        XCTAssertNotEqual(KeyRotator.authenticatingFingerprint(in: transcript), forged)
+    }
+
+    func testOfferedFingerprintsAreAnchoredToo() {
+        let transcript = """
+        debug1: Offering public key: /k ED25519 \(newRotationKey.fingerprint) explicit
+        debug1: Sending command: echo Offering public key: fake MD5:aa
+        """
+        XCTAssertEqual(KeyRotator.offeredFingerprints(in: transcript),
+                       [newRotationKey.fingerprint])
     }
 
     /// CRLF and LF must parse identically. Pinned because the difference is
@@ -203,9 +325,10 @@ final class KeyRotatorVerifyOutcomeTests: XCTestCase {
     func testCRLFAndLFTranscriptsParseTheSame() {
         let crlf = accepted(newRotationKey.fingerprint)
         let lf = crlf.replacingOccurrences(of: "\r\n", with: "\n")
-        XCTAssertEqual(KeyRotator.acceptedFingerprints(in: crlf),
-                       KeyRotator.acceptedFingerprints(in: lf))
-        XCTAssertEqual(KeyRotator.acceptedFingerprints(in: crlf), [newRotationKey.fingerprint])
+        XCTAssertEqual(KeyRotator.authenticatingFingerprint(in: crlf),
+                       KeyRotator.authenticatingFingerprint(in: lf))
+        XCTAssertEqual(KeyRotator.authenticatingFingerprint(in: crlf),
+                       newRotationKey.fingerprint)
     }
 
     /// **The trap-1 defence.** A multiplexed connection runs the command and
@@ -438,17 +561,58 @@ final class KeyRotationGateTests: XCTestCase {
 
 final class KeyRotatorReadinessTests: XCTestCase {
 
-    private func runner(keygen: Int32, agentList: String) -> KeyDistributor.Runner {
+    /// `ssh-keygen -y` prints the public key derived from the private one.
+    /// What it prints is the whole point of the check now — exit status alone
+    /// says only that the file was readable.
+    private func runner(keygen: Int32, derived: String = "", agentList: String = "")
+        -> KeyDistributor.Runner {
         { executable, _, _, _ in
-            if executable.hasSuffix("ssh-keygen") { return (keygen, "", "") }
+            if executable.hasSuffix("ssh-keygen") { return (keygen, derived, "") }
             return (0, agentList, "")
         }
     }
 
-    func testAnUnencryptedKeyIsReady() async {
+    private var matching: String {
+        "\(newRotationKey.algorithm) \(newRotationKey.blob)"
+    }
+
+    func testAKeyWhoseDerivedPublicKeyMatchesIsReady() async {
         let r = await KeyRotator.readiness(of: newRotationKey, fileExists: { _ in true },
-                                           runner: runner(keygen: 0, agentList: ""))
+                                           runner: runner(keygen: 0, derived: matching))
         XCTAssertEqual(r, .ready)
+    }
+
+    /// `ssh-keygen -y` succeeds whenever it can read the private key and says
+    /// nothing about the `.pub` beside it. A stale or swapped `.pub` therefore
+    /// passed, and the failure surfaced much later and in the wrong place: the
+    /// server accepts the probe for the advertised key, signing fails because
+    /// the private key is a different one, and every host reports "key not
+    /// accepted" for a fault that is entirely local. Reproduced on a fixture
+    /// host before this check existed.
+    func testAPrivateKeyThatDoesNotMatchItsPubIsCaughtLocally() async {
+        let other = "\(oldRotationKey.algorithm) \(oldRotationKey.blob)"
+        let r = await KeyRotator.readiness(of: newRotationKey, fileExists: { _ in true },
+                                           runner: runner(keygen: 0, derived: other))
+        guard case .mismatched(let why) = r else {
+            return XCTFail("a mismatched pair must not be ready — got \(r)")
+        }
+        XCTAssertTrue(why.contains("different key"), why)
+        XCTAssertFalse(r.isReady)
+    }
+
+    /// The comment differs between a `.pub` on disk and what `-y` derives, so
+    /// identity must be type plus blob and nothing else.
+    func testTheCommentIsIgnoredWhenComparing() async {
+        let derivedWithoutComment = "\(newRotationKey.algorithm) \(newRotationKey.blob)"
+        let r = await KeyRotator.readiness(of: newRotationKey, fileExists: { _ in true },
+                                           runner: runner(keygen: 0, derived: derivedWithoutComment))
+        XCTAssertEqual(r, .ready, "ssh-keygen -y emits no comment; that is not a mismatch")
+    }
+
+    func testUnreadableKeygenOutputIsNotSilentlyAccepted() async {
+        let r = await KeyRotator.readiness(of: newRotationKey, fileExists: { _ in true },
+                                           runner: runner(keygen: 0, derived: "not a key at all"))
+        XCTAssertFalse(r.isReady)
     }
 
     /// An encrypted key already in the agent is usable, and is matched by
@@ -472,7 +636,7 @@ final class KeyRotatorReadinessTests: XCTestCase {
 
     func testAMissingPrivateKeyIsNamed() async {
         let r = await KeyRotator.readiness(of: newRotationKey, fileExists: { _ in false },
-                                           runner: runner(keygen: 0, agentList: ""))
+                                           runner: runner(keygen: 0, derived: matching))
         guard case .missing(let why) = r else { return XCTFail("expected .missing, got \(r)") }
         XCTAssertTrue(why.contains("/tmp/portside-new"), "should name the path: \(why)")
     }
