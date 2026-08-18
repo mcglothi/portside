@@ -31,20 +31,20 @@ command instead of requesting a forward, so it needs no such concession.
 
 | Account | State | Guards |
 |---|---|---|
-| `pstest_nohome` | passwd entry, home missing | the bootstrap path |
+| `pstest_nohome` | passwd entry, home missing | must be *reported*, never created — Portside stopped creating homes in 0.23.2 |
 | `pstest_nossh` | home, no `~/.ssh` | the account creates it |
 | `pstest_normal` | ordinary | idempotency, retire |
 | `pstest_othergroup` | `.ssh` in a non-default group | an unconditional `chown u:u` would move it — found on a real host |
 | `pstest_rootssh` | `.ssh` owned by root | must be refused, never chowned |
-| `pstest_symlinkssh` | `.ssh` is a symlink | the escalation route |
+| `pstest_symlinkssh` | `.ssh` is a symlink | the old root-era escalation route; now harmless, kept as a regression state |
 | `pstest_symlinkkeys` | `authorized_keys` is a symlink | follow, don't replace |
 | `pstest_nonewline` | no trailing newline | appending welds onto the last entry |
 | `pstest_crlf` | CRLF endings | the line-ending class |
 | `pstest_keyincomment` | a key inside a comment *and* an option | reporting these as installed is a silent no-op; deleting them removes real access |
 | `pstest_readonly` | `.ssh` read-only | failure path |
 | `pstest_nologin` | `/sbin/nologin` shell | the key-only service account |
-| `pstest_oddhome` | home outside `/home` | passwd resolution, ancestor walk |
-| `pstest_unsafeparent` | home parent world-writable | bootstrap must refuse |
+| `pstest_oddhome` | home outside `/home` | `sudo -H` must resolve it; no `/home/<user>` assumption anywhere |
+| `pstest_unsafeparent` | home parent world-writable | historical: the case that proved shell-only bootstrap unsound |
 | `pstest_manykeys` | 501 keys | volume |
 | **`pstest_strictmodes`** | **key installed, `.ssh` is 0777** | **sshd refuses it — StrictModes** |
 | **`pstest_elsewherekeys`** | **key installed, `AuthorizedKeysFile` points elsewhere** | **sshd never reads it** |
@@ -59,8 +59,9 @@ session still cannot run, which is the "accepted but no session" branch.
 
 ## Login shells are a separate portability boundary
 
-`ssh host '<command>'` is parsed by the **target user's login shell**, not by
-`sh`. That is a different question from "which `/bin/sh` does this host have",
+`ssh host '<command>'` is parsed by the **SSH login account's shell**, not by
+`sh` — and not by the *target* account's shell either. Copy-to-account involves
+two users, and saying "the target user's shell" hides which one decides. That is a different question from "which `/bin/sh` does this host have",
 and nothing exercised it until `pstest_zsh`, `pstest_tcsh` and `pstest_fish`
 existed.
 
@@ -73,9 +74,12 @@ Sending the real key-push script the way ssh sends it:
 | **tcsh** | `else: endif not found.` |
 | **fish** | parse error |
 
-So the push path does not work for a user whose login shell is tcsh or fish.
-This is pre-existing in 0.23.0 and 0.23.1, not something the 0.23.2 work
-introduced.
+So the push path does not work when the **login** account's shell is tcsh or
+fish. Both forms are affected: the raw script above, and the cross-account
+wrapper, which fails earlier still — tcsh answers `Illegal variable name` and
+fish `Unsupported use of '='` at the `__pk=` assignment, before `sudo` is ever
+reached. Pre-existing in 0.23.0 and 0.23.1, and it fails *before* the result
+marker, so it reports failure rather than falsely claiming a key was installed.
 
 Measurements toward a fix, so the next attempt starts from evidence:
 
@@ -91,6 +95,20 @@ Measurements toward a fix, so the next attempt starts from evidence:
   different answer for password delivery.
 - `sh -c "$(...)"` is not an option: `$(...)` is not portable to csh, and fish
   spells command substitution differently again.
+
+The shape that does work, tested by Codex through real tcsh, fish and zsh login
+accounts on the Debian fixture, keeps the outer command fixed and passes the
+payload as an argument:
+
+```sh
+/bin/sh -c '{ printf %s "$1" | base64 -d 2>/dev/null || printf %s "$1" | base64 -D 2>/dev/null; } | /bin/sh' portside BASE64
+```
+
+The account form puts the same fixed decoder *after* `sudo`, which resolves the
+stdin conflict: `sudo -S` keeps ssh's stdin for the password while the inner
+pipeline supplies the script's stdin. Before landing it: password-required and
+NOPASSWD sudo, hostile account and key data, Debian/Alpine/macOS `base64`
+variants, and all four login shells.
 
 ## Cross-distro findings so far
 

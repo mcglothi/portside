@@ -122,10 +122,17 @@ enum KeyDistributor {
     /// properly needs fd-relative (`openat`) semantics, which is a helper
     /// binary and a platform threat model, not a line of `find`.
     ///
-    /// So Portside no longer creates homes. It requires one that already
-    /// exists and belongs to the account, and does everything **as** that
+    /// So Portside no longer creates homes. It requires one that already exists
+    /// and is **usable by** the account, and does everything **as** that
     /// account — which removes the symlink question, the ownership repair and
     /// the nested escalation together, rather than guarding each one.
+    ///
+    /// Note the property precisely: the script checks that the home *exists*
+    /// and then lets the account's own permissions decide. It does not prove
+    /// ownership, and saying so would claim more than the code does. What is
+    /// guaranteed is that every write happens as the target account — which is
+    /// the property that matters, and a stronger one than an ownership check
+    /// could give, since a check can be raced and an identity cannot.
     /// An `awk` program that finds a key at its **real position** in an
     /// `authorized_keys` line, and the predicate built on it.
     ///

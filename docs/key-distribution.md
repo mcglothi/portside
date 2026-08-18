@@ -100,29 +100,34 @@ where `[user@]hostname` decides both who authenticates and whose
 `authorized_keys` is written.
 
 Fill it in and **sudo is required on every selected host**. Portside still logs
-in as each host's own user and runs:
+in as each host's own user, then escalates once — straight to the account:
 
 ```sh
-sudo sh -c '<script, targeting svc_ansible>'
+sudo -S -p '' -H -u svc_ansible sh -c '<script>'
 ```
 
 This is the only honest way to reach an account you *cannot* log in as — a
-key-only service account being bootstrapped is exactly that case, and it is why
-Ansible's `authorized_key` module pairs its `user:` parameter with `become`.
+key-only service account is exactly that case, and it is why Ansible's
+`authorized_key` module pairs its `user:` parameter with `become`.
 
-- It runs **as root**, and hands back what it creates. `sudo -u svc_ansible`
-  looks tidier and cannot bootstrap: the account can't create its own home
-  under `/home`, and a `~/.ssh` made earlier by a bare `sudo mkdir` is
-  root-owned and closed to it. Both are the normal state of an account being
-  set up, which is the case this exists for. Root plus an explicit `chown` is
-  what Ansible does with `become`, for the same reason.
-- The target's home comes from the host's passwd database (`getent`, falling
-  back to `/etc/passwd`) — not from assuming `/home/<user>`, which is wrong on
-  plenty of hosts.
-- Everything it creates — the home if absent, `~/.ssh`, `authorized_keys`, the
-  backup — is chowned to the account. Root-owned files in someone's `~/.ssh`
-  are silent breakage: sshd's `StrictModes` refuses them and the key simply
-  never works. An **existing** file's ownership is left alone.
+- It runs **as the account, never as root**. 0.23.0 and 0.23.1 ran the whole
+  thing as root so it could create a missing home, and that was a mistake: root
+  working inside a directory the account controls follows wherever that account
+  points `~/.ssh`, `authorized_keys` or the backup file. Validating the path
+  first cannot fix it — ownership and permission bits do not prove a directory
+  has no other writer, because an access control list can grant write to
+  somebody while the permissions still read `0755 root root`.
+- `-H` sets `HOME` from the host's passwd database, so the script needs no
+  lookup of its own and never assumes `/home/<user>`.
+- **Nothing is chowned.** Files created by the account are already owned by it,
+  which is what `StrictModes` wants. That also means a service account whose
+  `~/.ssh` belongs to a non-default group keeps it.
+- **The account's home must already exist.** Portside will not create it.
+  Creating a home safely requires guarantees a shell script cannot make, so
+  that is a separate piece of work rather than something this does on the side.
+  A missing home is reported and nothing is written.
+- A `~/.ssh` the account cannot write simply fails, because the system refuses
+  it — not because Portside remembered to check.
 - An unknown account fails with `portside: unknown user <name>` rather than
   writing somewhere unexpected.
 - **The sudo password is the same saved password Portside logs in with**, sent on
@@ -207,10 +212,11 @@ therefore a *test case* — it should fail cleanly and by name — rather than a
 blocker. The reversible parts use a throwaway key that is removed afterwards
 even if an assertion fails.
 
-It deliberately does **not** delete a home directory to test bootstrapping. That
-path is covered with stubs in `KeyDistributorBootstrapTests`, and a populated
-service-account home is not something a test suite should remove to prove a
-point.
+It deliberately does **not** delete a home directory. Portside no longer creates
+one, and a populated service-account home is not something a test suite should
+remove to prove a point. Accounts in awkward states — a missing home, a
+root-owned `~/.ssh`, a key quoted inside another key's comment — live in
+disposable containers instead; see `Scripts/testhost/`.
 
 ## Troubleshooting
 
