@@ -35,6 +35,12 @@ if [ -z "${PORTSIDE_TESTHOST_SSH:-}" ]; then
     exit 2
 fi
 HOST=$PORTSIDE_TESTHOST_SSH
+case "$HOST" in
+    *[!A-Za-z0-9._-]*)
+        echo "PORTSIDE_TESTHOST_SSH must be a simple SSH host or alias" >&2
+        exit 2
+        ;;
+esac
 
 # Every docker call goes through here. `sudo -n` because the TrueNAS ssh user is
 # not in the docker group; -n so a missing sudo rule fails instead of hanging.
@@ -123,7 +129,7 @@ authorize() {  # authorize <user> — the ordinary, correct arrangement
     chown -R "$u" "$h/.ssh"
 }
 
-# 1. passwd entry, home does NOT exist — the bootstrap path.
+# 1. passwd entry, home does NOT exist — report it; never create it.
 mk pstest_nohome
 rm -rf /home/pstest_nohome
 
@@ -134,20 +140,20 @@ mk pstest_nossh
 mk pstest_normal
 authorize pstest_normal
 
-# 4. ~/.ssh owned with a NON-DEFAULT group. Found on a real host; an
-#    unconditional `chown u:u` would silently move it.
+# 4. ~/.ssh owned with a NON-DEFAULT group. Found on a real host; direct
+#    account execution must leave it alone.
 mk pstest_othergroup
 groupadd -f pstest_agents 2>/dev/null || addgroup pstest_agents 2>/dev/null || true
 authorize pstest_othergroup
 chown -R pstest_othergroup:pstest_agents /home/pstest_othergroup/.ssh
 
-# 5. ~/.ssh owned by ROOT — must be refused, never chowned out from under.
+# 5. ~/.ssh owned by ROOT — the target account cannot write it, so this fails.
 mk pstest_rootssh
 mkdir -p /home/pstest_rootssh/.ssh
 chmod 700 /home/pstest_rootssh/.ssh
 chown root:root /home/pstest_rootssh/.ssh
 
-# 6. ~/.ssh is a SYMLINK the account controls — the escalation route.
+# 6. ~/.ssh is a SYMLINK the account controls — harmless when work runs as it.
 mk pstest_symlinkssh
 rm -rf /home/pstest_symlinkssh/.ssh
 mkdir -p /tmp/pstest_elsewhere
@@ -198,15 +204,15 @@ chmod 500 "$h/.ssh"
 mk pstest_nologin /sbin/nologin
 authorize pstest_nologin
 
-# 13. home on a NON-STANDARD path — passwd resolution, and the ancestor walk.
+# 13. home on a NON-STANDARD path — sudo -H must select it.
 mkdir -p /srv/apps
 mk pstest_oddhome
 usermod -d /srv/apps/oddhome pstest_oddhome 2>/dev/null || true
 mkdir -p /srv/apps/oddhome
 chown pstest_oddhome /srv/apps/oddhome
 
-# 14. home whose PARENT is group/world-writable — bootstrap must refuse rather
-#     than create through a directory an unprivileged account can swap.
+# 14. home whose PARENT is group/world-writable — historical bootstrap hazard;
+#     the current code refuses because the home itself does not exist.
 mkdir -p /srv/unsafe
 chmod 777 /srv/unsafe
 mk pstest_unsafeparent
@@ -274,7 +280,15 @@ PROVISION
 
 cmd_up() {
     keyfile="$OUT_DIR/id_testhost"
+    umask 077
     mkdir -p "$OUT_DIR"
+    fixture_id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    [ "$(printf %s "$fixture_id" | wc -c | tr -d ' ')" -eq 32 ] || {
+        echo "could not generate fixture identity" >&2
+        exit 1
+    }
+    printf '%s\n' "$fixture_id" > "$OUT_DIR/fixture_id"
+    chmod 600 "$OUT_DIR/fixture_id"
     if [ ! -f "$keyfile" ]; then
         ssh-keygen -t ed25519 -f "$keyfile" -N '' -q -C portside-testhost
     fi
@@ -296,6 +310,11 @@ cmd_up() {
             "sudo -n docker exec -i $name /bin/sh -c 'cat > /tmp/portside-testhost.pub'" \
             < "$keyfile.pub"
         provision_accounts | in_container "$name" | tail -1
+        printf '%s\n' "$fixture_id" | ssh -o BatchMode=yes "$HOST" \
+            "sudo -n docker exec -i $name /bin/sh -c \
+            'umask 077; cat > /etc/portside-testhost-id; \
+            chown root:root /etc/portside-testhost-id; \
+            chmod 400 /etc/portside-testhost-id'"
 
         ip=$(d inspect -f "'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'" "$name")
         echo "    $(echo "$ip" | tr -d '\r')"
@@ -304,6 +323,8 @@ cmd_up() {
     write_ssh_config "$keyfile"
     echo
     echo "ssh config: $OUT_DIR/ssh_config"
+    echo "fixture id: $OUT_DIR/fixture_id"
+    echo "export PORTSIDE_TESTHOST_ID=\$(cat $OUT_DIR/fixture_id)"
     echo "try: ssh -F $OUT_DIR/ssh_config pstest-debian"
 }
 
@@ -313,11 +334,20 @@ cmd_up() {
 write_ssh_config() {
     keyfile=$1
     : > "$OUT_DIR/ssh_config"
+    : > "$OUT_DIR/known_hosts"
+    write_proxy_helper
     running=$(d ps --filter "name=$PREFIX" --format "'{{.Names}}'" | tr -d '\r')
     for name in $running; do
         distro=${name#"$PREFIX-"}
         ip=$(d inspect -f "'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'" "$name" | tr -d '\r')
         [ -n "$ip" ] || continue
+        hostkey=$(d exec "$name" cat /etc/ssh/ssh_host_ed25519_key.pub | tr -d '\r')
+        set -- $hostkey
+        [ "${1:-}" = "ssh-ed25519" ] && [ -n "${2:-}" ] || {
+            echo "could not pin the SSH host key for $name" >&2
+            exit 1
+        }
+        printf '%s %s %s\n' "$name" "$1" "$2" >> "$OUT_DIR/known_hosts"
         # No published ports: reach the bridge through a command on the docker
         # host. ProxyJump would need AllowTcpForwarding, which that host
         # deliberately disables.
@@ -327,13 +357,54 @@ Host pstest-$distro
     User pstest_operator
     IdentityFile $keyfile
     IdentitiesOnly yes
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
+    HostKeyAlias $name
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $OUT_DIR/known_hosts
     LogLevel ERROR
-    ProxyCommand ssh -o BatchMode=yes $HOST nc %h %p
+    ProxyCommand "$OUT_DIR/proxy" $name %h %p $HOST
 
 EOF
     done
+    chmod 600 "$OUT_DIR/ssh_config" "$OUT_DIR/known_hosts"
+}
+
+# A connection needs three independent proofs that it is aimed at this exact
+# disposable reset: a local environment opt-in, the root-owned marker inside
+# the named container, and the freshly pinned container host key.
+write_proxy_helper() {
+    cat > "$OUT_DIR/proxy" <<'EOF'
+#!/bin/sh
+set -eu
+host=${4:-}
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+expected=$(cat "$self_dir/fixture_id")
+if [ -z "${PORTSIDE_TESTHOST_ID:-}" ] || [ "$PORTSIDE_TESTHOST_ID" != "$expected" ]; then
+    echo "portside testhost: export PORTSIDE_TESTHOST_ID from $self_dir/fixture_id" >&2
+    exit 70
+fi
+container=${1:-}; ip=${2:-}; port=${3:-}
+case "$container" in portside-testhost-*) ;; *) exit 71 ;; esac
+case "$container" in *[!A-Za-z0-9._-]*) exit 71 ;; esac
+case "$ip" in *[!0-9A-Fa-f.:]*) exit 71 ;; esac
+case "$port" in ''|*[!0-9]*) exit 71 ;; esac
+case "$host" in *[!A-Za-z0-9._-]*|'') exit 71 ;; esac
+meta=$(ssh -n -o BatchMode=yes "$host" \
+    "sudo -n docker exec $container stat -c '%u:%a' /etc/portside-testhost-id" \
+    2>/dev/null | tr -d '\r')
+[ "$meta" = "0:400" ] || {
+    echo "portside testhost: $container has no protected fixture marker" >&2
+    exit 72
+}
+actual=$(ssh -n -o BatchMode=yes "$host" \
+    "sudo -n docker exec $container cat /etc/portside-testhost-id" \
+    2>/dev/null | tr -d '\r\n')
+[ "$actual" = "$expected" ] || {
+    echo "portside testhost: $container belongs to a different fixture reset" >&2
+    exit 73
+}
+exec ssh -o BatchMode=yes "$host" "nc $ip $port"
+EOF
+    chmod 700 "$OUT_DIR/proxy"
 }
 
 cmd_down() {

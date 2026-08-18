@@ -5,12 +5,14 @@ integration suite stops depending on anyone's real accounts.
 
 ```sh
 PORTSIDE_TESTHOST_SSH=truenas Scripts/testhost/provision.sh up
+export PORTSIDE_TESTHOST_ID=$(cat ~/.portside-testhost/fixture_id)
 ssh -F ~/.portside-testhost/ssh_config pstest-debian
 PORTSIDE_TESTHOST_SSH=truenas Scripts/testhost/provision.sh down
 ```
 
 `up` is a **reset**: containers are destroyed and rebuilt, so a crashed run
-cannot poison the next one.
+cannot poison the next one. It also creates a new random fixture ID; export it
+as shown above before connecting.
 
 ## Why containers on a shared docker host
 
@@ -22,6 +24,15 @@ any form of `docker prune`, and **publishes no ports** — the Mac reaches the
 containers over the docker bridge through a `ProxyCommand`, so nothing new
 listens on that machine. It refuses to run at all unless `PORTSIDE_TESTHOST_SSH`
 names the host.
+
+Every connection then fails closed unless all three interlocks agree:
+
+- `PORTSIDE_TESTHOST_ID` matches the ID from this local `up`;
+- the container holds that same ID in a root-owned, mode-0400 marker; and
+- the container's freshly generated Ed25519 host key matches `known_hosts`.
+
+This makes a stale config, a reused container name, or a missing environment
+opt-in an error before an integration test can authenticate.
 
 `ProxyJump` is not used because that host sets `AllowTcpForwarding no`, which is
 deliberate hardening and not ours to change. `ProxyCommand ... nc` runs a
