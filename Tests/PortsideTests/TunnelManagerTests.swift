@@ -61,11 +61,23 @@ final class TunnelManagerTests: XCTestCase {
         let finished = expectation(description: "process exited without deadlocking")
         process.terminationHandler = { _ in finished.fulfill() }
 
+        // **Clean up on the failing path, not just the passing one.** This test
+        // exists to detect a hang, so the case it is most likely to hit is the
+        // one where `wait` times out — and an early version of this test left
+        // its child behind exactly then. That child was `yes` writing to
+        // /dev/null, which never gets SIGPIPE, so it spun at 85% CPU on a
+        // laptop for twenty days before anyone connected it to a test run.
+        // A bounded `dd` cannot spin like that, but abandoning a child is the
+        // habit that caused it, and the habit is what this guards.
+        defer {
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            if process.isRunning { process.terminate() }
+        }
+
         try process.run()
         wait(for: [finished], timeout: 10)
 
-        errPipe.fileHandleForReading.readabilityHandler = nil
-        outPipe.fileHandleForReading.readabilityHandler = nil
         XCTAssertGreaterThan(drain.collected.count, 0, "drained output should be non-empty")
     }
 }
