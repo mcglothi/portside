@@ -47,10 +47,20 @@ struct KeyRotationView: View {
     /// back on screen, and back into the gate. That was a fourth route through
     /// "never retire from a host that has not just proved the new one works".
     @State private var generation = 0
+    /// True when the sheet is showing fabricated results. Every action is
+    /// disabled while it is — a seeded `verified` is exactly the record that
+    /// authorises deleting a key from a live host, and none of it came from a
+    /// host. See `RotationPreview`.
+    @State private var previewing = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if previewing {
+                warning(RotationPreview.banner, icon: "eye.trianglebadge.exclamationmark")
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
             Divider()
             content
             Divider()
@@ -426,13 +436,14 @@ struct KeyRotationView: View {
                 Button("Back") { confirming = nil }
                 Button(confirmTitle) { start(confirming ?? phase) }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(previewing)
             } else if running != nil {
                 Button("Stop") { work?.cancel() }
             } else {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(runTitle) { begin(phase) }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!canRun(phase))
+                    .disabled(previewing || !canRun(phase))
             }
         }
         .padding(16)
@@ -503,6 +514,11 @@ struct KeyRotationView: View {
         loadingKeys = false
         rebuildRotation()
         await refreshReadiness()
+
+        if let plan = RotationPreview.plan(
+            from: ProcessInfo.processInfo.environment[RotationPreview.environmentKey]) {
+            applyPreview(plan)
+        }
     }
 
     private func refreshReadiness() async {
@@ -519,6 +535,37 @@ struct KeyRotationView: View {
         readiness = result
     }
 
+    /// Opens a stage with fabricated results so it can be looked at.
+    ///
+    /// Picks an old key and a host selection if none were chosen, because the
+    /// states worth photographing need both. Sets `previewing`, which disables
+    /// every action for as long as the sheet lives — nothing here may be acted
+    /// on, only seen.
+    private func applyPreview(_ preview: RotationPreview.Plan) {
+        // **Set this first.** Choosing an old key fires `.onChange(of: oldKey)`,
+        // which rebuilds the rotation — and would arrive *after* the seeding
+        // below and wipe it. The first version of this did exactly that and
+        // rendered a preview with every count at zero, which is the same shape
+        // as the stale-callback bug in `start`: a later event overwriting state
+        // built earlier. `rebuildRotation` refuses while this is set.
+        previewing = true
+        if oldKey == nil { oldKey = keys.first { $0 != newKey } }
+        // `selectAll`, not every candidate: it skips protected hosts, and a
+        // preview showing a state the UI cannot actually produce is worse than
+        // no preview. A protected host ticked here would misrepresent the one
+        // rule this sheet shares with MultiExec.
+        plan.selectAll()
+
+        guard let newKey else { return }
+        let account = accountOverride.trimmingCharacters(in: .whitespaces)
+        var seeded = KeyRotation(hosts: plan.selectedEntries, newKey: newKey,
+                                 oldKey: oldKey, account: account)
+        RotationPreview.seed(&seeded)
+        rotation = seeded
+        phase = preview.stage
+        confirming = preview.confirming ? preview.stage : nil
+    }
+
     /// Rebuilds the rotation when its identity changes.
     ///
     /// `keepingResults` is only ever true for a change of *host selection*.
@@ -527,6 +574,9 @@ struct KeyRotationView: View {
     /// another, and this is the mechanism that makes "verified in this session"
     /// true rather than merely intended.
     private func rebuildRotation(keepingResults: Bool = false) {
+        // A preview's results are fabricated and cannot be reconstructed, so a
+        // rebuild would silently empty the sheet.
+        guard !previewing else { return }
         guard let newKey else {
             rotation = nil
             return
@@ -552,6 +602,9 @@ struct KeyRotationView: View {
     }
 
     private func start(_ stage: KeyRotation.Phase) {
+        // Nothing seeded may ever be acted on. The buttons are disabled, so
+        // this is unreachable — which is why it is cheap to assert.
+        guard !previewing else { return }
         guard var current = rotation else { return }
 
         // **Everything the operation uses comes from the rotation that supplied
