@@ -473,6 +473,7 @@ enum KeyDistributor {
     /// first failure could be seen, and this is the one operation where being
     /// slower is the safer behaviour. It also means `progress` arrives in the
     /// order the user is reading.
+    @MainActor
     static func push(
         key: PublicKey,
         to entries: [SessionEntry],
@@ -488,14 +489,14 @@ enum KeyDistributor {
                 let result = KeyPushResult(entryID: entry.id, hostName: entry.name,
                                            outcome: .skipped("cancelled"))
                 results.append(result)
-                await progress(result)
+                progress(result)
                 continue
             }
             let outcome = await push(key: key, to: entry, password: password(entry),
                                      defaults: defaults, account: account, runner: runner)
             let result = KeyPushResult(entryID: entry.id, hostName: entry.name, outcome: outcome)
             results.append(result)
-            await progress(result)
+            progress(result)
         }
         return results
     }

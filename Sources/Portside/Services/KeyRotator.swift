@@ -505,6 +505,7 @@ enum KeyRotator {
     /// Sequential for the same reason a push is: this runs against a whole
     /// fleet, and a problem should be visible on host one rather than
     /// simultaneously on all forty.
+    @MainActor
     static func verify(
         key: PublicKey,
         on entries: [SessionEntry],
@@ -521,7 +522,7 @@ enum KeyRotator {
                                account: account, runner: runner)
             let result = KeyVerifyResult(entryID: entry.id, hostName: entry.name, outcome: outcome)
             results.append(result)
-            await progress(result)
+            progress(result)
         }
         return results
     }
@@ -734,6 +735,7 @@ enum KeyRotator {
     }
 
     /// Retires the old key from every host in turn, sequentially.
+    @MainActor
     static func retire(
         oldKey: PublicKey,
         keeping newKey: PublicKey,
@@ -763,7 +765,7 @@ enum KeyRotator {
             }
             let result = KeyRetireResult(entryID: entry.id, hostName: entry.name, outcome: outcome)
             results.append(result)
-            await progress(result)
+            progress(result)
         }
         return results
     }
