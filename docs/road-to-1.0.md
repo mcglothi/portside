@@ -60,8 +60,10 @@ shortcut, only waited out.
 There is no answer today to: does vim survive a flaky link, does tmux resize
 correctly, does a 2 MB paste land intact, what happens on a malformed escape
 mid-stream, do combining characters and CJK widths render right. Two incidents
-have already come from this area (the Sixel crash, the transcript truncation),
-and `SixelStreamGuard` is a workaround being carried in-tree.
+have already come from this area (the Sixel crash, the transcript truncation);
+the `SixelStreamGuard` workaround they forced is gone now that the SwiftTerm
+pin carries the upstream fix, but nothing systematic replaced the probing that
+found it.
 
 A terminal at 1.0 that can't point at a compatibility suite is claiming
 something it hasn't checked.

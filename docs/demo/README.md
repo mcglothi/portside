@@ -28,8 +28,9 @@ nothing else — so regenerating this needs no tooling beyond Python and the
 Two properties of the generated file are deliberate:
 
 - **Every band is terminated**, including the last. SwiftTerm 1.15.0 crashes on
-  a final band wider than every terminated band before it. Portside repairs
-  that on the way in (`SixelStreamGuard`), but a file published for people to
-  `cat` into *other* terminals should not depend on the workaround.
+  a final band wider than every terminated band before it. Portside is no longer
+  affected — it pins 1.16.0, which carries the upstream fix — but a file
+  published for people to `cat` into *other* terminals should not assume the
+  terminal reading it has caught up.
 - **Transparent pixels are left unpainted**, so the icon's rounded corners take
   the terminal's own background instead of arriving inside a white box.
