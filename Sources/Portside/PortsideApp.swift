@@ -11,9 +11,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AskpassInjector.purgeStaleDirectories()
     }
 
+    /// Quitting used to silently destroy remote edits that had never reached
+    /// the host — a failed upload, or a save still in flight. Ask first, and
+    /// say where the work will be kept if the user quits anyway.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let unsynced = MainActor.assumeIsolated { RemoteFileEditor.shared.unsyncedEdits }
+        guard !unsynced.isEmpty else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = unsynced.count == 1
+            ? "\(unsynced[0].name) has changes that never reached the host."
+            : "\(unsynced.count) open files have changes that never reached the host."
+        alert.informativeText = """
+            \(unsynced.map { "• \($0.remotePath) on \($0.entry.name)" }.joined(separator: "\n"))
+
+            Quitting keeps a copy in Application Support ▸ Portside ▸ Unsynced             Edits, but the host will not have these changes.
+            """
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway")
+        // Enter cancels: the destructive choice should not be the one a
+        // reflexive keypress takes.
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        // Stop watching and remove the temp copies of any files still checked
-        // out for editing — they're unreachable once the app is gone.
+        // Stop watching and release the temp copies of any files still checked
+        // out for editing — they're unreachable once the app is gone. Copies
+        // holding unsynced work are moved somewhere durable rather than
+        // deleted; see RemoteFileEditor.stop.
         MainActor.assumeIsolated { RemoteFileEditor.shared.stopAll() }
     }
 }

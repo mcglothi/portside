@@ -543,7 +543,211 @@ final class RemoteFileEditorTests: XCTestCase {
         return result.out
     }
 
+    // MARK: - Unsynced work survives Stop and Quit
+
+    // Until 0.24.0 `stop` deleted the checkout unconditionally, and
+    // `applicationWillTerminate` called it for every open edit. A failed
+    // upload, or one cancelled in flight, meant the only copy of the user's
+    // work was the file being deleted — silently, with no prompt.
+
+    func testAFailedUploadCountsAsUnsynced() throws {
+        let url = try makeFile(contents: "edited")
+        XCTAssertEqual(
+            RemoteFileEditor.unsyncedReason(
+                status: .failed("permission denied"), localURL: url, lastSyncedDigest: nil
+            ),
+            "permission denied"
+        )
+    }
+
+    func testAnInterruptedUploadCountsAsUnsynced() throws {
+        let url = try makeFile(contents: "edited")
+        XCTAssertNotNil(RemoteFileEditor.unsyncedReason(
+            status: .uploading, localURL: url, lastSyncedDigest: nil
+        ))
+    }
+
+    func testAWatchedFileWhoseContentWasNeverPushedCountsAsUnsynced() throws {
+        let url = try makeFile(contents: "edited since the last upload")
+        let stale = RemoteFileEditor.digestForTesting(of: try makeFile(contents: "old"))
+        XCTAssertNotNil(RemoteFileEditor.unsyncedReason(
+            status: .watching, localURL: url, lastSyncedDigest: stale
+        ))
+    }
+
+    func testAWatchedFileTheHostAlreadyHasIsNotUnsynced() throws {
+        let url = try makeFile(contents: "identical")
+        let digest = RemoteFileEditor.digestForTesting(of: url)
+        XCTAssertNil(RemoteFileEditor.unsyncedReason(
+            status: .watching, localURL: url, lastSyncedDigest: digest
+        ))
+    }
+
+    func testAPartialDownloadIsNotUnsynced() throws {
+        // Nothing has been authored yet, so discarding it loses no work.
+        let url = try makeFile(contents: "half a file")
+        XCTAssertNil(RemoteFileEditor.unsyncedReason(
+            status: .downloading, localURL: url, lastSyncedDigest: nil
+        ))
+    }
+
+    @MainActor
+    func testStopKeepsTheCopyWhenTheUploadFailed() throws {
+        let rescues = try useTemporaryRescueDirectory()
+        let editor = RemoteFileEditor()
+        let url = try makeCheckout(contents: "work the host never got")
+        let checkout = RemoteEdit(
+            entry: SessionEntry(name: "host"), remotePath: "/etc/app.conf",
+            name: url.lastPathComponent, localURL: url, status: .failed("permission denied")
+        )
+        editor.seedForTesting(checkout, syncedDigest: nil)
+
+        editor.stop(checkout.id)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path),
+            "the temp checkout should be released"
+        )
+        let rescued = try XCTUnwrap(
+            rescuedFiles(in: rescues).first { $0.lastPathComponent == url.lastPathComponent },
+            "the unsynced copy must survive Stop"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: rescued, encoding: .utf8), "work the host never got"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: rescued.deletingLastPathComponent()
+                    .appendingPathComponent("README.txt").path
+            ),
+            "a rescued file needs its host and remote path to be recoverable"
+        )
+    }
+
+    @MainActor
+    func testStopStillDeletesACopyTheHostAlreadyHas() throws {
+        let rescues = try useTemporaryRescueDirectory()
+        let editor = RemoteFileEditor()
+        let url = try makeCheckout(contents: "already uploaded")
+        let checkout = RemoteEdit(
+            entry: SessionEntry(name: "host"), remotePath: "/etc/app.conf",
+            name: url.lastPathComponent, localURL: url, status: .watching
+        )
+        editor.seedForTesting(
+            checkout, syncedDigest: RemoteFileEditor.digestForTesting(of: url)
+        )
+
+        editor.stop(checkout.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(
+            rescuedFiles(in: rescues), [],
+            "synced work is disposable and should not accumulate in the rescue directory"
+        )
+    }
+
+    @MainActor
+    func testQuittingKeepsEveryUnsyncedCopy() throws {
+        // stopAll is what applicationWillTerminate runs.
+        let rescues = try useTemporaryRescueDirectory()
+        let editor = RemoteFileEditor()
+        for name in ["one.conf", "two.conf"] {
+            let url = try makeCheckout(contents: "unsaved " + name, named: name)
+            editor.seedForTesting(
+                RemoteEdit(
+                    entry: SessionEntry(name: "host"), remotePath: "/etc/" + name,
+                    name: name, localURL: url, status: .failed("connection closed")
+                ),
+                syncedDigest: nil
+            )
+        }
+
+        editor.stopAll()
+
+        let survivors = rescuedFiles(in: rescues).map(\.lastPathComponent).sorted()
+        XCTAssertEqual(survivors, ["one.conf", "two.conf"], "quitting must not discard unsynced work")
+    }
+
+    @MainActor
+    func testUnsyncedEditsIsWhatTheQuitPromptAsksFor() throws {
+        _ = try useTemporaryRescueDirectory()
+        let editor = RemoteFileEditor()
+        let dirty = try makeCheckout(contents: "dirty", named: "dirty.conf")
+        let clean = try makeCheckout(contents: "clean", named: "clean.conf")
+        editor.seedForTesting(
+            RemoteEdit(entry: SessionEntry(name: "h"), remotePath: "/a", name: "dirty.conf",
+                       localURL: dirty, status: .failed("nope")),
+            syncedDigest: nil
+        )
+        editor.seedForTesting(
+            RemoteEdit(entry: SessionEntry(name: "h"), remotePath: "/b", name: "clean.conf",
+                       localURL: clean, status: .watching),
+            syncedDigest: RemoteFileEditor.digestForTesting(of: clean)
+        )
+
+        XCTAssertEqual(editor.unsyncedEdits.map(\.name), ["dirty.conf"])
+    }
+
+    func testLaunchPurgeLeavesRescuedWorkAlone() throws {
+        // purgeStaleCopies sweeps the temp directory at launch. Rescued copies
+        // live outside it precisely so that sweep cannot reach them.
+        let rescues = try useTemporaryRescueDirectory()
+        let kept = rescues.appendingPathComponent("2026-09-09-120000-app.conf")
+        try FileManager.default.createDirectory(at: kept, withIntermediateDirectories: true)
+        try "recovered".write(
+            to: kept.appendingPathComponent("app.conf"), atomically: true, encoding: .utf8
+        )
+
+        RemoteFileEditor.purgeStaleCopies()
+
+        XCTAssertEqual(
+            try String(contentsOf: kept.appendingPathComponent("app.conf"), encoding: .utf8),
+            "recovered"
+        )
+    }
+
     // MARK: - Helpers
+
+    /// Rescued *files*, not the timestamped directories holding them — those
+    /// are named after the file too, so a suffix match counts each one twice.
+    /// README.txt is the manifest, not the user's work.
+    private func rescuedFiles(in rescues: URL) -> [URL] {
+        let fm = FileManager.default
+        guard let walker = fm.enumerator(at: rescues, includingPropertiesForKeys: [.isRegularFileKey])
+        else { return [] }
+        return walker.compactMap { $0 as? URL }
+            .filter {
+                (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                    && $0.lastPathComponent != "README.txt"
+            }
+            .sorted { $0.path < $1.path }
+    }
+
+    /// Points `rescueDirectory` at a temp location for the duration of a test,
+    /// so nothing writes into the real Application Support.
+    private func useTemporaryRescueDirectory() throws -> URL {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-rescue-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        setenv(SessionStore.libraryDirectoryOverrideKey, base.path, 1)
+        addTeardownBlock {
+            unsetenv(SessionStore.libraryDirectoryOverrideKey)
+            try? FileManager.default.removeItem(at: base)
+        }
+        return base.appendingPathComponent("Unsynced Edits", isDirectory: true)
+    }
+
+    /// A file inside its own `portside-edit-` directory, matching the shape a
+    /// real checkout has — `stop` removes the parent directory, not the file.
+    private func makeCheckout(contents: String, named name: String = "file.conf") throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("portside-edit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent(name)
+        try contents.write(to: url, atomically: false, encoding: .utf8)
+        return url
+    }
 
     private func edit(remotePath: String) -> RemoteEdit {
         RemoteEdit(

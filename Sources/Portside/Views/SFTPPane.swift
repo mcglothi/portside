@@ -890,9 +890,7 @@ struct SFTPPaneView: View {
                     Button(isTransferring(edit) ? "Cancel" : "Stop") { editor.stop(edit.id) }
                         .buttonStyle(.borderless)
                         .font(.caption2)
-                        .help(isTransferring(edit)
-                              ? "Stop the transfer and discard the partial file"
-                              : "Stop watching this file and delete the local copy")
+                        .help(stopHelp(for: edit))
                 }
             }
         }
@@ -916,6 +914,20 @@ struct SFTPPaneView: View {
         case .watching: return .green
         case .failed: return .yellow
         }
+    }
+
+    /// The button deletes the local copy only when the host already has the
+    /// content; otherwise the copy is kept. Say which one will happen rather
+    /// than promising a deletion that no longer occurs.
+    private func stopHelp(for edit: RemoteEdit) -> String {
+        if editor.unsyncedReason(edit.id) != nil {
+            return "Stop watching this file. The unsynced copy is kept in "
+                + "Application Support ▸ Portside ▸ Unsynced Edits."
+        }
+        if case .downloading = edit.status {
+            return "Stop the transfer and discard the partial file"
+        }
+        return "Stop watching this file and delete the local copy"
     }
 
     private func isTransferring(_ edit: RemoteEdit) -> Bool {
