@@ -348,9 +348,14 @@ struct TabContentView: View {
 struct TerminalPane: View {
     @EnvironmentObject var sessions: SessionManager
     @ObservedObject var session: TerminalSession
+    @State private var explaining = false
 
     var body: some View {
         TerminalHostingView(session: session)
+            .sheet(isPresented: $explaining) {
+                ConnectionExplanationSheet(session: session)
+                    .environmentObject(sessions)
+            }
             .overlay(alignment: .topTrailing) {
                 if session.findVisible {
                     FindBar(session: session)
@@ -359,24 +364,159 @@ struct TerminalPane: View {
             }
             .overlay(alignment: .bottom) {
                 if !session.isRunning {
-                    HStack(spacing: 10) {
-                        Image(systemName: "power")
-                            .foregroundStyle(.secondary)
-                        Text("Session ended")
-                            .font(.callout)
-                        Button("Reconnect") { sessions.reconnect(session) }
-                            .help("Press R to reconnect")
-                        Button("Close") { sessions.close(session) }
-                            .keyboardShortcut(.defaultAction)
-                            .help("Press ⏎ or ⌃D to close")
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(.quaternary))
-                    .padding(.bottom, 18)
+                    endedBar
+                        .padding(.bottom, 18)
                 }
             }
+    }
+
+    /// The bar under a dead pane. A clean exit keeps the original compact
+    /// capsule; a failure earns the room to say what happened and what to do,
+    /// because "Session ended" was the same three words for a clean logout and
+    /// for a host key that changed under you.
+    @ViewBuilder
+    private var endedBar: some View {
+        let reading = session.diagnosis
+        let failed = reading?.isFailure == true
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: failed ? "exclamationmark.triangle.fill" : "power")
+                    .foregroundStyle(failed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                Text(reading?.headline ?? "Session ended")
+                    .font(.callout)
+                    .fontWeight(failed ? .medium : .regular)
+                Spacer(minLength: 8)
+                if failed, session.entry?.kind == .host {
+                    // Promised by the authentication diagnosis's next step, so
+                    // it has to be reachable from the bar that shows it.
+                    Button("Explain…") { explaining = true }
+                        .help("Show where this connection goes, as whom, and with which key")
+                }
+                Button("Reconnect") { sessions.reconnect(session) }
+                    .help("Press R to reconnect")
+                Button("Close") { sessions.close(session) }
+                    .keyboardShortcut(.defaultAction)
+                    .help("Press ⏎ or ⌃D to close")
+            }
+            if let step = reading?.nextStep {
+                Text(step)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // The transport's own words, so the reading above can be checked
+            // rather than taken on trust — this is a heuristic over ssh's
+            // English messages, and showing the evidence is what makes being
+            // wrong cheap.
+            if failed, let evidence = reading?.evidence {
+                Text(evidence)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: failed ? 520 : nil)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
+    }
+}
+
+
+/// "Explain This Connection" — the effective ssh configuration for a session,
+/// as ssh itself computes it.
+///
+/// Deliberately contains no secret: `ssh -G` prints paths and policies, and
+/// the credential line names a *source* rather than a value.
+struct ConnectionExplanationSheet: View {
+    @EnvironmentObject var sessions: SessionManager
+    @ObservedObject var session: TerminalSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var explanation: ConnectionExplanation?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("This connection")
+                        .font(.headline)
+                    Text(explanation?.destination ?? session.entry?.subtitle ?? session.title)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            Group {
+                if let failure = explanation?.failure {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ssh could not resolve this configuration")
+                            .font(.callout)
+                        Text(failure)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                } else if let items = explanation?.items {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(items) { item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.label)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(item.value)
+                                        .font(.callout.monospaced())
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if let note = item.note {
+                                        Text(note)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(16)
+                    }
+                } else {
+                    ProgressView("Asking ssh…")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(32)
+                }
+            }
+
+            Divider()
+            Text("Read from ssh -G, using the same options Portside connects with. "
+                 + "Nothing is contacted and no password is shown.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(12)
+        }
+        .frame(width: 520, height: 460)
+        .task {
+            guard let entry = session.entry else {
+                explanation = ConnectionExplanation(
+                    destination: session.title, items: [],
+                    failure: "This session has no saved entry to explain."
+                )
+                return
+            }
+            explanation = await sessions.explainConnection(for: entry)
+        }
     }
 }
 

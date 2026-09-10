@@ -4,6 +4,36 @@ import Foundation
 import Network
 import SwiftTerm
 
+/// A bounded, lock-protected tail of a session's output.
+///
+/// Written on the main actor as bytes arrive and read from the process
+/// termination callback, which has no isolation — hence the lock rather than
+/// an actor annotation. Bounded on purpose: a session that runs for a week
+/// must not accumulate its whole output, and only the last words matter for
+/// explaining how it ended.
+final class OutputTail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    private let limit: Int
+
+    init(limit: Int = 8 * 1024) { self.limit = limit }
+
+    func append(_ chunk: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        text += chunk
+        if text.count > limit {
+            text.removeFirst(text.count - limit)
+        }
+    }
+
+    var current: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return text
+    }
+}
+
 /// A terminal view that tees the child process's output to a session log
 /// before feeding it to the terminal.
 final class LoggingTerminalView: LocalProcessTerminalView {
@@ -30,6 +60,62 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// detail, and there is no way to observe what reached `super` from outside.
     /// Raised by Codex CLI in the 0.17 pre-release review.
     var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
+
+    /// The tail of what this session printed, used to explain why it ended.
+    ///
+    /// ssh writes its diagnostics to the pty, so the reason a connection
+    /// failed is already in the terminal — this keeps just enough of it to
+    /// read back after the process is gone.
+    ///
+    /// `nonisolated let` over a locked box rather than a plain property: it is
+    /// written here on the main actor but read from `processTerminated`, which
+    /// is a delegate callback with no actor isolation. A main-actor property
+    /// would have to be reached from there unsafely.
+    nonisolated let outputTail = OutputTail()
+
+    /// Escape sequences are stripped on the way in. The buffer is read as
+    /// text, and trimming raw bytes to a byte budget can cut an escape in
+    /// half; storing it already-plain keeps that from mattering.
+    private func rememberOutput(_ slice: ArraySlice<UInt8>) {
+        guard let text = String(bytes: slice, encoding: .utf8)
+            ?? String(bytes: slice, encoding: .isoLatin1) else { return }
+        outputTail.append(Self.strippingEscapes(text))
+    }
+
+    /// Removes CSI and OSC sequences so the kept text reads as words.
+    /// Deliberately simple: this feeds a message-matching heuristic and a
+    /// quoted line in the UI, not the terminal itself.
+    static func strippingEscapes(_ text: String) -> String {
+        var out = ""
+        var iterator = text.startIndex
+        while iterator < text.endIndex {
+            let character = text[iterator]
+            guard character == "\u{1B}" else {
+                out.append(character)
+                iterator = text.index(after: iterator)
+                continue
+            }
+            var cursor = text.index(after: iterator)
+            guard cursor < text.endIndex else { break }
+            if text[cursor] == "[" {
+                cursor = text.index(after: cursor)
+                while cursor < text.endIndex, !("@"..."~").contains(text[cursor]) {
+                    cursor = text.index(after: cursor)
+                }
+                if cursor < text.endIndex { cursor = text.index(after: cursor) }
+            } else if text[cursor] == "]" {
+                // OSC runs to BEL or ST.
+                while cursor < text.endIndex, text[cursor] != "\u{07}", text[cursor] != "\u{1B}" {
+                    cursor = text.index(after: cursor)
+                }
+                if cursor < text.endIndex { cursor = text.index(after: cursor) }
+            } else {
+                cursor = text.index(after: cursor)
+            }
+            iterator = cursor
+        }
+        return out
+    }
 
     // MARK: - Host-to-host drop target
 
@@ -126,6 +212,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         // arrived, and so does the terminal. Nothing in this path may rewrite
         // them: transcript offsets have to keep matching what is on disk.
         logger?.append(slice)
+        rememberOutput(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
             for var event in commandTimeline!.consume(slice) {
@@ -360,6 +447,12 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @Published var isRunning = true
     /// Guards against the connection attempt being resolved twice.
     var resolvedConnectionOutcome = false
+
+    /// Why this session ended, once it has. `processTerminated` used to take
+    /// the child's exit status and drop it, so every ending — a clean exit, a
+    /// name that would not resolve, a changed host key — reached the user as
+    /// the same three words.
+    @Published private(set) var diagnosis: ConnectionDiagnosis?
 
     /// Whether something on the other end is currently reading a secret.
     ///
@@ -779,7 +872,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         runCleanup()
         logger?.close()
-        DispatchQueue.main.async { self.isRunning = false }
+        // Read the tail before the view is torn down; classifying costs a scan
+        // of at most 8 KB and only happens once, when a session ends.
+        let reading = ConnectionDiagnosis.diagnose(
+            output: terminalView.outputTail.current, exitCode: exitCode, kind: entry?.kind
+        )
+        DispatchQueue.main.async {
+            self.diagnosis = reading
+            self.isRunning = false
+        }
     }
 }
 
@@ -1004,16 +1105,11 @@ final class SessionManager: ObservableObject {
                 if entry.preferMosh {
                     NSLog("Portside: mosh requested for \(entry.name) but not installed; using ssh")
                 }
-                executable = "/usr/bin/ssh"
-                var hostKeyOptions: [String] = []
-                if connectionDefaults.autoAcceptNewHostKeys ?? false {
-                    // Trusts an unknown host's key on first connect without
-                    // prompting, but ssh still hard-fails if an *already
-                    // known* host's key later changes — that's the actual
-                    // MITM protection, and it stays intact.
-                    hostKeyOptions = ["-o", "StrictHostKeyChecking=accept-new"]
-                }
-                args = SSHControl.options + hostKeyOptions + entry.sshArgs
+                executable = SSHInvocation.executable
+                args = SSHInvocation.arguments(
+                    for: entry,
+                    autoAcceptNewHostKeys: connectionDefaults.autoAcceptNewHostKeys ?? false
+                )
             }
 
             // If the host has a saved password, set up the askpass helper so ssh
@@ -1040,6 +1136,32 @@ final class SessionManager: ObservableObject {
                                    environment: environment, expireSecret: expireSecret,
                                    cleanup: cleanup, logger: logger)
         }
+    }
+
+    /// Answers "where does this actually go, and with what?" for a session.
+    ///
+    /// Lives here because the answer depends on the two settings this object
+    /// holds — the host-key policy that goes on the command line, and which
+    /// credential profile is the default.
+    ///
+    /// The Keychain is read only for *existence*: the resolver's precedence
+    /// needs to know which credentials exist, and the values are discarded
+    /// immediately. No password reaches the explanation.
+    func explainConnection(for entry: SessionEntry) async -> ConnectionExplanation {
+        let source = CredentialResolver.source(
+            savePassword: entry.savePassword,
+            hasAssignedProfilePassword:
+                entry.credentialProfileID.flatMap(CredentialStore.profilePassword) != nil,
+            hasHostPassword: CredentialStore.password(for: entry.id) != nil,
+            hasDefaultProfilePassword:
+                defaultProfileID.flatMap(CredentialStore.profilePassword) != nil,
+            hasLegacyDefault: CredentialStore.defaultPassword() != nil
+        )
+        return await ConnectionExplainer.explain(
+            entry: entry,
+            autoAcceptNewHostKeys: connectionDefaults.autoAcceptNewHostKeys ?? false,
+            credentialSource: source
+        )
     }
 
     /// Sends the post-connect command (container/pod exec, or a host's
