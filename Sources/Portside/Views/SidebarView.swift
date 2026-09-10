@@ -376,6 +376,7 @@ struct SidebarView: View {
                     keyDistributionPreselection = ids
                     showingKeyRotation = true
                 },
+                explain: { sessions.explainingEntry = $0 },
                 newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
             )

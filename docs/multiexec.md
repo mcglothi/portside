@@ -112,16 +112,60 @@ comes back already broadcasting.
 Running a macro while armed sends it to every included pane. Unarmed, it goes
 to the focused pane only. The same rule, and the same guardrails, as typing.
 
+## Per-host results
+
+Under the command bar, the last broadcast lists what each host reported: the
+command, a one-line summary, and a row per pane.
+
+**Every row is an observation, never an inference.** Results come from the
+OSC 133 shell-integration markers the command timeline already reads, which
+means a host only appears as finished because it said so:
+
+| Row | Means |
+|---|---|
+| ✅ / ❌ Finished, exit *n* | The shell reported this command and its status. |
+| ⏳ Running since… | The shell reported it started, and has not reported an end. |
+| … Sent — waiting | Delivered; this pane has reported boundaries before, so a result is expected. |
+| ❓ Can't be observed — … | Delivered, and nothing is coming. The bar says how to fix it — see below. |
+| ⑂ A different command finished here | Something else ran in that pane. Its exit status is **not** reported as the broadcast's. |
+
+A host cannot be observed for one of two reasons, and the bar names the fix
+for whichever applies rather than leaving you to work it out:
+
+- **Command recording is off.** No host can report, because the command
+  timeline is never allocated. One switch fixes every row: Settings ▸ Terminal
+  ▸ Record commands, then reconnect. The bar offers the button.
+- **That pane has never reported a command boundary.** The usual cause is a
+  host without shell integration. Install it permanently from the file
+  browser's ⋯ menu ▸ Install…, or switch on Settings ▸ Terminal ▸ "Set up
+  directory tracking on connect" to have Portside type it into each SSH
+  session instead. Either way the pane has to reconnect.
+
+A pane sitting in `vim` or a pager reports nothing either, and looks the same
+from here — the keystrokes arrive and no command boundary is ever emitted.
+
+These rows say so rather than sitting on "waiting", because a row that waits
+forever eventually gets read as though it went fine.
+
+Results belong to the tab that sent them: arming two tabs and broadcasting in
+one does not put its hosts on the other.
+
+When the shell reports a boundary without naming the command — bash's `DEBUG`
+trap cannot always supply it — the row says the result was matched by timing
+rather than presenting it as confirmed.
+
+Running a macro while armed reports the same way.
+
 ## What it does not do
 
-- **No confirmation of what actually ran.** Portside sends keystrokes to each
-  included pane; it does not collect exit statuses or compare output. Panes
-  that were mid-prompt, in a pager, or in vim receive the same keystrokes as
-  everything else and will do whatever that means for them.
+- **No guarantee that what ran is what you sent.** The rows above report what
+  hosts said, and a host that says nothing is shown as silent, not as
+  successful. A pane mid-prompt, in a pager, or in vim receives the same
+  keystrokes as everything else and will do whatever that means for them.
 - **No ordering or synchronisation.** All included panes receive at once. A
   host that is slow, paging, or wedged simply lags.
-- **No retry, and no per-host reporting.** If one host was disconnected, its
-  pane is not a target and nothing announces it beyond the pane's own state —
+- **No retry.** A host that did not answer is shown as not having answered and
+  is left alone. If one host was disconnected, its pane is not a target —
   which is why the status bars are always visible rather than on hover.
 
 For anything where you need to know what ran and what came back, a real

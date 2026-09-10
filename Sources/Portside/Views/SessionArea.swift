@@ -338,9 +338,144 @@ struct TabContentView: View {
                 }
                 .padding(10)
                 .background(.bar)
+
+                if let run = tab.lastBroadcast {
+                    Divider()
+                    BroadcastResultsBar(run: run)
+                }
             }
         }
         .overlay(alignment: .top) { disarmNotice }
+    }
+}
+
+/// Per-host outcomes for the last MultiExec broadcast.
+///
+/// The point of this view is the wording. MultiExec fans keystrokes out to
+/// many hosts, and someone will read these rows to decide whether a
+/// destructive command landed — so a host that cannot report, or that ran
+/// something else, has to look different from one that returned exit 0.
+/// Nothing here is inferred from silence.
+struct BroadcastResultsBar: View {
+    let run: BroadcastRun
+    @State private var expanded = true
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(run.command)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(run.summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            if expanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(run.results) { result in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: icon(for: result))
+                                    .font(.caption2)
+                                    .foregroundStyle(tint(for: result))
+                                    .frame(width: 12)
+                                Text(result.host)
+                                    .font(.caption)
+                                    .frame(width: 140, alignment: .leading)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(result.label)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .help(result.hint ?? result.label)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                }
+                .frame(maxHeight: 140)
+
+                // Shown once, not per row: with twenty silent hosts the same
+                // sentence twenty times is noise, and the fix is the same one
+                // for all of them.
+                if let remedy {
+                    Divider()
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "lightbulb")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(remedy.hint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        if remedy.isFixedInSettings {
+                            Button("Open Settings") { openSettings() }
+                                .controlSize(.small)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .background(.bar)
+    }
+
+    /// The one remedy worth offering. When hosts are silent for two different
+    /// reasons, recording being off is the one to name first — it is a single
+    /// switch and it explains every row at once, where installing shell
+    /// integration is per host.
+    private var remedy: UnobservableReason? {
+        let reasons = run.results.compactMap { result -> UnobservableReason? in
+            if case .unobservable(let reason) = result.outcome { return reason }
+            return nil
+        }
+        if reasons.contains(.commandRecordingOff) { return .commandRecordingOff }
+        return reasons.first
+    }
+
+    /// A question mark, not a tick and not a cross: an unobservable or
+    /// divergent host is neither a pass nor a fail, and drawing it as either
+    /// would be the lie this whole feature is built to avoid.
+    private func icon(for result: BroadcastResult) -> String {
+        switch result.outcome {
+        case .awaitingReport: return "ellipsis"
+        case .running: return "clock"
+        case .unobservable: return "questionmark.circle"
+        case .diverged: return "arrow.triangle.branch"
+        case .finished(let code, _, _):
+            guard let code else { return "questionmark.circle" }
+            return code == 0 ? "checkmark.circle.fill" : "xmark.circle.fill"
+        }
+    }
+
+    private func tint(for result: BroadcastResult) -> Color {
+        switch result.outcome {
+        case .finished(let code, _, _):
+            guard let code else { return .secondary }
+            return code == 0 ? .green : .red
+        case .diverged: return .orange
+        default: return .secondary
+        }
     }
 }
 
@@ -359,24 +494,155 @@ struct TerminalPane: View {
             }
             .overlay(alignment: .bottom) {
                 if !session.isRunning {
-                    HStack(spacing: 10) {
-                        Image(systemName: "power")
-                            .foregroundStyle(.secondary)
-                        Text("Session ended")
-                            .font(.callout)
-                        Button("Reconnect") { sessions.reconnect(session) }
-                            .help("Press R to reconnect")
-                        Button("Close") { sessions.close(session) }
-                            .keyboardShortcut(.defaultAction)
-                            .help("Press ⏎ or ⌃D to close")
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(.quaternary))
-                    .padding(.bottom, 18)
+                    endedBar
+                        .padding(.bottom, 18)
                 }
             }
+    }
+
+    /// The bar under a dead pane. A clean exit keeps the original compact
+    /// capsule; a failure earns the room to say what happened and what to do,
+    /// because "Session ended" was the same three words for a clean logout and
+    /// for a host key that changed under you.
+    @ViewBuilder
+    private var endedBar: some View {
+        let reading = session.diagnosis
+        let failed = reading?.isFailure == true
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: failed ? "exclamationmark.triangle.fill" : "power")
+                    .foregroundStyle(failed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                Text(reading?.headline ?? "Session ended")
+                    .font(.callout)
+                    .fontWeight(failed ? .medium : .regular)
+                Spacer(minLength: 8)
+                if failed, session.entry?.kind == .host {
+                    // Promised by the authentication diagnosis's next step, so
+                    // it has to be reachable from the bar that shows it.
+                    Button("Explain…") { sessions.explainingEntry = session.entry }
+                        .help("Show where this connection goes, as whom, and with which key")
+                }
+                Button("Reconnect") { sessions.reconnect(session) }
+                    .help("Press R to reconnect")
+                Button("Close") { sessions.close(session) }
+                    .keyboardShortcut(.defaultAction)
+                    .help("Press ⏎ or ⌃D to close")
+            }
+            if let step = reading?.nextStep {
+                Text(step)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // The transport's own words, so the reading above can be checked
+            // rather than taken on trust — this is a heuristic over ssh's
+            // English messages, and showing the evidence is what makes being
+            // wrong cheap.
+            if failed, let evidence = reading?.evidence {
+                Text(evidence)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: failed ? 520 : nil)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
+    }
+}
+
+
+/// "Explain This Connection" — the effective ssh configuration for a session,
+/// as ssh itself computes it.
+///
+/// Deliberately contains no secret: `ssh -G` prints paths and policies, and
+/// the credential line names a *source* rather than a value.
+struct ConnectionExplanationSheet: View {
+    @EnvironmentObject var sessions: SessionManager
+    /// An entry, not a session: the same question is worth asking *before*
+    /// connecting ("where would this actually go?"), and nothing here needs a
+    /// live session to answer it.
+    let entry: SessionEntry
+    @Environment(\.dismiss) private var dismiss
+    @State private var explanation: ConnectionExplanation?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.name.isEmpty ? "This connection" : entry.name)
+                        .font(.headline)
+                    Text(explanation?.destination ?? entry.subtitle)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            Group {
+                if let failure = explanation?.failure {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ssh could not resolve this configuration")
+                            .font(.callout)
+                        Text(failure)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                } else if let items = explanation?.items {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(items) { item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.label)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(item.value)
+                                        .font(.callout.monospaced())
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if let note = item.note {
+                                        Text(note)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(16)
+                    }
+                } else {
+                    ProgressView("Asking ssh…")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(32)
+                }
+            }
+
+            Divider()
+            Text("Read from ssh -G, using the same options Portside connects with. "
+                 + "Nothing is contacted and no password is shown.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(12)
+        }
+        .frame(width: 520, height: 460)
+        .task {
+            explanation = await sessions.explainConnection(for: entry)
+        }
     }
 }
 

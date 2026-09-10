@@ -4,6 +4,36 @@ import Foundation
 import Network
 import SwiftTerm
 
+/// A bounded, lock-protected tail of a session's output.
+///
+/// Written on the main actor as bytes arrive and read from the process
+/// termination callback, which has no isolation — hence the lock rather than
+/// an actor annotation. Bounded on purpose: a session that runs for a week
+/// must not accumulate its whole output, and only the last words matter for
+/// explaining how it ended.
+final class OutputTail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    private let limit: Int
+
+    init(limit: Int = 8 * 1024) { self.limit = limit }
+
+    func append(_ chunk: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        text += chunk
+        if text.count > limit {
+            text.removeFirst(text.count - limit)
+        }
+    }
+
+    var current: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return text
+    }
+}
+
 /// A terminal view that tees the child process's output to a session log
 /// before feeding it to the terminal.
 final class LoggingTerminalView: LocalProcessTerminalView {
@@ -30,6 +60,62 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// detail, and there is no way to observe what reached `super` from outside.
     /// Raised by Codex CLI in the 0.17 pre-release review.
     var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
+
+    /// The tail of what this session printed, used to explain why it ended.
+    ///
+    /// ssh writes its diagnostics to the pty, so the reason a connection
+    /// failed is already in the terminal — this keeps just enough of it to
+    /// read back after the process is gone.
+    ///
+    /// `nonisolated let` over a locked box rather than a plain property: it is
+    /// written here on the main actor but read from `processTerminated`, which
+    /// is a delegate callback with no actor isolation. A main-actor property
+    /// would have to be reached from there unsafely.
+    nonisolated let outputTail = OutputTail()
+
+    /// Escape sequences are stripped on the way in. The buffer is read as
+    /// text, and trimming raw bytes to a byte budget can cut an escape in
+    /// half; storing it already-plain keeps that from mattering.
+    private func rememberOutput(_ slice: ArraySlice<UInt8>) {
+        guard let text = String(bytes: slice, encoding: .utf8)
+            ?? String(bytes: slice, encoding: .isoLatin1) else { return }
+        outputTail.append(Self.strippingEscapes(text))
+    }
+
+    /// Removes CSI and OSC sequences so the kept text reads as words.
+    /// Deliberately simple: this feeds a message-matching heuristic and a
+    /// quoted line in the UI, not the terminal itself.
+    static func strippingEscapes(_ text: String) -> String {
+        var out = ""
+        var iterator = text.startIndex
+        while iterator < text.endIndex {
+            let character = text[iterator]
+            guard character == "\u{1B}" else {
+                out.append(character)
+                iterator = text.index(after: iterator)
+                continue
+            }
+            var cursor = text.index(after: iterator)
+            guard cursor < text.endIndex else { break }
+            if text[cursor] == "[" {
+                cursor = text.index(after: cursor)
+                while cursor < text.endIndex, !("@"..."~").contains(text[cursor]) {
+                    cursor = text.index(after: cursor)
+                }
+                if cursor < text.endIndex { cursor = text.index(after: cursor) }
+            } else if text[cursor] == "]" {
+                // OSC runs to BEL or ST.
+                while cursor < text.endIndex, text[cursor] != "\u{07}", text[cursor] != "\u{1B}" {
+                    cursor = text.index(after: cursor)
+                }
+                if cursor < text.endIndex { cursor = text.index(after: cursor) }
+            } else {
+                cursor = text.index(after: cursor)
+            }
+            iterator = cursor
+        }
+        return out
+    }
 
     // MARK: - Host-to-host drop target
 
@@ -126,6 +212,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         // arrived, and so does the terminal. Nothing in this path may rewrite
         // them: transcript offsets have to keep matching what is on disk.
         logger?.append(slice)
+        rememberOutput(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
             for var event in commandTimeline!.consume(slice) {
@@ -360,6 +447,21 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     @Published var isRunning = true
     /// Guards against the connection attempt being resolved twice.
     var resolvedConnectionOutcome = false
+
+    /// Whether this session has ever reported a command boundary (OSC 133).
+    ///
+    /// Read by MultiExec to tell "a result is coming" from "this host will
+    /// never tell us" — the difference between a row that is still pending and
+    /// one that must never be read as success.
+    @Published private(set) var hasReportedCommands = false
+
+    func noteCommandReported() { hasReportedCommands = true }
+
+    /// Why this session ended, once it has. `processTerminated` used to take
+    /// the child's exit status and drop it, so every ending — a clean exit, a
+    /// name that would not resolve, a changed host key — reached the user as
+    /// the same three words.
+    @Published private(set) var diagnosis: ConnectionDiagnosis?
 
     /// Whether something on the other end is currently reading a secret.
     ///
@@ -779,7 +881,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         runCleanup()
         logger?.close()
-        DispatchQueue.main.async { self.isRunning = false }
+        // Read the tail before the view is torn down; classifying costs a scan
+        // of at most 8 KB and only happens once, when a session ends.
+        let reading = ConnectionDiagnosis.diagnose(
+            output: terminalView.outputTail.current, exitCode: exitCode, kind: entry?.kind
+        )
+        DispatchQueue.main.async {
+            self.diagnosis = reading
+            self.isRunning = false
+        }
     }
 }
 
@@ -1004,16 +1114,11 @@ final class SessionManager: ObservableObject {
                 if entry.preferMosh {
                     NSLog("Portside: mosh requested for \(entry.name) but not installed; using ssh")
                 }
-                executable = "/usr/bin/ssh"
-                var hostKeyOptions: [String] = []
-                if connectionDefaults.autoAcceptNewHostKeys ?? false {
-                    // Trusts an unknown host's key on first connect without
-                    // prompting, but ssh still hard-fails if an *already
-                    // known* host's key later changes — that's the actual
-                    // MITM protection, and it stays intact.
-                    hostKeyOptions = ["-o", "StrictHostKeyChecking=accept-new"]
-                }
-                args = SSHControl.options + hostKeyOptions + entry.sshArgs
+                executable = SSHInvocation.executable
+                args = SSHInvocation.arguments(
+                    for: entry,
+                    autoAcceptNewHostKeys: connectionDefaults.autoAcceptNewHostKeys ?? false
+                )
             }
 
             // If the host has a saved password, set up the askpass helper so ssh
@@ -1040,6 +1145,44 @@ final class SessionManager: ObservableObject {
                                    environment: environment, expireSecret: expireSecret,
                                    cleanup: cleanup, logger: logger)
         }
+    }
+
+    /// Whether the focused session is one there is an ssh configuration to
+    /// explain. Serial, telnet and container sessions have none.
+    var canExplainSelectedConnection: Bool {
+        selected?.entry?.kind == .host
+    }
+
+    /// Opens the explanation for whatever is focused.
+    func explainSelectedConnection() {
+        guard let entry = selected?.entry, entry.kind == .host else { return }
+        explainingEntry = entry
+    }
+
+    /// Answers "where does this actually go, and with what?" for a session.
+    ///
+    /// Lives here because the answer depends on the two settings this object
+    /// holds — the host-key policy that goes on the command line, and which
+    /// credential profile is the default.
+    ///
+    /// The Keychain is read only for *existence*: the resolver's precedence
+    /// needs to know which credentials exist, and the values are discarded
+    /// immediately. No password reaches the explanation.
+    func explainConnection(for entry: SessionEntry) async -> ConnectionExplanation {
+        let source = CredentialResolver.source(
+            savePassword: entry.savePassword,
+            hasAssignedProfilePassword:
+                entry.credentialProfileID.flatMap(CredentialStore.profilePassword) != nil,
+            hasHostPassword: CredentialStore.password(for: entry.id) != nil,
+            hasDefaultProfilePassword:
+                defaultProfileID.flatMap(CredentialStore.profilePassword) != nil,
+            hasLegacyDefault: CredentialStore.defaultPassword() != nil
+        )
+        return await ConnectionExplainer.explain(
+            entry: entry,
+            autoAcceptNewHostKeys: connectionDefaults.autoAcceptNewHostKeys ?? false,
+            credentialSource: source
+        )
     }
 
     /// Sends the post-connect command (container/pod exec, or a host's
@@ -1470,6 +1613,10 @@ final class SessionManager: ObservableObject {
     /// confirmation, so the dialog can be presented over that specific pane
     /// whether the toggle came from the pane's chip or from ⌥⌘M.
     @Published var pendingProtectedInclusionID: UUID?
+
+    /// The host whose effective ssh configuration is being shown, if any.
+    /// Driven from the Hosts menu, the sidebar, and a failed session's bar.
+    @Published var explainingEntry: SessionEntry?
 
     /// Flips one pane in or out of the broadcast. Excluding is immediate;
     /// including a protected host raises the confirmation instead — the caller
@@ -2255,9 +2402,57 @@ final class SessionManager: ObservableObject {
     /// Sends a full command line to the armed tab's included panes (command bar).
     func broadcast(_ command: String) {
         guard !command.isEmpty, let tab = selectedTab, tab.broadcastArmed else { return }
-        for session in broadcastTargets(in: tab) {
+        let targets = broadcastTargets(in: tab)
+        for session in targets {
             session.sendText(command + "\r")
         }
+        beginBroadcastRun(command: command, targets: targets, in: tab)
+    }
+
+    /// Opens the per-host result collection for a broadcast.
+    ///
+    /// Results are *observed*, never assumed. A host is only expected to
+    /// report if command recording is on and that session has reported a
+    /// boundary before; otherwise the row says outright that nothing is
+    /// coming, because a row that sits on "waiting" forever eventually reads
+    /// as though it went fine. Nothing here retries anything.
+    private func beginBroadcastRun(
+        command: String, targets: [TerminalSession], in tab: Tab
+    ) {
+        guard !targets.isEmpty else { return }
+        let results = targets.map { session in
+            BroadcastResult(
+                sessionID: session.id,
+                host: session.title,
+                outcome: Self.initialOutcome(
+                    for: session, recordsCommands: recordsCommands
+                )
+            )
+        }
+        tab.lastBroadcast = BroadcastRun(
+            command: command, startedAt: Date(), results: results
+        )
+    }
+
+    /// Separated so the "can this host report?" rule is testable without a
+    /// live session tree.
+    static func initialOutcome(
+        for session: TerminalSession, recordsCommands: Bool
+    ) -> BroadcastResult.Outcome {
+        guard recordsCommands else { return .unobservable(.commandRecordingOff) }
+        guard session.hasReportedCommands else { return .unobservable(.noBoundariesReported) }
+        return .awaitingReport
+    }
+
+    /// Folds a session's command event into its own tab's open broadcast.
+    ///
+    /// Scoped to the tab that contains the session: an event can only ever
+    /// belong to the broadcast that tab sent, and routing it anywhere else
+    /// would attribute one tab's output to another tab's run.
+    private func recordBroadcastResult(_ event: CommandEvent, from session: TerminalSession) {
+        guard let tab = tabs.first(where: { $0.contains(session.id) }),
+              tab.lastBroadcast != nil else { return }
+        tab.lastBroadcast?.record(event: event, from: session.id)
     }
 
     /// Runs a macro across the armed tab's included panes, or in the focused
@@ -2266,9 +2461,17 @@ final class SessionManager: ObservableObject {
         let payload = macro.text.replacingOccurrences(of: "\n", with: "\r")
             + (macro.sendReturn ? "\r" : "")
         if let tab = selectedTab, tab.broadcastArmed {
-            for session in broadcastTargets(in: tab) {
+            let targets = broadcastTargets(in: tab)
+            for session in targets {
                 session.sendText(payload)
             }
+            // A macro fans out exactly like a typed command, so it gets the
+            // same per-host reporting. The macro's text is what to match
+            // against, minus the trailing Return that isn't part of it.
+            beginBroadcastRun(
+                command: macro.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                targets: targets, in: tab
+            )
         } else {
             selected?.sendText(payload)
         }
@@ -2294,8 +2497,11 @@ final class SessionManager: ObservableObject {
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {
             session.terminalView.commandTimeline = CommandTimeline(entryID: session.entry?.id)
-            session.terminalView.onCommand = { [weak self] event in
-                self?.onCommand?(event)
+            session.terminalView.onCommand = { [weak self, weak session] event in
+                guard let self, let session else { return }
+                session.noteCommandReported()
+                self.recordBroadcastResult(event, from: session)
+                self.onCommand?(event)
             }
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)

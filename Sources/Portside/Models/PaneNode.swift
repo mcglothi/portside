@@ -173,6 +173,14 @@ final class Tab: Identifiable, ObservableObject {
     /// didn't happen to you.
     @Published var disarmNotice: MultiExecDisarmReason?
 
+    /// The last MultiExec broadcast sent from *this tab*, and what each of its
+    /// hosts reported back.
+    ///
+    /// Per-tab for the same reason `disarmNotice` is: held on the manager, a
+    /// broadcast in one tab showed its results — and its host names — on every
+    /// other armed tab, which is a report about hosts you were nowhere near.
+    @Published var lastBroadcast: BroadcastRun?
+
     init(session: TerminalSession) {
         root = .leaf(session)
         activePaneID = session.id

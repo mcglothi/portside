@@ -204,7 +204,142 @@ final class RemoteFileEditor: ObservableObject {
         tasks[id] = Task { await self.checkout(id: id, directory: dir) }
     }
 
+    /// Why this edit's local copy is not safe to delete, or nil if it is.
+    ///
+    /// The only state that is genuinely disposable is content the host already
+    /// has. A `.failed` upload, an upload cancelled in flight, and a save the
+    /// watcher has not managed to push all look like "nothing is happening" in
+    /// the UI, but each one means the only copy of the user's work is the
+    /// local file we are about to delete.
+    ///
+    /// `.downloading` is not unsynced: nothing has been authored yet, so a
+    /// partial download is genuinely disposable.
+    func unsyncedReason(_ id: UUID) -> String? {
+        guard let edit = edits.first(where: { $0.id == id }) else { return nil }
+        return Self.unsyncedReason(
+            status: edit.status, localURL: edit.localURL, lastSyncedDigest: digests[id]
+        )
+    }
+
+    /// The decision itself, separated from the lookup so it can be tested
+    /// against every status directly rather than through a live checkout.
+    nonisolated static func unsyncedReason(
+        status: RemoteEdit.Status, localURL: URL, lastSyncedDigest: Data?
+    ) -> String? {
+        switch status {
+        case .downloading:
+            return nil
+        case .failed(let message):
+            return message
+        case .uploading:
+            return "The upload was interrupted before it finished."
+        case .watching:
+            // The digest is only committed after a *successful* upload, so a
+            // mismatch here means the file on disk was never pushed.
+            guard let current = digest(of: localURL) else { return nil }
+            return current == lastSyncedDigest
+                ? nil
+                : "Saved locally, but the change never reached the host."
+        }
+    }
+
+    /// Edits whose local copy holds work the host does not have.
+    var unsyncedEdits: [RemoteEdit] {
+        edits.filter { unsyncedReason($0.id) != nil }
+    }
+
+    /// Moves an unsynced copy somewhere durable and returns where it landed.
+    ///
+    /// The checkout lives in `NSTemporaryDirectory`, which this app deletes on
+    /// quit and macOS may reap on its own. Rescued work goes to Application
+    /// Support instead, next to the library, with a manifest naming the host
+    /// and remote path — a bare `file.conf` in a UUID directory is not
+    /// recoverable by a human three days later.
+    @discardableResult
+    func rescue(_ edit: RemoteEdit, reason: String) -> URL? {
+        let fm = FileManager.default
+        let source = edit.localURL.deletingLastPathComponent()
+        guard fm.fileExists(atPath: edit.localURL.path) else { return nil }
+
+        let destination = Self.rescueDirectory
+            .appendingPathComponent(Self.timestamp() + "-" + edit.name, isDirectory: true)
+        do {
+            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            let file = destination.appendingPathComponent(edit.name)
+            // Copy rather than move: a move that half-succeeds across volumes
+            // would take the only copy with it. The temp original is removed
+            // only once the rescued file is known to be readable.
+            try fm.copyItem(at: edit.localURL, to: file)
+            guard fm.contentsEqual(atPath: edit.localURL.path, andPath: file.path) else {
+                return nil
+            }
+
+            let manifest = """
+                Portside — unsynced remote edit
+
+                File:        \(edit.name)
+                Remote path: \(edit.remotePath)
+                Host:        \(edit.entry.name) (\(edit.entry.subtitle))
+                Rescued:     \(ISO8601DateFormatter().string(from: Date()))
+                Reason:      \(reason)
+
+                This copy holds changes that never reached the host. Compare it
+                against the current remote file before copying it back —
+                something else may have changed the file in the meantime.
+                """
+            try? manifest.write(
+                to: destination.appendingPathComponent("README.txt"),
+                atomically: true, encoding: .utf8
+            )
+
+            try? fm.removeItem(at: source)
+            NSLog("Portside: rescued unsynced edit of \(edit.remotePath) to \(destination.path)")
+            return destination
+        } catch {
+            // Better to leak a temp directory than to delete the only copy.
+            NSLog("Portside: could not rescue \(edit.remotePath): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Where rescued copies go. Honours the library override so tests and a
+    /// throwaway library don't write into the user's real Application Support.
+    nonisolated static var rescueDirectory: URL {
+        let base = ProcessInfo.processInfo.environment[SessionStore.libraryDirectoryOverrideKey]
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Portside")
+        return base.appendingPathComponent("Unsynced Edits", isDirectory: true)
+    }
+
+    nonisolated private static func timestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        return f.string(from: Date())
+    }
+
+#if DEBUG
+    /// Test seam: seeds an edit as though it had been checked out, so `stop`
+    /// and `stopAll` can be exercised on their real code path without a live
+    /// SFTP session. `syncedDigest` is what the host is believed to hold —
+    /// pass the file's own digest for a synced edit, nil or a stale value for
+    /// an unsynced one.
+    func seedForTesting(_ edit: RemoteEdit, syncedDigest: Data?) {
+        edits.append(edit)
+        digests[edit.id] = syncedDigest
+    }
+
+    nonisolated static func digestForTesting(of url: URL) -> Data? { digest(of: url) }
+#endif
+
+    /// Stops watching and releases the checkout.
+    ///
+    /// A copy the host already has is deleted, as before. A copy holding
+    /// unsynced work is moved to `rescueDirectory` instead — losing it was
+    /// silent data loss, and the user pressing Stop (or quitting) is not
+    /// consent to discard a save that failed to upload.
     func stop(_ id: UUID) {
+        let reason = unsyncedReason(id)
         tasks[id]?.cancel()
         tasks[id] = nil
         watchers[id]?.stop()
@@ -212,7 +347,11 @@ final class RemoteFileEditor: ObservableObject {
         digests[id] = nil
         pending.remove(id)
         if let edit = edits.first(where: { $0.id == id }) {
-            try? FileManager.default.removeItem(at: edit.localURL.deletingLastPathComponent())
+            if let reason {
+                rescue(edit, reason: reason)
+            } else {
+                try? FileManager.default.removeItem(at: edit.localURL.deletingLastPathComponent())
+            }
         }
         edits.removeAll { $0.id == id }
     }
@@ -233,13 +372,17 @@ final class RemoteFileEditor: ObservableObject {
         // Abandoned drag-out staging directories too: a cancelled or crashed
         // drag of a large file leaves multi-gigabyte partials behind, and
         // nothing else ever cleans them up.
-        let prefixes = [tempPrefix, dragPrefix]
+        let prefixes = [tempPrefix, dragPrefix, comparePrefix]
         for url in contents where prefixes.contains(where: url.lastPathComponent.hasPrefix) {
             try? fm.removeItem(at: url)
         }
     }
 
     nonisolated static let dragPrefix = "portside-drag-"
+
+    /// Scratch copies pulled purely to compare against the host. Swept at
+    /// launch like the others: a crash mid-comparison leaves one behind.
+    nonisolated static let comparePrefix = "portside-compare-"
 
     // MARK: - Checkout
 
@@ -302,6 +445,107 @@ final class RemoteFileEditor: ObservableObject {
         tasks[id] = Task { await self.upload(id, digest: digest) }
     }
 
+    /// Whether the host's copy differs from what we believe it holds, as a
+    /// message to show — or nil when overwriting is safe.
+    ///
+    /// **Compares content, not metadata.** This used to compare the listing's
+    /// size and date, which cannot see a change that keeps the byte count
+    /// within the same minute — `ls` gives `Sep  9 21:03`, and for a file
+    /// older than six months only `Sep  9  2025`. Two admins editing one
+    /// config during an incident is exactly the case the guard exists for and
+    /// exactly the case it missed.
+    ///
+    /// This half gathers the facts; `conflict(...)` decides on them.
+    private func remoteChanged(
+        _ edit: RemoteEdit, client: SFTPClient, id: UUID
+    ) async throws -> String? {
+        let believed = digests[id]
+
+        // Cheap pre-filter: a size change is a definite change, and catching
+        // it here refuses without transferring anything. A size *match* proves
+        // nothing, so it never short-circuits the content check.
+        let current = try await client.snapshot(of: edit.remotePath)
+        if let decision = Self.conflict(
+            name: edit.name, believed: believed, remoteExists: current != nil,
+            currentSize: current?.size, checkoutSize: edit.checkoutSnapshot?.size,
+            remoteDigestHex: nil, sizeCheckOnly: true
+        ) {
+            return decision
+        }
+
+        // Ask the host to hash it: one small command, no transfer.
+        var remoteHex = try await client.remoteSHA256(of: edit.remotePath)
+
+        if remoteHex == nil {
+            // No hasher on the host. Read the file and hash it here — slower,
+            // but it always works, so the guard is never skipped for want of a
+            // tool on the far end.
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent(Self.comparePrefix + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            do {
+                try FileManager.default.createDirectory(
+                    at: scratch, withIntermediateDirectories: true
+                )
+                let copy = scratch.appendingPathComponent(edit.name)
+                try await client.download(remotePath: edit.remotePath, to: copy)
+                remoteHex = Self.digest(of: copy).map(Self.hex)
+            } catch {
+                return "\(edit.name) couldn't be checked against the host "
+                    + "(\(error.localizedDescription)). Nothing was written."
+            }
+        }
+
+        return Self.conflict(
+            name: edit.name, believed: believed, remoteExists: true,
+            currentSize: current?.size, checkoutSize: edit.checkoutSnapshot?.size,
+            remoteDigestHex: remoteHex, sizeCheckOnly: false
+        )
+    }
+
+    /// The decision, separated from the I/O so every branch is testable.
+    ///
+    /// **Fails closed.** Every path that cannot establish "unchanged" refuses
+    /// the save: the cost of refusing is reopening the file, and the cost of
+    /// being wrong is someone else's work silently overwritten.
+    nonisolated static func conflict(
+        name: String,
+        believed: Data?,
+        remoteExists: Bool,
+        currentSize: Int?,
+        checkoutSize: Int?,
+        remoteDigestHex: String?,
+        sizeCheckOnly: Bool
+    ) -> String? {
+        let changed = "\(name) changed on the host since it was opened — reopen it "
+            + "to see the current version before saving again."
+
+        guard remoteExists else {
+            return "\(name) is no longer on the host. Save a copy locally before "
+                + "reopening — uploading now would recreate it from a stale copy."
+        }
+        guard let believed else {
+            return "\(name) can't be checked against the host — Portside has no record "
+                + "of what it held when this file was opened. Reopen it before saving."
+        }
+        if let currentSize, let checkoutSize, currentSize != checkoutSize {
+            return changed
+        }
+        // The pre-filter pass has no digest yet and must not conclude anything
+        // from a matching size alone.
+        if sizeCheckOnly { return nil }
+
+        guard let remoteDigestHex else {
+            return "\(name) couldn't be checked against the host — no usable digest. "
+                + "Nothing was written."
+        }
+        return remoteDigestHex == hex(believed) ? nil : changed
+    }
+
+    nonisolated static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
     private func upload(_ id: UUID, digest: Data) async {
         guard let edit = edits.first(where: { $0.id == id }) else { return }
         let client = SFTPClient(entry: edit.entry)
@@ -310,16 +554,9 @@ final class RemoteFileEditor: ObservableObject {
             // since it was checked out (another admin, another tool, our own
             // earlier save landing under a stale snapshot), overwriting it
             // silently is exactly the data loss this exists to prevent.
-            if let expected = edit.checkoutSnapshot {
-                let current = try await client.snapshot(of: edit.remotePath)
-                guard let current, current.size == expected.size, current.dateText == expected.dateText else {
-                    update(id) {
-                        $0.status = .failed(
-                            "\(edit.name) changed on the host since it was opened — reopen it to see the current version before saving again."
-                        )
-                    }
-                    return
-                }
+            if let conflict = try await self.remoteChanged(edit, client: client, id: id) {
+                update(id) { $0.status = .failed(conflict) }
+                return
             }
             try await client.uploadReplacing(
                 localURL: edit.localURL, remotePath: edit.remotePath,
@@ -400,7 +637,9 @@ final class RemoteFileEditor: ObservableObject {
         try? mutableURL.setResourceValues(values)
     }
 
-    private static func digest(of url: URL) -> Data? {
+    /// Pure file hash — no actor state, so the unsynced check can run it
+    /// without hopping to the main actor.
+    nonisolated private static func digest(of url: URL) -> Data? {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
         return Data(SHA256.hash(data: data))
     }

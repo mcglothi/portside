@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **portside** (7019 symbols, 35413 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **portside** (7121 symbols, 36358 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -98,10 +98,12 @@ calibrated to where it has actually paid off in Portside.
 - **Reusing a type or view name.** `EmptyStateView` was already taken by the
   welcome screen; a symbol lookup answers that in one call instead of via a
   compiler error.
-- **Tracing a path through the terminal stack.** `LoggingTerminalView` →
-  `SixelStreamGuard` → `super.dataReceived`, or the OSC 133 tap → `CommandTimeline`
-  → transcript offsets. Several behaviours are ordering contracts rather than
-  call graphs, so confirm against the code before trusting a flow.
+- **Tracing a path through the terminal stack.** `LoggingTerminalView.dataReceived`
+  → `SessionLogger.append` → `CommandTimeline.consume` → `super.dataReceived`,
+  and the OSC 133 tap → `CommandTimeline` → transcript offsets. Several
+  behaviours are ordering contracts rather than call graphs, so confirm against
+  the code before trusting a flow. (`SixelStreamGuard` used to sit in this
+  chain; it was deleted when the SwiftTerm pin moved past the sixel crash.)
 
 **Don't bother when the answer isn't in our symbols:**
 

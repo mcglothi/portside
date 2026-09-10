@@ -5,7 +5,12 @@ This matrix records what was **observed** by running real test vectors through a
 live Portside terminal — not what the parser claims to accept. Each ✅ was seen
 on screen; each ❌ is a confirmed gap.
 
-Last verified: Portside 0.6.1-dev · macOS 14 · MesloLGS Nerd Font Mono.
+Verification is per-section, not whole-file, and each section says when it was
+last measured. The color, text-attribute, Unicode and control-sequence tables
+below were observed on Portside 0.6.1-dev · macOS 14 · MesloLGS Nerd Font Mono
+and have **not** been re-run since; treat them as the last direct observation
+rather than a statement about the current build. Inline graphics were
+re-measured later — see that section.
 
 ## Color
 
@@ -51,42 +56,40 @@ Last verified: Portside 0.6.1-dev · macOS 14 · MesloLGS Nerd Font Mono.
 
 ## Inline graphics
 
-Re-measured 2026-07-27 against the pinned SwiftTerm 1.15.0. **This section
-previously listed all three protocols as unsupported.** That was accurate when
+Re-measured 2026-07-27 against SwiftTerm 1.15.0 and re-checked 2026-09-09
+against the current pin, 1.16.0. **This section previously listed all three
+protocols as unsupported.** That was accurate when
 written — it was measured against SwiftTerm 0.6.1-dev — and has been wrong since
 the dependency moved to 1.x. All three are now parsed, decoded, and handed to
 the front end, which draws them.
 
 | Capability | Status | Notes |
 |---|---|---|
-| Sixel graphics | ✅ | Decodes and renders. Needs a workaround; see below. |
+| Sixel graphics | ✅ | Decodes and renders. |
 | iTerm2 inline images (OSC 1337) | ✅ | Base64 payload is decoded and drawn. |
 | Kitty graphics protocol | ✅ | `a=T` transmit-and-display reaches the renderer. |
 
-**Sixel carries an upstream crash.** `SixelDcsHandler` measures the image in one
-pass and fills it in a second, but the measuring pass only widens the image when
-it sees a band terminator (`$` or `-`). A sixel whose *final* band is wider than
-every terminated band before it — which includes every single-band image of
-width ≥ 2 — is measured too narrow, and the fill pass writes past the end of the
-buffer. That is a `fatalError`: **Portside terminates**, from nothing more than
-output arriving over an SSH session.
+**The Sixel crash is fixed upstream and the workaround is gone.** SwiftTerm's
+`SixelDcsHandler` measured an image in one pass and filled it in a second, but
+the measuring pass only widened the image on a band terminator (`$` or `-`). A
+sixel whose *final* band was wider than every terminated band before it — which
+includes every single-band image of width ≥ 2 — was measured too narrow, and the
+fill pass wrote past the end of the buffer. That was a `fatalError`, reachable
+from nothing more than output arriving over an SSH session.
 
-Portside also advertises Sixel support in its device attributes
-(`TerminalOptions.enableSixelReported` defaults to true), so applications probe,
-find it, and send. Tracked in `Tests/PortsideTests/InlineImageProtocolTests.swift`
-with a runnable repro and the one-line upstream fix.
+SwiftTerm commit `58915b10` ("Fix sixel crash") landed 2026-07-19, two hours and
+forty-six minutes after `v1.15.0` was tagged — which is why Portside carried its
+own `SixelStreamGuard` from 0.17.0. **The pin has since moved to 1.16.0, which
+contains `58915b10`, and the guard was deleted.** Sixel data now goes straight
+to the parser with nothing of ours in the path. Verified by confirming
+`58915b10` is an ancestor of the pinned revision
+(`3917686ea5f5527c5451aaf371bd90bf3618aa71`) rather than by reading the version
+number alone.
 
-**Fixed upstream, not yet released.** SwiftTerm commit `58915b10` ("Fix sixel
-crash") landed 2026-07-19, two hours and forty-six minutes after `v1.15.0` was
-tagged — and `v1.15.0` is what Portside pins.
-
-**Portside works around it** in `SixelStreamGuard`, which appends the band
-terminator the encoder left off as the bytes go past, using the same raw-byte
-tap that parses OSC 133. A trailing `-` folds the last band into the measured
-width but plots nothing, so the decoded image is identical to what the upstream
-fix produces — asserted against a real `Terminal` in `SixelStreamGuardTests`
-rather than assumed. **Delete the guard once the pin moves to a SwiftTerm
-carrying `58915b10`.**
+Portside still advertises Sixel support in its device attributes
+(SwiftTerm's `TerminalOptions.enableSixelReported` defaults to true), so
+applications probe, find it, and send. Coverage lives in
+`Tests/PortsideTests/InlineImageProtocolTests.swift`.
 
 ## How this was tested
 

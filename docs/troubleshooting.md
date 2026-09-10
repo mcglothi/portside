@@ -7,6 +7,45 @@ answer is in `~/.ssh/config` or on the far end, not here.
 
 ## Connecting
 
+### Start here: what does this connection actually do?
+
+**Hosts ▸ Explain This Connection…** (⇧⌘E), or right-click a host in the
+sidebar ▸ **Explain Connection…**, shows where a session really goes and with
+what: the address it resolves to, the login user, the port, any jump host, the
+identity files in the order ssh will offer them, the host-key policy, and which
+stored credential applies.
+
+It answers the question most connection problems turn out to be — *this is not
+going where I think it is going*. A `Host` alias can point at a different
+address, a config block can override the user, and the key that authenticates
+may not be the one you named.
+
+Two things worth knowing:
+
+- **It contacts nothing.** The answer comes from `ssh -G`, which computes the
+  effective configuration and exits, so it works on a host that is down, and
+  it cannot prompt, authenticate, or touch known-hosts.
+- **It shows no secrets.** The credential line names the *source* that would be
+  used — a profile, the host's own saved password, none — never a value.
+
+Portside asks ssh using the same arguments it would connect with, so what you
+see is the connection Portside makes rather than what a bare `ssh <host>` would
+do from a shell.
+
+### A session ended and I don't know why
+
+The bar under a dead pane names the cause rather than saying "Session ended":
+a name that did not resolve, a host that never answered, a refused connection,
+rejected credentials, a host key that changed. Each one carries the next step
+and quotes the line ssh actually printed, so you can check the reading rather
+than take it on trust. An ending Portside does not recognise says so instead of
+guessing.
+
+**A changed host key is the one to slow down on.** It looks the same whether
+the host was rebuilt or something is intercepting the connection. Confirm the
+new fingerprint out of band before trusting it; if the host really was
+rebuilt, `ssh-keygen -R <host>` removes the old entry.
+
 ### It asks for a password even though one is saved
 
 Check, in order:
