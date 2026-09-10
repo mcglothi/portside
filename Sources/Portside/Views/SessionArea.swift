@@ -339,7 +339,7 @@ struct TabContentView: View {
                 .padding(10)
                 .background(.bar)
 
-                if let run = sessions.lastBroadcast {
+                if let run = tab.lastBroadcast {
                     Divider()
                     BroadcastResultsBar(run: run)
                 }
@@ -359,6 +359,7 @@ struct TabContentView: View {
 struct BroadcastResultsBar: View {
     let run: BroadcastRun
     @State private var expanded = true
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -402,6 +403,7 @@ struct BroadcastResultsBar: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .help(result.hint ?? result.label)
                                 Spacer(minLength: 0)
                             }
                         }
@@ -410,9 +412,45 @@ struct BroadcastResultsBar: View {
                     .padding(.bottom, 8)
                 }
                 .frame(maxHeight: 140)
+
+                // Shown once, not per row: with twenty silent hosts the same
+                // sentence twenty times is noise, and the fix is the same one
+                // for all of them.
+                if let remedy {
+                    Divider()
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "lightbulb")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(remedy.hint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        if remedy.isFixedInSettings {
+                            Button("Open Settings") { openSettings() }
+                                .controlSize(.small)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
             }
         }
         .background(.bar)
+    }
+
+    /// The one remedy worth offering. When hosts are silent for two different
+    /// reasons, recording being off is the one to name first — it is a single
+    /// switch and it explains every row at once, where installing shell
+    /// integration is per host.
+    private var remedy: UnobservableReason? {
+        let reasons = run.results.compactMap { result -> UnobservableReason? in
+            if case .unobservable(let reason) = result.outcome { return reason }
+            return nil
+        }
+        if reasons.contains(.commandRecordingOff) { return .commandRecordingOff }
+        return reasons.first
     }
 
     /// A question mark, not a tick and not a cross: an unobservable or

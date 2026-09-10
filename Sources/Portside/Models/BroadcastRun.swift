@@ -89,6 +89,53 @@ struct BroadcastRun: Identifiable, Equatable {
     }
 }
 
+/// Why a host's result cannot be observed — and what to do about it.
+///
+/// A structured case rather than a prose string, because the row text and the
+/// remedy have to stay in step with the settings they name, and a free-form
+/// string in three call sites is how that drifts.
+enum UnobservableReason: Equatable {
+    /// The command timeline is never allocated when recording is off, so no
+    /// host can report. One switch fixes every row at once.
+    case commandRecordingOff
+    /// This pane has never reported a command boundary. The usual cause is a
+    /// host without shell integration; a pane sitting in vim or a pager looks
+    /// the same from here, and so does a shell that has one but was started
+    /// before it was installed.
+    case noBoundariesReported
+
+    var label: String {
+        switch self {
+        case .commandRecordingOff:
+            return "Can't be observed — command recording is off"
+        case .noBoundariesReported:
+            return "Can't be observed — this pane hasn't reported any commands"
+        }
+    }
+
+    /// Names the exact place to go. "Enable shell integration" is not a fix
+    /// anyone can act on; a menu path is.
+    var hint: String {
+        switch self {
+        case .commandRecordingOff:
+            return "Turn on Settings ▸ Terminal ▸ Record commands, then reconnect. "
+                + "Results are read from the same shell-integration markers that "
+                + "feed command history."
+        case .noBoundariesReported:
+            return "This host needs shell integration. Install it permanently from the "
+                + "file browser's ⋯ menu ▸ Install…, or switch on "
+                + "Settings ▸ Terminal ▸ \"Set up directory tracking on connect\" to have "
+                + "Portside type it into each SSH session instead. Either way the pane has "
+                + "to reconnect. A pane sitting in vim or a pager also reports nothing, "
+                + "which looks the same from here."
+        }
+    }
+
+    /// Whether the remedy is a single app-wide setting, so the UI can offer a
+    /// button rather than only prose.
+    var isFixedInSettings: Bool { self == .commandRecordingOff }
+}
+
 /// One host's outcome within a broadcast.
 struct BroadcastResult: Identifiable, Equatable {
     let sessionID: UUID
@@ -113,7 +160,7 @@ struct BroadcastResult: Identifiable, Equatable {
         case awaitingReport
         /// Delivered, and nothing will come back. Not a failure and not a
         /// success — Portside cannot see what happened here.
-        case unobservable(reason: String)
+        case unobservable(UnobservableReason)
         case running(since: Date)
         case finished(exitCode: Int?, at: Date, attribution: Attribution)
         /// A different command finished on this host. The broadcast may still
@@ -145,6 +192,13 @@ struct BroadcastResult: Identifiable, Equatable {
         return nil
     }
 
+    /// How to make this host reportable, when that's the problem. nil when
+    /// there is nothing to fix.
+    var hint: String? {
+        if case .unobservable(let reason) = outcome { return reason.hint }
+        return nil
+    }
+
     /// One line for this host, worded so that "we don't know" never reads as
     /// "it worked".
     var label: String {
@@ -152,7 +206,7 @@ struct BroadcastResult: Identifiable, Equatable {
         case .awaitingReport:
             return "Sent — waiting for this host to report"
         case .unobservable(let reason):
-            return reason
+            return reason.label
         case .running(let since):
             return "Running since \(Self.time.string(from: since))"
         case .finished(let code, _, let attribution):

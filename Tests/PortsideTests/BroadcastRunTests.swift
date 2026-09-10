@@ -59,7 +59,7 @@ final class BroadcastRunTests: XCTestCase {
                 BroadcastResult(
                     sessionID: hostA,
                     host: "legacy-box",
-                    outcome: .unobservable(reason: "This host doesn't report command results.")
+                    outcome: .unobservable(.noBoundariesReported)
                 )
             ]
         )
@@ -169,7 +169,7 @@ final class BroadcastRunTests: XCTestCase {
             results: [
                 BroadcastResult(
                     sessionID: hostA, host: "fresh-box",
-                    outcome: .unobservable(reason: "This host hasn't reported command results.")
+                    outcome: .unobservable(.noBoundariesReported)
                 )
             ]
         )
@@ -178,6 +178,50 @@ final class BroadcastRunTests: XCTestCase {
             from: hostA
         )
         XCTAssertEqual(result(run, hostA).exitCode, 0)
+    }
+
+    // MARK: - The remedy is actionable
+
+    func testEveryUnobservableReasonNamesSomewhereToGo() {
+        // "Enable shell integration" is not a fix anyone can act on. Each
+        // reason has to name the actual menu path or setting.
+        for reason in [UnobservableReason.commandRecordingOff, .noBoundariesReported] {
+            XCTAssertTrue(
+                reason.hint.contains("Settings ▸ Terminal") || reason.hint.contains("⋯ menu"),
+                "\(reason) should point at a real place: \(reason.hint)"
+            )
+        }
+    }
+
+    func testRecordingOffIsTheOneWithASettingsButton() {
+        // A single switch fixes every row; installing shell integration is
+        // per host and has no one button.
+        XCTAssertTrue(UnobservableReason.commandRecordingOff.isFixedInSettings)
+        XCTAssertFalse(UnobservableReason.noBoundariesReported.isFixedInSettings)
+    }
+
+    func testAnUnobservableRowOffersItsRemedyAndAReportedOneDoesNot() {
+        var run = makeRun(command: "uptime")
+        XCTAssertNil(result(run, hostA).hint, "a pending row has nothing to fix")
+        run.record(
+            event: event(command: "uptime", started: start + 1, finished: start + 2, exit: 0),
+            from: hostA
+        )
+        XCTAssertNil(result(run, hostA).hint, "a reported row has nothing to fix")
+
+        let silent = BroadcastResult(
+            sessionID: hostB, host: "b", outcome: .unobservable(.noBoundariesReported)
+        )
+        XCTAssertNotNil(silent.hint)
+    }
+
+    func testTheRowLabelStillNeverReadsAsSuccess() {
+        for reason in [UnobservableReason.commandRecordingOff, .noBoundariesReported] {
+            let label = reason.label.lowercased()
+            XCTAssertTrue(label.contains("can't be observed"), reason.label)
+            XCTAssertFalse(label.contains("waiting"), reason.label)
+            XCTAssertFalse(label.contains("finished"), reason.label)
+        }
     }
 
     // MARK: - Summary
@@ -190,7 +234,7 @@ final class BroadcastRunTests: XCTestCase {
                 BroadcastResult(sessionID: hostB, host: "b", outcome: .awaitingReport),
                 BroadcastResult(
                     sessionID: UUID(), host: "c",
-                    outcome: .unobservable(reason: "This host doesn't report command results.")
+                    outcome: .unobservable(.noBoundariesReported)
                 )
             ]
         )
@@ -202,6 +246,32 @@ final class BroadcastRunTests: XCTestCase {
         XCTAssertTrue(summary.contains("1 of 3 reported"), summary)
         XCTAssertTrue(summary.contains("1 non-zero"), summary)
         XCTAssertTrue(summary.contains("1 cannot report"), summary)
+    }
+
+    // MARK: - Results belong to the tab that sent them
+
+    @MainActor
+    func testABroadcastInOneTabDoesNotAppearInAnother() throws {
+        // Held on the manager, a broadcast in one tab showed its results — and
+        // its host names — on every other armed tab. `disarmNotice` was moved
+        // to Tab for exactly this reason; this repeats that fix and locks it.
+        let manager = SessionManager()
+        defer { for session in manager.sessions { session.shutdown() } }
+
+        manager.openLocalShell()
+        let first = try XCTUnwrap(manager.tabs.first)
+        manager.openLocalShell()
+        let second = try XCTUnwrap(manager.tabs.last)
+        XCTAssertNotIdentical(first, second)
+
+        manager.selectedTabID = first.id
+        first.broadcastArmed = true
+        for session in first.leaves { session.includedInMultiExec = true }
+
+        manager.broadcast("echo portside-test")
+
+        XCTAssertNotNil(first.lastBroadcast, "the sending tab collects results")
+        XCTAssertNil(second.lastBroadcast, "another tab must not show this tab's hosts")
     }
 
     // MARK: - Helpers

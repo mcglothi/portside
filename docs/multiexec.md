@@ -126,15 +126,29 @@ means a host only appears as finished because it said so:
 | ✅ / ❌ Finished, exit *n* | The shell reported this command and its status. |
 | ⏳ Running since… | The shell reported it started, and has not reported an end. |
 | … Sent — waiting | Delivered; this pane has reported boundaries before, so a result is expected. |
-| ❓ Can't be observed | Delivered, and nothing is coming — see below. |
+| ❓ Can't be observed — … | Delivered, and nothing is coming. The bar says how to fix it — see below. |
 | ⑂ A different command finished here | Something else ran in that pane. Its exit status is **not** reported as the broadcast's. |
 
-A host cannot be observed when command recording is off (Settings ▸ Terminal),
-or when that pane has never reported a command boundary — which is the normal
-state for a host without shell integration, and for a pane sitting in `vim` or
-a pager, where the keystrokes arrive and no command boundary is ever emitted.
-Those rows say so rather than sitting on "waiting", because a row that waits
+A host cannot be observed for one of two reasons, and the bar names the fix
+for whichever applies rather than leaving you to work it out:
+
+- **Command recording is off.** No host can report, because the command
+  timeline is never allocated. One switch fixes every row: Settings ▸ Terminal
+  ▸ Record commands, then reconnect. The bar offers the button.
+- **That pane has never reported a command boundary.** The usual cause is a
+  host without shell integration. Install it permanently from the file
+  browser's ⋯ menu ▸ Install…, or switch on Settings ▸ Terminal ▸ "Set up
+  directory tracking on connect" to have Portside type it into each SSH
+  session instead. Either way the pane has to reconnect.
+
+A pane sitting in `vim` or a pager reports nothing either, and looks the same
+from here — the keystrokes arrive and no command boundary is ever emitted.
+
+These rows say so rather than sitting on "waiting", because a row that waits
 forever eventually gets read as though it went fine.
+
+Results belong to the tab that sent them: arming two tabs and broadcasting in
+one does not put its hosts on the other.
 
 When the shell reports a boundary without naming the command — bash's `DEBUG`
 trap cannot always supply it — the row says the result was matched by timing

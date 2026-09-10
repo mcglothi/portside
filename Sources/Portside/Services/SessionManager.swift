@@ -1602,10 +1602,6 @@ final class SessionManager: ObservableObject {
     /// whether the toggle came from the pane's chip or from ⌥⌘M.
     @Published var pendingProtectedInclusionID: UUID?
 
-    /// The most recent MultiExec broadcast and what each host reported back.
-    /// nil until something has been broadcast in this launch.
-    @Published var lastBroadcast: BroadcastRun?
-
     /// Flips one pane in or out of the broadcast. Excluding is immediate;
     /// including a protected host raises the confirmation instead — the caller
     /// commits it via `confirmProtectedInclusion`.
@@ -2394,7 +2390,7 @@ final class SessionManager: ObservableObject {
         for session in targets {
             session.sendText(command + "\r")
         }
-        beginBroadcastRun(command: command, targets: targets)
+        beginBroadcastRun(command: command, targets: targets, in: tab)
     }
 
     /// Opens the per-host result collection for a broadcast.
@@ -2404,7 +2400,9 @@ final class SessionManager: ObservableObject {
     /// boundary before; otherwise the row says outright that nothing is
     /// coming, because a row that sits on "waiting" forever eventually reads
     /// as though it went fine. Nothing here retries anything.
-    private func beginBroadcastRun(command: String, targets: [TerminalSession]) {
+    private func beginBroadcastRun(
+        command: String, targets: [TerminalSession], in tab: Tab
+    ) {
         guard !targets.isEmpty else { return }
         let results = targets.map { session in
             BroadcastResult(
@@ -2415,7 +2413,7 @@ final class SessionManager: ObservableObject {
                 )
             )
         }
-        lastBroadcast = BroadcastRun(
+        tab.lastBroadcast = BroadcastRun(
             command: command, startedAt: Date(), results: results
         )
     }
@@ -2425,25 +2423,20 @@ final class SessionManager: ObservableObject {
     static func initialOutcome(
         for session: TerminalSession, recordsCommands: Bool
     ) -> BroadcastResult.Outcome {
-        guard recordsCommands else {
-            return .unobservable(
-                reason: "Command recording is off, so no results are collected. "
-                    + "Turn it on in Settings ▸ Terminal."
-            )
-        }
-        guard session.hasReportedCommands else {
-            return .unobservable(
-                reason: "This pane hasn't reported any command boundaries, so its "
-                    + "result can't be observed. Shell integration is what reports them."
-            )
-        }
+        guard recordsCommands else { return .unobservable(.commandRecordingOff) }
+        guard session.hasReportedCommands else { return .unobservable(.noBoundariesReported) }
         return .awaitingReport
     }
 
-    /// Folds a session's command event into the open broadcast, if any.
+    /// Folds a session's command event into its own tab's open broadcast.
+    ///
+    /// Scoped to the tab that contains the session: an event can only ever
+    /// belong to the broadcast that tab sent, and routing it anywhere else
+    /// would attribute one tab's output to another tab's run.
     private func recordBroadcastResult(_ event: CommandEvent, from session: TerminalSession) {
-        guard lastBroadcast != nil else { return }
-        lastBroadcast?.record(event: event, from: session.id)
+        guard let tab = tabs.first(where: { $0.contains(session.id) }),
+              tab.lastBroadcast != nil else { return }
+        tab.lastBroadcast?.record(event: event, from: session.id)
     }
 
     /// Runs a macro across the armed tab's included panes, or in the focused
@@ -2461,7 +2454,7 @@ final class SessionManager: ObservableObject {
             // against, minus the trailing Return that isn't part of it.
             beginBroadcastRun(
                 command: macro.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                targets: targets
+                targets: targets, in: tab
             )
         } else {
             selected?.sendText(payload)
