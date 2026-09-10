@@ -234,6 +234,56 @@ struct SFTPClient {
     /// Set PORTSIDE_SFTP_DEBUG=1 to log raw sftp batches + output to Console.app.
     private static let debugLogging = ProcessInfo.processInfo.environment["PORTSIDE_SFTP_DEBUG"] != nil
 
+    /// SHA-256 of a remote file, as lowercase hex — or nil when the host has
+    /// no hasher this understands.
+    ///
+    /// Exists because the conflict check cannot be built on `ls` metadata. The
+    /// listing's date field is `Sep  9 21:03` — minute granularity, degrading
+    /// to day granularity for files older than six months, where the third
+    /// field becomes the year. Size plus that timestamp misses any change that
+    /// keeps the byte count within the same minute: two people editing one
+    /// config during an incident, or a script rewriting a value in place.
+    ///
+    /// Tries the three spellings that cover essentially every host: GNU
+    /// coreutils and busybox (`sha256sum`), macOS and BSD (`shasum -a 256`),
+    /// and BSD's own (`sha256 -q`). `2>/dev/null` on each so a missing tool
+    /// stays quiet, and the first that produces output wins. Returns nil
+    /// rather than throwing when none exists — the caller falls back to
+    /// reading the file, which always works.
+    func remoteSHA256(of remotePath: String) async throws -> String? {
+        let quoted = ShellQuoting.quote(remotePath)
+        let script = "sha256sum \(quoted) 2>/dev/null "
+            + "|| shasum -a 256 \(quoted) 2>/dev/null "
+            + "|| sha256 -q \(quoted) 2>/dev/null"
+
+        var args = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+        args += SSHControl.passiveOptions
+        args += entry.sshTargetArgs()
+        args += [script]
+
+        let result = try await Self.runProcess("/usr/bin/ssh", args, stdin: "")
+        guard result.status == 0 else { return nil }
+        return Self.parseSHA256(from: result.out)
+    }
+
+    /// Pulls the digest out of whichever hasher answered.
+    ///
+    /// `sha256sum` prints `<hex>  <path>`, `shasum -a 256` the same, BSD's
+    /// `sha256 -q` prints the hex alone. Anything that isn't 64 hex digits is
+    /// rejected rather than half-trusted: a host that printed a usage message
+    /// or a permission error must read as "no digest available" so the caller
+    /// falls back to reading the file, not as a digest that fails to match and
+    /// blocks every save.
+    static func parseSHA256(from output: String) -> String? {
+        let first = output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        let hex = (first.split(separator: " ").first.map(String.init) ?? "").lowercased()
+        guard hex.count == 64, hex.allSatisfy(\.isHexDigit) else { return nil }
+        return hex
+    }
+
     private func run(batch commands: [String]) async throws -> String {
         var args = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         args += SSHControl.options

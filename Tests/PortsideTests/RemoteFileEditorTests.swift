@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 import XCTest
@@ -541,6 +542,156 @@ final class RemoteFileEditorTests: XCTestCase {
             throw SFTPClientError.failed("ssh \(command) failed: \(result.err)")
         }
         return result.out
+    }
+
+    // MARK: - The conflict check compares content, not metadata
+
+    // It used to compare the listing's size and modification date. `ls` gives
+    // "Sep  9 21:03" — minute granularity — and only "Sep  9  2025" for a file
+    // older than six months. A same-size edit inside that window passed as
+    // unchanged, which is precisely the case the guard exists for: two admins
+    // in one config during an incident.
+
+    private let digest = String(repeating: "a1b2c3d4", count: 8)   // 64 hex chars
+
+    func testGNUCoreutilsOutputIsRead() {
+        XCTAssertEqual(
+            SFTPClient.parseSHA256(from: "\(digest)  /etc/nginx/nginx.conf\n"), digest
+        )
+    }
+
+    func testMacOSShasumOutputIsRead() {
+        XCTAssertEqual(SFTPClient.parseSHA256(from: "\(digest)  nginx.conf\n"), digest)
+    }
+
+    func testBSDBareDigestIsRead() {
+        // sha256 -q prints the hex with no filename after it.
+        XCTAssertEqual(SFTPClient.parseSHA256(from: "\(digest)\n"), digest)
+    }
+
+    func testAnUppercaseDigestIsNormalised() {
+        XCTAssertEqual(SFTPClient.parseSHA256(from: digest.uppercased() + "  f\n"), digest)
+    }
+
+    func testAToolThatComplainedIsNotMistakenForADigest() {
+        // The fallback path (read the file and hash it here) is only reached
+        // when this returns nil. A half-trusted value here would instead fail
+        // every comparison and block every save.
+        XCTAssertNil(SFTPClient.parseSHA256(from: "sha256sum: /etc/shadow: Permission denied\n"))
+        XCTAssertNil(SFTPClient.parseSHA256(from: "usage: shasum [-a 1|224|256|384|512]\n"))
+        XCTAssertNil(SFTPClient.parseSHA256(from: ""))
+        XCTAssertNil(SFTPClient.parseSHA256(from: "\n\n"))
+    }
+
+    func testATruncatedOrOverlongDigestIsRejected() {
+        XCTAssertNil(SFTPClient.parseSHA256(from: String(digest.dropLast()) + "  f\n"))
+        XCTAssertNil(SFTPClient.parseSHA256(from: digest + "ff  f\n"))
+    }
+
+    func testNonHexIsRejectedEvenAtTheRightLength() {
+        // An MD5 tool answering, or a localised message that happens to fit.
+        XCTAssertNil(SFTPClient.parseSHA256(from: String(repeating: "z", count: 64) + "  f\n"))
+    }
+
+    func testALeadingBlankLineDoesNotHideTheDigest() {
+        // The command chains three tools with `||`; a quiet failure can still
+        // leave a newline ahead of the one that worked.
+        XCTAssertEqual(SFTPClient.parseSHA256(from: "\n\(digest)  f\n"), digest)
+    }
+
+    func testASameSizeEditInTheSameMinuteIsCaught() {
+        // The exact miss. "timeout = 30" -> "timeout = 90": identical byte
+        // count, identical `ls` timestamp, different content. The old check
+        // called this unchanged and overwrote it.
+        let believed = Data("timeout = 30\n".utf8)
+        let onHost = RemoteFileEditor.hex(Data(SHA256.hash(data: Data("timeout = 90\n".utf8))))
+        XCTAssertNotNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: Data(SHA256.hash(data: believed)),
+                remoteExists: true, currentSize: 13, checkoutSize: 13,
+                remoteDigestHex: onHost, sizeCheckOnly: false
+            ),
+            "a same-size, same-minute change must be caught"
+        )
+    }
+
+    func testAnUntouchedFileIsSafeToOverwrite() {
+        let content = Data("timeout = 30\n".utf8)
+        XCTAssertNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: Data(SHA256.hash(data: content)),
+                remoteExists: true, currentSize: 13, checkoutSize: 13,
+                remoteDigestHex: RemoteFileEditor.hex(Data(SHA256.hash(data: content))),
+                sizeCheckOnly: false
+            )
+        )
+    }
+
+    func testASizeChangeIsRefusedBeforeAnythingIsTransferred() {
+        // Caught in the pre-filter pass, which has no digest yet.
+        XCTAssertNotNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: Data([1, 2, 3]), remoteExists: true,
+                currentSize: 99, checkoutSize: 13, remoteDigestHex: nil, sizeCheckOnly: true
+            )
+        )
+    }
+
+    func testAMatchingSizeAloneNeverConcludesUnchanged() {
+        // The pre-filter must not pass judgement on a size match — that is the
+        // whole bug. It returns nil meaning "keep going", and the digest pass
+        // is what decides.
+        XCTAssertNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: Data([1, 2, 3]), remoteExists: true,
+                currentSize: 13, checkoutSize: 13, remoteDigestHex: nil, sizeCheckOnly: true
+            ),
+            "the size pass defers; it does not approve"
+        )
+    }
+
+    func testNoDigestAtAllRefusesRatherThanAssumingUnchanged() {
+        // Fails closed: the cost of refusing is reopening the file, the cost
+        // of being wrong is overwriting someone else's work.
+        XCTAssertNotNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: Data([1, 2, 3]), remoteExists: true,
+                currentSize: 13, checkoutSize: 13, remoteDigestHex: nil, sizeCheckOnly: false
+            )
+        )
+    }
+
+    func testNoBaselineRefuses() {
+        XCTAssertNotNil(
+            RemoteFileEditor.conflict(
+                name: "app.conf", believed: nil, remoteExists: true,
+                currentSize: 13, checkoutSize: 13,
+                remoteDigestHex: String(repeating: "a", count: 64), sizeCheckOnly: false
+            )
+        )
+    }
+
+    func testAFileDeletedOnTheHostIsNotSilentlyRecreated() {
+        let message = RemoteFileEditor.conflict(
+            name: "app.conf", believed: Data([1, 2, 3]), remoteExists: false,
+            currentSize: nil, checkoutSize: 13, remoteDigestHex: nil, sizeCheckOnly: true
+        )
+        XCTAssertEqual(message?.contains("no longer on the host"), true)
+    }
+
+    func testComparisonScratchCopiesAreSweptAtLaunch() {
+        // The fallback pulls the remote file to a temp directory to hash it. A
+        // crash mid-comparison must not leave that behind.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(RemoteFileEditor.comparePrefix + UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? "remote copy".write(
+            to: dir.appendingPathComponent("f.conf"), atomically: true, encoding: .utf8
+        )
+
+        RemoteFileEditor.purgeStaleCopies()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
     }
 
     // MARK: - Unsynced work survives Stop and Quit

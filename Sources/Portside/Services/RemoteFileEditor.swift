@@ -372,13 +372,17 @@ final class RemoteFileEditor: ObservableObject {
         // Abandoned drag-out staging directories too: a cancelled or crashed
         // drag of a large file leaves multi-gigabyte partials behind, and
         // nothing else ever cleans them up.
-        let prefixes = [tempPrefix, dragPrefix]
+        let prefixes = [tempPrefix, dragPrefix, comparePrefix]
         for url in contents where prefixes.contains(where: url.lastPathComponent.hasPrefix) {
             try? fm.removeItem(at: url)
         }
     }
 
     nonisolated static let dragPrefix = "portside-drag-"
+
+    /// Scratch copies pulled purely to compare against the host. Swept at
+    /// launch like the others: a crash mid-comparison leaves one behind.
+    nonisolated static let comparePrefix = "portside-compare-"
 
     // MARK: - Checkout
 
@@ -441,6 +445,107 @@ final class RemoteFileEditor: ObservableObject {
         tasks[id] = Task { await self.upload(id, digest: digest) }
     }
 
+    /// Whether the host's copy differs from what we believe it holds, as a
+    /// message to show — or nil when overwriting is safe.
+    ///
+    /// **Compares content, not metadata.** This used to compare the listing's
+    /// size and date, which cannot see a change that keeps the byte count
+    /// within the same minute — `ls` gives `Sep  9 21:03`, and for a file
+    /// older than six months only `Sep  9  2025`. Two admins editing one
+    /// config during an incident is exactly the case the guard exists for and
+    /// exactly the case it missed.
+    ///
+    /// This half gathers the facts; `conflict(...)` decides on them.
+    private func remoteChanged(
+        _ edit: RemoteEdit, client: SFTPClient, id: UUID
+    ) async throws -> String? {
+        let believed = digests[id]
+
+        // Cheap pre-filter: a size change is a definite change, and catching
+        // it here refuses without transferring anything. A size *match* proves
+        // nothing, so it never short-circuits the content check.
+        let current = try await client.snapshot(of: edit.remotePath)
+        if let decision = Self.conflict(
+            name: edit.name, believed: believed, remoteExists: current != nil,
+            currentSize: current?.size, checkoutSize: edit.checkoutSnapshot?.size,
+            remoteDigestHex: nil, sizeCheckOnly: true
+        ) {
+            return decision
+        }
+
+        // Ask the host to hash it: one small command, no transfer.
+        var remoteHex = try await client.remoteSHA256(of: edit.remotePath)
+
+        if remoteHex == nil {
+            // No hasher on the host. Read the file and hash it here — slower,
+            // but it always works, so the guard is never skipped for want of a
+            // tool on the far end.
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent(Self.comparePrefix + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            do {
+                try FileManager.default.createDirectory(
+                    at: scratch, withIntermediateDirectories: true
+                )
+                let copy = scratch.appendingPathComponent(edit.name)
+                try await client.download(remotePath: edit.remotePath, to: copy)
+                remoteHex = Self.digest(of: copy).map(Self.hex)
+            } catch {
+                return "\(edit.name) couldn't be checked against the host "
+                    + "(\(error.localizedDescription)). Nothing was written."
+            }
+        }
+
+        return Self.conflict(
+            name: edit.name, believed: believed, remoteExists: true,
+            currentSize: current?.size, checkoutSize: edit.checkoutSnapshot?.size,
+            remoteDigestHex: remoteHex, sizeCheckOnly: false
+        )
+    }
+
+    /// The decision, separated from the I/O so every branch is testable.
+    ///
+    /// **Fails closed.** Every path that cannot establish "unchanged" refuses
+    /// the save: the cost of refusing is reopening the file, and the cost of
+    /// being wrong is someone else's work silently overwritten.
+    nonisolated static func conflict(
+        name: String,
+        believed: Data?,
+        remoteExists: Bool,
+        currentSize: Int?,
+        checkoutSize: Int?,
+        remoteDigestHex: String?,
+        sizeCheckOnly: Bool
+    ) -> String? {
+        let changed = "\(name) changed on the host since it was opened — reopen it "
+            + "to see the current version before saving again."
+
+        guard remoteExists else {
+            return "\(name) is no longer on the host. Save a copy locally before "
+                + "reopening — uploading now would recreate it from a stale copy."
+        }
+        guard let believed else {
+            return "\(name) can't be checked against the host — Portside has no record "
+                + "of what it held when this file was opened. Reopen it before saving."
+        }
+        if let currentSize, let checkoutSize, currentSize != checkoutSize {
+            return changed
+        }
+        // The pre-filter pass has no digest yet and must not conclude anything
+        // from a matching size alone.
+        if sizeCheckOnly { return nil }
+
+        guard let remoteDigestHex else {
+            return "\(name) couldn't be checked against the host — no usable digest. "
+                + "Nothing was written."
+        }
+        return remoteDigestHex == hex(believed) ? nil : changed
+    }
+
+    nonisolated static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
     private func upload(_ id: UUID, digest: Data) async {
         guard let edit = edits.first(where: { $0.id == id }) else { return }
         let client = SFTPClient(entry: edit.entry)
@@ -449,16 +554,9 @@ final class RemoteFileEditor: ObservableObject {
             // since it was checked out (another admin, another tool, our own
             // earlier save landing under a stale snapshot), overwriting it
             // silently is exactly the data loss this exists to prevent.
-            if let expected = edit.checkoutSnapshot {
-                let current = try await client.snapshot(of: edit.remotePath)
-                guard let current, current.size == expected.size, current.dateText == expected.dateText else {
-                    update(id) {
-                        $0.status = .failed(
-                            "\(edit.name) changed on the host since it was opened — reopen it to see the current version before saving again."
-                        )
-                    }
-                    return
-                }
+            if let conflict = try await self.remoteChanged(edit, client: client, id: id) {
+                update(id) { $0.status = .failed(conflict) }
+                return
             }
             try await client.uploadReplacing(
                 localURL: edit.localURL, remotePath: edit.remotePath,
