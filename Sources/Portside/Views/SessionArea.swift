@@ -483,14 +483,9 @@ struct BroadcastResultsBar: View {
 struct TerminalPane: View {
     @EnvironmentObject var sessions: SessionManager
     @ObservedObject var session: TerminalSession
-    @State private var explaining = false
 
     var body: some View {
         TerminalHostingView(session: session)
-            .sheet(isPresented: $explaining) {
-                ConnectionExplanationSheet(session: session)
-                    .environmentObject(sessions)
-            }
             .overlay(alignment: .topTrailing) {
                 if session.findVisible {
                     FindBar(session: session)
@@ -524,7 +519,7 @@ struct TerminalPane: View {
                 if failed, session.entry?.kind == .host {
                     // Promised by the authentication diagnosis's next step, so
                     // it has to be reachable from the bar that shows it.
-                    Button("Explain…") { explaining = true }
+                    Button("Explain…") { sessions.explainingEntry = session.entry }
                         .help("Show where this connection goes, as whom, and with which key")
                 }
                 Button("Reconnect") { sessions.reconnect(session) }
@@ -568,7 +563,10 @@ struct TerminalPane: View {
 /// the credential line names a *source* rather than a value.
 struct ConnectionExplanationSheet: View {
     @EnvironmentObject var sessions: SessionManager
-    @ObservedObject var session: TerminalSession
+    /// An entry, not a session: the same question is worth asking *before*
+    /// connecting ("where would this actually go?"), and nothing here needs a
+    /// live session to answer it.
+    let entry: SessionEntry
     @Environment(\.dismiss) private var dismiss
     @State private var explanation: ConnectionExplanation?
 
@@ -576,9 +574,9 @@ struct ConnectionExplanationSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("This connection")
+                    Text(entry.name.isEmpty ? "This connection" : entry.name)
                         .font(.headline)
-                    Text(explanation?.destination ?? session.entry?.subtitle ?? session.title)
+                    Text(explanation?.destination ?? entry.subtitle)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -643,13 +641,6 @@ struct ConnectionExplanationSheet: View {
         }
         .frame(width: 520, height: 460)
         .task {
-            guard let entry = session.entry else {
-                explanation = ConnectionExplanation(
-                    destination: session.title, items: [],
-                    failure: "This session has no saved entry to explain."
-                )
-                return
-            }
             explanation = await sessions.explainConnection(for: entry)
         }
     }

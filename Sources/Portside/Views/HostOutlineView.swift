@@ -48,6 +48,9 @@ struct HostOutlineView: NSViewRepresentable {
     /// argument: a rotation needs *two* keys and which pair to use is the whole
     /// decision, so it is never pre-made from a right-click.
     var rotateKeyOnHosts: (Set<UUID>) -> Void = { _ in }
+    /// Shows the effective ssh configuration for a host. Defaulted so the
+    /// preview and any other construction site needn't supply one.
+    var explain: (SessionEntry) -> Void = { _ in }
     let newSubfolder: (String) -> Void
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
@@ -670,6 +673,15 @@ struct HostOutlineView: NSViewRepresentable {
             addEnvironmentMenu(menu, forSelection: [entry.id])
             addCopyKeyItem(menu, hosts: [entry], title: "Copy SSH Key…")
             addRotateKeyItem(menu, hosts: [entry], title: "Rotate SSH Key…")
+            // Offered without connecting: "where would this actually go, and
+            // with which key?" is a question worth answering *before* a
+            // connection, not only after one has failed. ssh -G contacts
+            // nothing, so this is safe on a host that is down.
+            if entry.kind == .host {
+                menu.addItem(ClosureMenuItem(title: "Explain Connection…") {
+                    self.parent.explain(entry)
+                })
+            }
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
         }

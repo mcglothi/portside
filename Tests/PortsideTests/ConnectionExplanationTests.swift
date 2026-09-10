@@ -151,6 +151,43 @@ final class ConnectionExplanationTests: XCTestCase {
         )
     }
 
+    // MARK: - Where it can be reached from
+
+    @MainActor
+    func testALocalShellHasNoConnectionToExplain() {
+        // The menu item has to be disabled rather than opening a sheet that
+        // says "nothing here" — a local shell has no entry at all.
+        let manager = SessionManager()
+        defer { for session in manager.sessions { session.shutdown() } }
+        manager.openLocalShell()
+
+        XCTAssertFalse(manager.canExplainSelectedConnection)
+        manager.explainSelectedConnection()
+        XCTAssertNil(manager.explainingEntry, "nothing to explain, so nothing opens")
+    }
+
+    @MainActor
+    func testNothingSelectedExplainsNothing() {
+        let manager = SessionManager()
+        XCTAssertFalse(manager.canExplainSelectedConnection)
+        manager.explainSelectedConnection()
+        XCTAssertNil(manager.explainingEntry)
+    }
+
+    func testOnlySSHSessionsHaveAConfigurationToExplain() async {
+        // Serial, telnet and container sessions reach ssh -G with nothing to
+        // ask about; the explainer says so instead of running it.
+        for kind in [SessionKind.serial, .telnet, .container] {
+            var entry = SessionEntry(name: "device")
+            entry.kind = kind
+            let explained = await ConnectionExplainer.explain(
+                entry: entry, autoAcceptNewHostKeys: false, credentialSource: .none
+            )
+            XCTAssertNotNil(explained.failure, "\(kind) should decline rather than shell out")
+            XCTAssertTrue(explained.items.isEmpty)
+        }
+    }
+
     // MARK: - Against real ssh output
 
     /// Captured verbatim from `/usr/bin/ssh -G` on macOS 15 (OpenSSH 9.x).

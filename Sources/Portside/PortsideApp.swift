@@ -277,6 +277,10 @@ struct PortsideApp: App {
                 Button("Rotate SSH Key…") { library.requestRotateKey() }
                     .disabled(store.entries.allSatisfy { $0.kind != .host })
                 Divider()
+                Button("Explain This Connection…") { sessions.explainSelectedConnection() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(!sessions.canExplainSelectedConnection)
+                Divider()
                 Button("Inventory Coverage…") { library.requestShowCoverage() }
                 Button("History…") { library.requestShowHistory() }
             }

@@ -11,6 +11,13 @@ struct ContentView: View {
         } detail: {
             SessionArea()
         }
+        // Presented here rather than on a pane: it is also reachable from the
+        // sidebar, for a host that isn't connected yet.
+        .sheet(item: $sessions.explainingEntry) { entry in
+            ConnectionExplanationSheet(entry: entry)
+                .environmentObject(store)
+                .environmentObject(sessions)
+        }
         .sheet(isPresented: $sessions.showQuickConnect) {
             QuickConnectView()
                 .environmentObject(store)

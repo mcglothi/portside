@@ -1147,6 +1147,18 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    /// Whether the focused session is one there is an ssh configuration to
+    /// explain. Serial, telnet and container sessions have none.
+    var canExplainSelectedConnection: Bool {
+        selected?.entry?.kind == .host
+    }
+
+    /// Opens the explanation for whatever is focused.
+    func explainSelectedConnection() {
+        guard let entry = selected?.entry, entry.kind == .host else { return }
+        explainingEntry = entry
+    }
+
     /// Answers "where does this actually go, and with what?" for a session.
     ///
     /// Lives here because the answer depends on the two settings this object
@@ -1601,6 +1613,10 @@ final class SessionManager: ObservableObject {
     /// confirmation, so the dialog can be presented over that specific pane
     /// whether the toggle came from the pane's chip or from ⌥⌘M.
     @Published var pendingProtectedInclusionID: UUID?
+
+    /// The host whose effective ssh configuration is being shown, if any.
+    /// Driven from the Hosts menu, the sidebar, and a failed session's bar.
+    @Published var explainingEntry: SessionEntry?
 
     /// Flips one pane in or out of the broadcast. Excluding is immediate;
     /// including a protected host raises the confirmation instead — the caller
