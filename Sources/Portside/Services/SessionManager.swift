@@ -448,6 +448,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// Guards against the connection attempt being resolved twice.
     var resolvedConnectionOutcome = false
 
+    /// Whether this session has ever reported a command boundary (OSC 133).
+    ///
+    /// Read by MultiExec to tell "a result is coming" from "this host will
+    /// never tell us" — the difference between a row that is still pending and
+    /// one that must never be read as success.
+    @Published private(set) var hasReportedCommands = false
+
+    func noteCommandReported() { hasReportedCommands = true }
+
     /// Why this session ended, once it has. `processTerminated` used to take
     /// the child's exit status and drop it, so every ending — a clean exit, a
     /// name that would not resolve, a changed host key — reached the user as
@@ -1593,6 +1602,10 @@ final class SessionManager: ObservableObject {
     /// whether the toggle came from the pane's chip or from ⌥⌘M.
     @Published var pendingProtectedInclusionID: UUID?
 
+    /// The most recent MultiExec broadcast and what each host reported back.
+    /// nil until something has been broadcast in this launch.
+    @Published var lastBroadcast: BroadcastRun?
+
     /// Flips one pane in or out of the broadcast. Excluding is immediate;
     /// including a protected host raises the confirmation instead — the caller
     /// commits it via `confirmProtectedInclusion`.
@@ -2377,9 +2390,60 @@ final class SessionManager: ObservableObject {
     /// Sends a full command line to the armed tab's included panes (command bar).
     func broadcast(_ command: String) {
         guard !command.isEmpty, let tab = selectedTab, tab.broadcastArmed else { return }
-        for session in broadcastTargets(in: tab) {
+        let targets = broadcastTargets(in: tab)
+        for session in targets {
             session.sendText(command + "\r")
         }
+        beginBroadcastRun(command: command, targets: targets)
+    }
+
+    /// Opens the per-host result collection for a broadcast.
+    ///
+    /// Results are *observed*, never assumed. A host is only expected to
+    /// report if command recording is on and that session has reported a
+    /// boundary before; otherwise the row says outright that nothing is
+    /// coming, because a row that sits on "waiting" forever eventually reads
+    /// as though it went fine. Nothing here retries anything.
+    private func beginBroadcastRun(command: String, targets: [TerminalSession]) {
+        guard !targets.isEmpty else { return }
+        let results = targets.map { session in
+            BroadcastResult(
+                sessionID: session.id,
+                host: session.title,
+                outcome: Self.initialOutcome(
+                    for: session, recordsCommands: recordsCommands
+                )
+            )
+        }
+        lastBroadcast = BroadcastRun(
+            command: command, startedAt: Date(), results: results
+        )
+    }
+
+    /// Separated so the "can this host report?" rule is testable without a
+    /// live session tree.
+    static func initialOutcome(
+        for session: TerminalSession, recordsCommands: Bool
+    ) -> BroadcastResult.Outcome {
+        guard recordsCommands else {
+            return .unobservable(
+                reason: "Command recording is off, so no results are collected. "
+                    + "Turn it on in Settings ▸ Terminal."
+            )
+        }
+        guard session.hasReportedCommands else {
+            return .unobservable(
+                reason: "This pane hasn't reported any command boundaries, so its "
+                    + "result can't be observed. Shell integration is what reports them."
+            )
+        }
+        return .awaitingReport
+    }
+
+    /// Folds a session's command event into the open broadcast, if any.
+    private func recordBroadcastResult(_ event: CommandEvent, from session: TerminalSession) {
+        guard lastBroadcast != nil else { return }
+        lastBroadcast?.record(event: event, from: session.id)
     }
 
     /// Runs a macro across the armed tab's included panes, or in the focused
@@ -2388,9 +2452,17 @@ final class SessionManager: ObservableObject {
         let payload = macro.text.replacingOccurrences(of: "\n", with: "\r")
             + (macro.sendReturn ? "\r" : "")
         if let tab = selectedTab, tab.broadcastArmed {
-            for session in broadcastTargets(in: tab) {
+            let targets = broadcastTargets(in: tab)
+            for session in targets {
                 session.sendText(payload)
             }
+            // A macro fans out exactly like a typed command, so it gets the
+            // same per-host reporting. The macro's text is what to match
+            // against, minus the trailing Return that isn't part of it.
+            beginBroadcastRun(
+                command: macro.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                targets: targets
+            )
         } else {
             selected?.sendText(payload)
         }
@@ -2416,8 +2488,11 @@ final class SessionManager: ObservableObject {
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {
             session.terminalView.commandTimeline = CommandTimeline(entryID: session.entry?.id)
-            session.terminalView.onCommand = { [weak self] event in
-                self?.onCommand?(event)
+            session.terminalView.onCommand = { [weak self, weak session] event in
+                guard let self, let session else { return }
+                session.noteCommandReported()
+                self.recordBroadcastResult(event, from: session)
+                self.onCommand?(event)
             }
         }
         session.apply(scrollback: terminalSettings.resolvedScrollback)

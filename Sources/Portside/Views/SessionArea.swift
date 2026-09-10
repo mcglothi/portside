@@ -338,9 +338,106 @@ struct TabContentView: View {
                 }
                 .padding(10)
                 .background(.bar)
+
+                if let run = sessions.lastBroadcast {
+                    Divider()
+                    BroadcastResultsBar(run: run)
+                }
             }
         }
         .overlay(alignment: .top) { disarmNotice }
+    }
+}
+
+/// Per-host outcomes for the last MultiExec broadcast.
+///
+/// The point of this view is the wording. MultiExec fans keystrokes out to
+/// many hosts, and someone will read these rows to decide whether a
+/// destructive command landed — so a host that cannot report, or that ran
+/// something else, has to look different from one that returned exit 0.
+/// Nothing here is inferred from silence.
+struct BroadcastResultsBar: View {
+    let run: BroadcastRun
+    @State private var expanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(run.command)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(run.summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            if expanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(run.results) { result in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: icon(for: result))
+                                    .font(.caption2)
+                                    .foregroundStyle(tint(for: result))
+                                    .frame(width: 12)
+                                Text(result.host)
+                                    .font(.caption)
+                                    .frame(width: 140, alignment: .leading)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(result.label)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                }
+                .frame(maxHeight: 140)
+            }
+        }
+        .background(.bar)
+    }
+
+    /// A question mark, not a tick and not a cross: an unobservable or
+    /// divergent host is neither a pass nor a fail, and drawing it as either
+    /// would be the lie this whole feature is built to avoid.
+    private func icon(for result: BroadcastResult) -> String {
+        switch result.outcome {
+        case .awaitingReport: return "ellipsis"
+        case .running: return "clock"
+        case .unobservable: return "questionmark.circle"
+        case .diverged: return "arrow.triangle.branch"
+        case .finished(let code, _, _):
+            guard let code else { return "questionmark.circle" }
+            return code == 0 ? "checkmark.circle.fill" : "xmark.circle.fill"
+        }
+    }
+
+    private func tint(for result: BroadcastResult) -> Color {
+        switch result.outcome {
+        case .finished(let code, _, _):
+            guard let code else { return .secondary }
+            return code == 0 ? .green : .red
+        case .diverged: return .orange
+        default: return .secondary
+        }
     }
 }
 
