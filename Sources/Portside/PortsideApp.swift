@@ -71,6 +71,60 @@ struct PortsideApp: App {
         NSApp.appearance = desired
     }
 
+    /// Opens an `ssh://` or `portside://connect/` link. A saved host connects
+    /// straight away (a protected one asks first); anything else always asks,
+    /// because a link can come from any web page.
+    private func openLink(_ url: URL) {
+        NSApp.activate(ignoringOtherApps: true)
+        let link: ConnectionLink
+        do {
+            link = try ConnectionLink.parse(url)
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Portside can't open this link."
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            return
+        }
+
+        if let entry = link.match(in: store.entries) {
+            if entry.isProtected {
+                let alert = NSAlert()
+                alert.messageText = "Open protected host \(entry.name)?"
+                alert.informativeText = "A link asked to connect to it."
+                alert.addButton(withTitle: "Connect")
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+            }
+            sessions.connect(to: store.resolved(entry))
+            return
+        }
+
+        guard let adHoc = link.adHocEntry else {
+            let alert = NSAlert()
+            alert.messageText = "No saved host is called “\(link.displayTarget)”."
+            alert.informativeText = "portside://connect/ links open hosts already in the library, by name or ~/.ssh/config alias."
+            alert.runModal()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Connect to \(link.displayTarget)?"
+        alert.informativeText = "This host isn't in your library. Links can come from any web page — only connect if you expected this one."
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Add to Library and Connect")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            sessions.connect(to: store.resolved(adHoc))
+        case .alertSecondButtonReturn:
+            store.upsert(adHoc)
+            sessions.connect(to: store.resolved(adHoc))
+        default:
+            break
+        }
+    }
+
     var body: some Scene {
         WindowGroup("Portside") {
             ContentView()
@@ -113,6 +167,10 @@ struct PortsideApp: App {
                         store.entry(id: id).map(store.resolved)
                     }
                 }
+                .onOpenURL { openLink($0) }
+                // Route links into the existing window instead of SwiftUI's
+                // default of opening a new one per URL.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .onChange(of: store.appearance) { _, new in
                     applyAppAppearance(new.appAppearance)
                     sessions.applyAppearance(new)

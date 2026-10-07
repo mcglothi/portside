@@ -154,8 +154,55 @@ struct ConnectionSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Links") {
+                SSHLinkHandlerRow()
+            }
         }
         .formStyle(.grouped)
         .settingsPageSizing()
+    }
+}
+
+/// Whether `ssh://` links open in Portside. macOS gives them to Terminal by
+/// default and has no UI of its own for changing that, so this is the switch.
+private struct SSHLinkHandlerRow: View {
+    @State private var handlerName = SSHLinkHandlerRow.currentHandlerName()
+    @State private var error: String?
+
+    private static let probe = URL(string: "ssh://example")!
+
+    var body: some View {
+        LabeledContent("ssh:// links open in") {
+            HStack {
+                Text(handlerName ?? "nothing")
+                if handlerName != "Portside" {
+                    Button("Use Portside") { makeDefault() }
+                }
+            }
+        }
+        if let error {
+            Text(error).font(.caption).foregroundStyle(.orange)
+        }
+        Text("A saved host opens straight away; a host that isn't in your library always asks first. portside://connect/<name> links work regardless.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func makeDefault() {
+        NSWorkspace.shared.setDefaultApplication(
+            at: Bundle.main.bundleURL, toOpenURLsWithScheme: "ssh"
+        ) { err in
+            DispatchQueue.main.async {
+                error = err.map { "Couldn't change it: \($0.localizedDescription)" }
+                handlerName = Self.currentHandlerName()
+            }
+        }
+    }
+
+    private static func currentHandlerName() -> String? {
+        NSWorkspace.shared.urlForApplication(toOpen: probe).map {
+            FileManager.default.displayName(atPath: $0.path)
+                .replacingOccurrences(of: ".app", with: "")
+        }
     }
 }
