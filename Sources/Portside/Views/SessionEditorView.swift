@@ -231,6 +231,12 @@ struct SessionEditorView: View {
                 Text("On").tag(Bool?.some(true))
                 Text("Off").tag(Bool?.some(false))
             }
+            if draft.forwardX11 == true, let problem = X11Support.problem(X11Support.status()) {
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
             TextField("Keepalive (seconds)", text: keepAliveBinding, prompt: Text("ssh config — e.g. 30"))
             Text("Keepalive probes the link so a dead connection or tunnel ends instead of hanging. Agent forwarding lets the host use your local keys — only turn it on for hosts you trust. X11 needs XQuartz. None of these apply to mosh sessions.")
                 .font(.caption)
