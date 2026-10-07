@@ -75,4 +75,36 @@ final class HostQueryTests: XCTestCase {
         XCTAssertTrue(HostQuery("folder:lab").matches(folderPath: "home/lab"))
         XCTAssertFalse(HostQuery("lab env:prod").matches(folderPath: "home/lab"))
     }
+
+    func testRegexTerms() {
+        XCTAssertTrue(HostQuery("/^db-\\d+/").matches(host("DB-12")), "case-insensitive")
+        XCTAssertFalse(HostQuery("/^db-\\d+/").matches(host("web-db-1")))
+        XCTAssertTrue(HostQuery("folder:/lab|prod/").matches(host("x", folder: "home/prod")))
+        XCTAssertFalse(HostQuery("-folder:/lab|prod/").matches(host("x", folder: "home/lab")))
+        XCTAssertTrue(HostQuery("env:/^(prod|staging)$/").matches(host("x", env: .staging)))
+        XCTAssertFalse(HostQuery("env:/^prod$/").matches(host("x", env: .staging)))
+        XCTAssertTrue(HostQuery("kind:/k8s|mosh/").matches(host("api", kind: .kubernetes)))
+        XCTAssertTrue(HostQuery("/lab/").matches(folderPath: "home/lab"))
+    }
+
+    /// A broken pattern is reported and ignored — it must not blank the list.
+    func testInvalidRegexIsReportedNotApplied() {
+        let q = HostQuery("web /[unclosed/")
+        XCTAssertEqual(q.invalidPatterns, ["/[unclosed/"])
+        XCTAssertEqual(q.terms.count, 1)
+        XCTAssertTrue(q.matches(host("web01")))
+        XCTAssertNil(HostQuery("//").terms.first?.regex, "// stays plain text")
+        XCTAssertNil(HostQuery("/").terms.first?.regex)
+    }
+
+    func testCompletionsFinishTheTermBeingTyped() {
+        XCTAssertEqual(HostQuery.completions(for: "web env:p", folders: [], profiles: []), ["web env:prod", "web env:personal"])
+        XCTAssertEqual(HostQuery.completions(for: "-is:", folders: [], profiles: []), ["-is:fav", "-is:protected"])
+        XCTAssertEqual(HostQuery.completions(for: "folder:", folders: ["home/lab", "my lab"], profiles: []),
+                       ["folder:home/lab"], "values with spaces can't round-trip through the parser")
+        XCTAssertEqual(HostQuery.completions(for: "env:prod", folders: [], profiles: []), [], "already complete")
+        XCTAssertEqual(HostQuery.completions(for: "env:p ", folders: [], profiles: []), [], "term finished")
+        XCTAssertEqual(HostQuery.completions(for: "web", folders: [], profiles: []), [])
+        XCTAssertEqual(HostQuery.completions(for: "env:/p", folders: [], profiles: []), [], "no completion inside a regex")
+    }
 }

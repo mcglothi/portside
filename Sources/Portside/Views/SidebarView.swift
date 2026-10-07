@@ -34,6 +34,7 @@ struct SidebarView: View {
     /// UI state rather than library data: nothing to migrate, and a downgrade
     /// can't drop part of the library over it.
     @AppStorage("sidebar.savedFilters") private var savedFiltersRaw = ""
+    @State private var showingFilterHelp = false
     @State private var editingEntry: SessionEntry?
     @State private var editingMacro: Macro?
     @State private var showingImporter = false
@@ -120,12 +121,14 @@ struct SidebarView: View {
         savedFiltersRaw = list.joined(separator: "\n")
     }
 
-    /// Saved filters, the ones worth discovering, and save/remove for the
-    /// current text. The field syntax is invisible otherwise.
+    /// Saved filters, and save/remove for the current text. The syntax
+    /// reference is the ? button at the other end of the field.
     private var filterMenu: some View {
         Menu {
             let current = filter.trimmingCharacters(in: .whitespaces)
-            if !savedFilters.isEmpty {
+            if savedFilters.isEmpty {
+                Text("No saved filters")
+            } else {
                 Section("Saved") {
                     ForEach(savedFilters, id: \.self) { query in
                         Button(query) { filter = query }
@@ -133,15 +136,11 @@ struct SidebarView: View {
                 }
             }
             if !current.isEmpty {
+                Divider()
                 if savedFilters.contains(current) {
                     Button("Remove \u{201C}\(current)\u{201D} from Saved") { setSaved(current, saved: false) }
                 } else {
                     Button("Save \u{201C}\(current)\u{201D}") { setSaved(current, saved: true) }
-                }
-            }
-            Section("Filter by field") {
-                ForEach(Self.filterExamples, id: \.query) { example in
-                    Button("\(example.query)  \u{2014}  \(example.meaning)") { filter = example.query }
                 }
             }
         } label: {
@@ -150,17 +149,38 @@ struct SidebarView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Saved filters and filter syntax")
+        .help("Saved filters")
     }
 
-    private static let filterExamples: [(query: String, meaning: String)] = [
-        ("env:prod", "environment"),
-        ("kind:k8s", "host, container, k8s, serial, telnet, mosh"),
-        ("folder:lab", "folder path"),
-        ("profile:none", "credential profile"),
-        ("is:fav", "favourites (or is:protected)"),
-        ("-env:prod", "a leading - excludes"),
-    ]
+    private var profileNameList: [String] {
+        store.credentialProfiles.map(\.name).sorted()
+    }
+
+    /// Finishes the term being typed (`env:` → `env:prod`) as the user types.
+    private var filterCompletions: [String] {
+        HostQuery.completions(for: filter, folders: store.folders, profiles: profileNameList)
+    }
+
+    /// Adds a term from the help popover, keeping what's already typed.
+    private func addFilterTerm(_ term: String) {
+        let current = filter.trimmingCharacters(in: .whitespaces)
+        filter = current.isEmpty ? term : current + " " + term
+    }
+
+    private var filterHelpButton: some View {
+        Button { showingFilterHelp.toggle() } label: {
+            Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Filter syntax: fields, - to exclude, /regex/")
+        .popover(isPresented: $showingFilterHelp, arrowEdge: .trailing) {
+            FilterHelpView(folders: store.folders, profiles: profileNameList, add: addFilterTerm)
+        }
+    }
+
+    private static func lastTerm(of text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? text
+    }
 
     private var hostsTree: SidebarTree {
         FolderTree.build(entries: store.entries,
@@ -378,6 +398,8 @@ struct SidebarView: View {
     private var hostsList: some View {
         let tree = hostsTree
         let matches = searchMatches
+        let invalidPatterns = HostQuery(filter).invalidPatterns
+        let completions = filterCompletions
         // The hosts list is an NSOutlineView (HostOutlineView) so selection and
         // drag are native — SwiftUI's List couldn't do range selection or
         // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
@@ -398,6 +420,19 @@ struct SidebarView: View {
                         moveFocusToResults(selectFirst: false)
                         return .handled
                     }
+                    .onKeyPress(.tab) {
+                        guard let first = completions.first else { return .ignored }
+                        filter = first + " "
+                        return .handled
+                    }
+                if !invalidPatterns.isEmpty {
+                    // An unparseable regex is ignored rather than blanking the
+                    // list; this says so instead of failing silently.
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .help("Not a valid regular expression, so it's ignored: \(invalidPatterns.joined(separator: " "))")
+                }
                 if let matches {
                     // Says the list is filtered, and by how much, without
                     // having to notice the text in the field.
@@ -411,6 +446,7 @@ struct SidebarView: View {
                     .buttonStyle(.plain)
                     .help("Clear filter")
                 }
+                filterHelpButton
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -427,6 +463,22 @@ struct SidebarView: View {
                 }
             }
             .animation(.easeOut(duration: 0.15), value: matches == nil)
+
+            if !completions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(completions, id: \.self) { completion in
+                            Button(Self.lastTerm(of: completion)) { filter = completion + " " }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .font(.caption.monospaced())
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .padding(.bottom, 4)
+                .help("Tab picks the first")
+            }
 
             Divider()
 

@@ -668,12 +668,16 @@ enum FolderTree {
 /// - a plain word matches a host's name, subtitle or folder, as it always has;
 /// - `env:prod`, `kind:k8s`, `folder:lab`, `profile:ansible`, `is:fav`,
 ///   `is:protected` match one field;
+/// - a value wrapped in slashes is a case-insensitive regular expression:
+///   `/^db-\d+/`, `folder:/lab|prod/`;
 /// - a leading `-` negates any term: `-env:prod`.
 ///
 /// Field values match by prefix where the field is an enum (`env:st` is
 /// staging) and by substring otherwise. A term with an unknown key is treated
 /// as plain text — `fe80::1` is an address, not a field — and a key with no
-/// value yet (`env:`) is ignored, so the list doesn't blank mid-keystroke.
+/// value yet (`env:`) is ignored, so the list doesn't blank mid-keystroke. A
+/// pattern that doesn't compile is ignored the same way and reported in
+/// `invalidPatterns`, so the field can say so instead of showing nothing.
 struct HostQuery: Equatable {
     enum Key: String, CaseIterable {
         case env, kind, folder, profile, `is`
@@ -683,11 +687,16 @@ struct HostQuery: Equatable {
         var key: Key?
         var value: String
         var negated = false
+        /// Set when `value` was written as `/pattern/`.
+        var regex: NSRegularExpression?
     }
 
     var terms: [Term]
+    /// Slash-wrapped values that aren't valid regular expressions, as typed.
+    var invalidPatterns: [String] = []
 
     init(_ text: String) {
+        var invalid: [String] = []
         terms = text.split(whereSeparator: \.isWhitespace).compactMap { raw in
             var token = Substring(raw)
             var negated = false
@@ -695,14 +704,25 @@ struct HostQuery: Equatable {
                 negated = true
                 token = token.dropFirst()
             }
+            var key: Key?
+            var value = String(token)
             if let colon = token.firstIndex(of: ":"),
-               let key = Key(rawValue: token[..<colon].lowercased()) {
-                let value = String(token[token.index(after: colon)...])
+               let k = Key(rawValue: token[..<colon].lowercased()) {
+                key = k
+                value = String(token[token.index(after: colon)...])
                 guard !value.isEmpty else { return nil }
-                return Term(key: key, value: value, negated: negated)
             }
-            return Term(key: nil, value: String(token), negated: negated)
+            var term = Term(key: key, value: value, negated: negated)
+            if let pattern = Self.slashPattern(value) {
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                    invalid.append(value)
+                    return nil
+                }
+                term.regex = regex
+            }
+            return term
         }
+        invalidPatterns = invalid
     }
 
     var isEmpty: Bool { terms.isEmpty }
@@ -714,27 +734,33 @@ struct HostQuery: Equatable {
             let v = term.value
             switch term.key {
             case nil:
-                hit = entry.name.localizedCaseInsensitiveContains(v)
-                    || entry.subtitle.localizedCaseInsensitiveContains(v)
-                    || entry.folder.localizedCaseInsensitiveContains(v)
+                hit = term.contained(in: entry.name)
+                    || term.contained(in: entry.subtitle)
+                    || term.contained(in: entry.folder)
             case .env:
-                hit = Self.prefix(entry.environment.rawValue, v)
+                hit = term.prefixes(entry.environment.rawValue)
             case .kind:
-                switch v.lowercased() {
-                case "k8s": hit = entry.kind == .kubernetes
-                case "ssh": hit = entry.kind == .host && !entry.preferMosh
-                case "mosh": hit = entry.kind == .host && entry.preferMosh
-                default: hit = Self.prefix(entry.kind.rawValue, v)
+                if let regex = term.regex {
+                    hit = Self.kindNames(entry).contains { Self.search(regex, $0) }
+                } else {
+                    switch v.lowercased() {
+                    case "k8s": hit = entry.kind == .kubernetes
+                    case "ssh": hit = entry.kind == .host && !entry.preferMosh
+                    case "mosh": hit = entry.kind == .host && entry.preferMosh
+                    default: hit = Self.prefix(entry.kind.rawValue, v)
+                    }
                 }
             case .folder:
-                hit = entry.folder.localizedCaseInsensitiveContains(v)
+                hit = term.contained(in: entry.folder)
             case .profile:
                 let name = entry.credentialProfileID.flatMap { profileNames[$0] }
-                hit = v.lowercased() == "none"
-                    ? name == nil
-                    : name?.localizedCaseInsensitiveContains(v) ?? false
+                if term.regex == nil, v.lowercased() == "none" {
+                    hit = name == nil
+                } else {
+                    hit = name.map { term.contained(in: $0) } ?? false
+                }
             case .is:
-                hit = Self.flag(v, favorite: entry.isFavorite, protected: entry.isProtected)
+                hit = Self.flag(term, favorite: entry.isFavorite, protected: entry.isProtected)
             }
             return hit != term.negated
         }
@@ -748,12 +774,11 @@ struct HostQuery: Equatable {
             let hit: Bool
             switch term.key {
             case nil:
-                hit = group.name.localizedCaseInsensitiveContains(term.value)
-                    || group.folder.localizedCaseInsensitiveContains(term.value)
+                hit = term.contained(in: group.name) || term.contained(in: group.folder)
             case .folder:
-                hit = group.folder.localizedCaseInsensitiveContains(term.value)
+                hit = term.contained(in: group.folder)
             case .is:
-                hit = Self.flag(term.value, favorite: group.isFavorite, protected: false)
+                hit = Self.flag(term, favorite: group.isFavorite, protected: false)
             case .env, .kind, .profile:
                 hit = false
             }
@@ -767,20 +792,98 @@ struct HostQuery: Equatable {
     func matches(folderPath path: String) -> Bool {
         terms.allSatisfy { term in
             guard term.key == nil || term.key == .folder else { return false }
-            return path.localizedCaseInsensitiveContains(term.value) != term.negated
+            return term.contained(in: path) != term.negated
         }
+    }
+
+    /// The inner pattern of a `/…/` value, or nil for anything else. `//`
+    /// and a lone `/` stay plain text.
+    private static func slashPattern(_ value: String) -> String? {
+        guard value.count > 2, value.hasPrefix("/"), value.hasSuffix("/") else { return nil }
+        return String(value.dropFirst().dropLast())
+    }
+
+    fileprivate static func search(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// The names `kind:` answers to, aliases included, for a regex to test.
+    private static func kindNames(_ entry: SessionEntry) -> [String] {
+        var names = [entry.kind.rawValue]
+        switch entry.kind {
+        case .kubernetes: names.append("k8s")
+        case .host: names.append(entry.preferMosh ? "mosh" : "ssh")
+        default: break
+        }
+        return names
     }
 
     private static func prefix(_ field: String, _ value: String) -> Bool {
         field.lowercased().hasPrefix(value.lowercased())
     }
 
-    private static func flag(_ value: String, favorite: Bool, protected: Bool) -> Bool {
-        switch value.lowercased() {
+    private static func flag(_ term: Term, favorite: Bool, protected: Bool) -> Bool {
+        if let regex = term.regex {
+            return (favorite && ["fav", "favorite", "favourite", "pinned"].contains { search(regex, $0) })
+                || (protected && search(regex, "protected"))
+        }
+        switch term.value.lowercased() {
         case "fav", "favorite", "favourite", "pinned": return favorite
         case "protected": return protected
         default: return false
         }
+    }
+}
+
+private extension HostQuery.Term {
+    /// Substring, or a regex search anywhere in the text.
+    func contained(in text: String) -> Bool {
+        if let regex { return HostQuery.search(regex, text) }
+        return text.localizedCaseInsensitiveContains(value)
+    }
+
+    /// Prefix for enum fields; a regex is tested as written, so anchor it
+    /// with `^` if that's what you mean.
+    func prefixes(_ field: String) -> Bool {
+        if let regex { return HostQuery.search(regex, field) }
+        return field.lowercased().hasPrefix(value.lowercased())
+    }
+}
+
+extension HostQuery {
+    /// The values a key can take, for the help popover and completion.
+    /// `folder:` and `profile:` come from the library; the rest are fixed.
+    static func suggestedValues(for key: Key, folders: [String], profiles: [String]) -> [String] {
+        switch key {
+        case .env: return HostEnvironment.allCases.map(\.rawValue).filter { $0 != HostEnvironment.none.rawValue }
+        case .kind: return ["ssh", "mosh", "k8s"] + SessionKind.allCases.map(\.rawValue).filter { $0 != "kubernetes" }
+        case .folder: return folders
+        case .profile: return ["none"] + profiles
+        case .is: return ["fav", "protected"]
+        }
+    }
+
+    /// Completions for the term being typed — the last one, once it reads
+    /// `key:` or `-key:partial`. Each is the whole filter text with that term
+    /// finished, so picking one is a plain assignment. Values containing
+    /// whitespace are skipped: the parser splits on it and they couldn't
+    /// round-trip.
+    static func completions(for text: String, folders: [String], profiles: [String],
+                            limit: Int = 8) -> [String] {
+        guard let last = text.split(whereSeparator: \.isWhitespace).last,
+              !text.last!.isWhitespace else { return [] }
+        let token = last.hasPrefix("-") ? last.dropFirst() : last[...]
+        guard let colon = token.firstIndex(of: ":"),
+              let key = Key(rawValue: token[..<colon].lowercased()) else { return [] }
+        let partial = token[token.index(after: colon)...]
+        guard !partial.hasPrefix("/") else { return [] }
+        let head = text[..<last.startIndex] + last[..<last.index(after: last.firstIndex(of: ":")!)]
+        var seen = Set<String>()
+        return suggestedValues(for: key, folders: folders, profiles: profiles)
+            .filter { !$0.contains(where: \.isWhitespace) && seen.insert($0.lowercased()).inserted }
+            .filter { partial.isEmpty || ($0.lowercased().hasPrefix(partial.lowercased()) && $0.count > partial.count) }
+            .prefix(limit)
+            .map { head + $0 }
     }
 }
 
