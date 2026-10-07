@@ -88,18 +88,18 @@ struct PortsideApp: App {
                     RemoteFileEditor.shared.preferredEditor = store.defaults.remoteEditorURL
                     sessions.defaultProfileID = store.defaultProfileID
                     tunnels.defaultProfileID = store.defaultProfileID
-                    sessions.onConnectionAttempt = { [weak store] entry, outcome in
+                    sessions.onConnectionAttempt = { [weak store = self.store] entry, outcome in
                         store?.recordConnection(entry, outcome: outcome)
                     }
-                    sessions.onWorkspaceChange = { [weak store] snapshot in
+                    sessions.onWorkspaceChange = { [weak store = self.store] snapshot in
                         store?.saveWorkspace(snapshot)
                     }
-                    sessions.onGroupLayoutChange = { [weak store] id, layout, gridView in
+                    sessions.onGroupLayoutChange = { [weak store = self.store] id, layout, gridView in
                         store?.updateLayout(groupID: id, layout: layout, wasGridView: gridView)
                     }
                     sessions.recordsCommands = store.history.keepCommandHistory
                     sessions.excludesProtectedFromRecording = store.history.excludeProtectedHosts
-                    sessions.onCommand = { [weak store] event in
+                    sessions.onCommand = { [weak store = self.store] event in
                         store?.recordCommand(event)
                     }
                     LogManager.runMaintenance(settings: store.logging)
