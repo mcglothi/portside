@@ -9,7 +9,7 @@ final class SidebarMatchesTests: XCTestCase {
     func testMatchingHostLightsUpItsFolderAndAncestors() {
         let web = entry("web01", folder: "prod/frontend")
         let db = entry("db01", folder: "prod/backend")
-        let m = SidebarMatches.compute(filter: "web", entries: [web, db],
+        let m = SidebarMatches.compute(query: HostQuery("web"), entries: [web, db],
                                        groups: [], folderPaths: ["empty"])
         XCTAssertEqual(m.ids, [web.id])
         XCTAssertEqual(m.folders, ["prod", "prod/frontend"])
@@ -17,7 +17,7 @@ final class SidebarMatchesTests: XCTestCase {
     }
 
     func testEmptyFolderMatchesOnItsOwnName() {
-        let m = SidebarMatches.compute(filter: "lab", entries: [entry("web01")],
+        let m = SidebarMatches.compute(query: HostQuery("lab"), entries: [entry("web01")],
                                        groups: [], folderPaths: ["home/lab"])
         XCTAssertTrue(m.ids.isEmpty)
         XCTAssertEqual(m.folders, ["home", "home/lab"])
@@ -26,7 +26,7 @@ final class SidebarMatchesTests: XCTestCase {
     func testGroupMatchesOnName() {
         let group = SessionGroup(name: "Splunk Servers", folder: "ops", layout: WorkspaceSnapshot.TabSnapshot(
             root: .leaf(WorkspaceSnapshot.Leaf(kind: .localShell, includedInMultiExec: true))))
-        let m = SidebarMatches.compute(filter: "splunk", entries: [],
+        let m = SidebarMatches.compute(query: HostQuery("splunk"), entries: [],
                                        groups: [group], folderPaths: [])
         XCTAssertEqual(m.ids, [group.id])
         XCTAssertEqual(m.folders, ["ops"])

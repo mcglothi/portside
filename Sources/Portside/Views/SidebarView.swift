@@ -30,6 +30,10 @@ struct SidebarView: View {
     @EnvironmentObject var library: LibraryCommands
     @State private var section: SidebarSection = .hosts
     @State private var filter = ""
+    /// Filters pinned from the filter field's menu, newline-separated. Per-Mac
+    /// UI state rather than library data: nothing to migrate, and a downgrade
+    /// can't drop part of the library over it.
+    @AppStorage("sidebar.savedFilters") private var savedFiltersRaw = ""
     @State private var editingEntry: SessionEntry?
     @State private var editingMacro: Macro?
     @State private var showingImporter = false
@@ -95,12 +99,68 @@ struct SidebarView: View {
     /// Every row the filter matched, or nil when there's no filter. The tree
     /// itself is never narrowed; non-matching rows are drawn dimmed.
     private var searchMatches: SidebarMatches? {
-        guard !filter.isEmpty else { return nil }
-        return SidebarMatches.compute(filter: filter,
-                                      entries: store.entries,
-                                      groups: store.groups,
-                                      folderPaths: store.explicitFolders)
+        let query = HostQuery(filter)
+        guard !query.isEmpty else { return nil }
+        return SidebarMatches.compute(
+            query: query,
+            entries: store.entries,
+            groups: store.groups,
+            folderPaths: store.explicitFolders,
+            profileNames: Dictionary(store.credentialProfiles.map { ($0.id, $0.name) },
+                                     uniquingKeysWith: { first, _ in first }))
     }
+
+    private var savedFilters: [String] {
+        savedFiltersRaw.split(separator: "\n").map(String.init)
+    }
+
+    private func setSaved(_ query: String, saved: Bool) {
+        var list = savedFilters.filter { $0 != query }
+        if saved { list.append(query) }
+        savedFiltersRaw = list.joined(separator: "\n")
+    }
+
+    /// Saved filters, the ones worth discovering, and save/remove for the
+    /// current text. The field syntax is invisible otherwise.
+    private var filterMenu: some View {
+        Menu {
+            let current = filter.trimmingCharacters(in: .whitespaces)
+            if !savedFilters.isEmpty {
+                Section("Saved") {
+                    ForEach(savedFilters, id: \.self) { query in
+                        Button(query) { filter = query }
+                    }
+                }
+            }
+            if !current.isEmpty {
+                if savedFilters.contains(current) {
+                    Button("Remove \u{201C}\(current)\u{201D} from Saved") { setSaved(current, saved: false) }
+                } else {
+                    Button("Save \u{201C}\(current)\u{201D}") { setSaved(current, saved: true) }
+                }
+            }
+            Section("Filter by field") {
+                ForEach(Self.filterExamples, id: \.query) { example in
+                    Button("\(example.query)  \u{2014}  \(example.meaning)") { filter = example.query }
+                }
+            }
+        } label: {
+            Image(systemName: "magnifyingglass")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Saved filters and filter syntax")
+    }
+
+    private static let filterExamples: [(query: String, meaning: String)] = [
+        ("env:prod", "environment"),
+        ("kind:k8s", "host, container, k8s, serial, telnet, mosh"),
+        ("folder:lab", "folder path"),
+        ("profile:none", "credential profile"),
+        ("is:fav", "favourites (or is:protected)"),
+        ("-env:prod", "a leading - excludes"),
+    ]
 
     private var hostsTree: SidebarTree {
         FolderTree.build(entries: store.entries,
@@ -323,10 +383,10 @@ struct SidebarView: View {
         // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
+                filterMenu
                     .foregroundStyle(matches == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
                     .font(.caption)
-                TextField("Filter hosts", text: $filter)
+                TextField("Filter hosts  (env:prod, kind:k8s\u{2026})", text: $filter)
                     .textFieldStyle(.plain)
                     .onKeyPress(.downArrow) {
                         guard !filter.isEmpty else { return .ignored }

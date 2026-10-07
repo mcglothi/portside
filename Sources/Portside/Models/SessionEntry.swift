@@ -636,6 +636,127 @@ enum FolderTree {
     }
 }
 
+/// A parsed host filter. Whitespace-separated terms, all of which must match:
+///
+/// - a plain word matches a host's name, subtitle or folder, as it always has;
+/// - `env:prod`, `kind:k8s`, `folder:lab`, `profile:ansible`, `is:fav`,
+///   `is:protected` match one field;
+/// - a leading `-` negates any term: `-env:prod`.
+///
+/// Field values match by prefix where the field is an enum (`env:st` is
+/// staging) and by substring otherwise. A term with an unknown key is treated
+/// as plain text — `fe80::1` is an address, not a field — and a key with no
+/// value yet (`env:`) is ignored, so the list doesn't blank mid-keystroke.
+struct HostQuery: Equatable {
+    enum Key: String, CaseIterable {
+        case env, kind, folder, profile, `is`
+    }
+
+    struct Term: Equatable {
+        var key: Key?
+        var value: String
+        var negated = false
+    }
+
+    var terms: [Term]
+
+    init(_ text: String) {
+        terms = text.split(whereSeparator: \.isWhitespace).compactMap { raw in
+            var token = Substring(raw)
+            var negated = false
+            if token.hasPrefix("-"), token.count > 1 {
+                negated = true
+                token = token.dropFirst()
+            }
+            if let colon = token.firstIndex(of: ":"),
+               let key = Key(rawValue: token[..<colon].lowercased()) {
+                let value = String(token[token.index(after: colon)...])
+                guard !value.isEmpty else { return nil }
+                return Term(key: key, value: value, negated: negated)
+            }
+            return Term(key: nil, value: String(token), negated: negated)
+        }
+    }
+
+    var isEmpty: Bool { terms.isEmpty }
+
+    /// `profileNames` resolves `credentialProfileID` for `profile:` terms.
+    func matches(_ entry: SessionEntry, profileNames: [UUID: String] = [:]) -> Bool {
+        terms.allSatisfy { term in
+            let hit: Bool
+            let v = term.value
+            switch term.key {
+            case nil:
+                hit = entry.name.localizedCaseInsensitiveContains(v)
+                    || entry.subtitle.localizedCaseInsensitiveContains(v)
+                    || entry.folder.localizedCaseInsensitiveContains(v)
+            case .env:
+                hit = Self.prefix(entry.environment.rawValue, v)
+            case .kind:
+                switch v.lowercased() {
+                case "k8s": hit = entry.kind == .kubernetes
+                case "ssh": hit = entry.kind == .host && !entry.preferMosh
+                case "mosh": hit = entry.kind == .host && entry.preferMosh
+                default: hit = Self.prefix(entry.kind.rawValue, v)
+                }
+            case .folder:
+                hit = entry.folder.localizedCaseInsensitiveContains(v)
+            case .profile:
+                let name = entry.credentialProfileID.flatMap { profileNames[$0] }
+                hit = v.lowercased() == "none"
+                    ? name == nil
+                    : name?.localizedCaseInsensitiveContains(v) ?? false
+            case .is:
+                hit = Self.flag(v, favorite: entry.isFavorite, protected: entry.isProtected)
+            }
+            return hit != term.negated
+        }
+    }
+
+    /// Groups carry a name, a folder and a favourite flag; a field they don't
+    /// have (`env:`, `kind:`, `profile:`) never matches, so `-env:prod` keeps
+    /// them.
+    func matches(_ group: SessionGroup) -> Bool {
+        terms.allSatisfy { term in
+            let hit: Bool
+            switch term.key {
+            case nil:
+                hit = group.name.localizedCaseInsensitiveContains(term.value)
+                    || group.folder.localizedCaseInsensitiveContains(term.value)
+            case .folder:
+                hit = group.folder.localizedCaseInsensitiveContains(term.value)
+            case .is:
+                hit = Self.flag(term.value, favorite: group.isFavorite, protected: false)
+            case .env, .kind, .profile:
+                hit = false
+            }
+            return hit != term.negated
+        }
+    }
+
+    /// A folder matches on its own path only when every term is something a
+    /// path can answer: plain text or `folder:`. `env:prod` lights a folder
+    /// up through the hosts inside it, never through its name.
+    func matches(folderPath path: String) -> Bool {
+        terms.allSatisfy { term in
+            guard term.key == nil || term.key == .folder else { return false }
+            return path.localizedCaseInsensitiveContains(term.value) != term.negated
+        }
+    }
+
+    private static func prefix(_ field: String, _ value: String) -> Bool {
+        field.lowercased().hasPrefix(value.lowercased())
+    }
+
+    private static func flag(_ value: String, favorite: Bool, protected: Bool) -> Bool {
+        switch value.lowercased() {
+        case "fav", "favorite", "favourite", "pinned": return favorite
+        case "protected": return protected
+        default: return false
+        }
+    }
+}
+
 /// What a host filter matched. The sidebar keeps drawing the whole tree while
 /// filtering and dims everything not in here, rather than dropping it.
 ///
@@ -653,10 +774,11 @@ struct SidebarMatches: Equatable {
 
     /// `folderPaths` should be every folder the tree draws, so a folder can
     /// match on its name even when it is empty.
-    static func compute(filter: String,
+    static func compute(query: HostQuery,
                         entries: [SessionEntry],
                         groups: [SessionGroup],
-                        folderPaths: [String]) -> SidebarMatches {
+                        folderPaths: [String],
+                        profileNames: [UUID: String] = [:]) -> SidebarMatches {
         var result = SidebarMatches()
         func addWithAncestors(_ path: String) {
             var prefix = ""
@@ -665,21 +787,16 @@ struct SidebarMatches: Equatable {
                 result.folders.insert(prefix)
             }
         }
-        for entry in entries where entry.name.localizedCaseInsensitiveContains(filter)
-            || entry.subtitle.localizedCaseInsensitiveContains(filter)
-            || entry.folder.localizedCaseInsensitiveContains(filter) {
+        for entry in entries where query.matches(entry, profileNames: profileNames) {
             result.ids.insert(entry.id)
             result.matchedHostCount += 1
             addWithAncestors(entry.folder)
         }
-        // Groups match on their own name, so filtering for "splunk" finds the
-        // group as well as the boxes in it.
-        for group in groups where group.name.localizedCaseInsensitiveContains(filter)
-            || group.folder.localizedCaseInsensitiveContains(filter) {
+        for group in groups where query.matches(group) {
             result.ids.insert(group.id)
             addWithAncestors(group.folder)
         }
-        for path in folderPaths where path.localizedCaseInsensitiveContains(filter) {
+        for path in folderPaths where query.matches(folderPath: path) {
             addWithAncestors(path)
         }
         return result
