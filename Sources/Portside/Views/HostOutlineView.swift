@@ -15,10 +15,11 @@ struct HostOutlineView: NSViewRepresentable {
     let tree: SidebarTree
     @Binding var selection: Set<UUID>
     let store: SessionStore
-    /// True while a host filter is active — every folder in the (already
-    /// narrowed) tree expands automatically so matches aren't hidden behind a
-    /// manual disclosure triangle.
-    var searching: Bool = false
+    /// What the host filter matched, nil when there's no filter. The tree is
+    /// never narrowed: non-matching rows draw dimmed, and folders holding a
+    /// match expand automatically so matches aren't hidden behind a manual
+    /// disclosure triangle.
+    var matches: SidebarMatches? = nil
     /// Bumped by the filter field's first arrow-key press to hand keyboard
     /// focus to the outline, so subsequent arrow keys navigate rows natively
     /// (NSOutlineView already handles that once it's first responder) instead
@@ -109,6 +110,7 @@ struct HostOutlineView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.sync(tree: tree, selection: selection)
+        context.coordinator.syncMatches()
         context.coordinator.performFocusRequestIfNeeded()
         context.coordinator.performExpansionRequestsIfNeeded()
     }
@@ -133,12 +135,15 @@ struct HostOutlineView: NSViewRepresentable {
         private var lastFocusRequest = 0
         private var lastExpandAllRequest = 0
         private var lastCollapseAllRequest = 0
-        /// Guards `expandedPaths` while a search-driven full-expand runs, so
+        /// Guards `expandedPaths` while a search-driven expand runs, so
         /// clearing the search doesn't leave every folder permanently expanded.
         private var isAutoExpanding = false
+        /// Matches last applied to the rows, to restyle only on change.
+        private var lastMatches: SidebarMatches?
 
         init(_ parent: HostOutlineView) {
             self.parent = parent
+            self.lastMatches = parent.matches
             self.lastFocusRequest = parent.focusRequest
             self.lastExpandAllRequest = parent.expandAllRequest
             self.lastCollapseAllRequest = parent.collapseAllRequest
@@ -219,16 +224,54 @@ struct HostOutlineView: NSViewRepresentable {
             applySelection(selection)
         }
 
-        /// While searching, everything in the (already narrowed) tree expands
-        /// automatically; otherwise restore the user's own expand/collapse state.
+        /// While searching, folders holding a match expand and the rest
+        /// collapse; otherwise restore the user's own expand/collapse state.
         private func expandAfterReload() {
             guard let outline else { return }
-            if parent.searching {
+            if let matches = parent.matches {
                 isAutoExpanding = true
-                outline.expandItem(nil, expandChildren: true)
+                func apply(_ nodes: [SidebarNode]) {
+                    for node in nodes {
+                        guard let path = node.folderPath else { continue }
+                        if matches.folders.contains(path) {
+                            outline.expandItem(node)
+                            apply(node.children)
+                        } else {
+                            outline.collapseItem(node, collapseChildren: true)
+                        }
+                    }
+                }
+                apply(roots)
                 isAutoExpanding = false
             } else {
+                isAutoExpanding = true
+                outline.collapseItem(nil, collapseChildren: true)
+                isAutoExpanding = false
                 restoreExpansion()
+            }
+        }
+
+        /// The filter text changes without the tree changing, so a new set of
+        /// matches re-runs the search expansion and restyles the rows already
+        /// on screen (rows made later pick it up in `viewFor`).
+        func syncMatches() {
+            guard parent.matches != lastMatches, let outline else { return }
+            lastMatches = parent.matches
+            expandAfterReload()
+            for row in 0..<outline.numberOfRows {
+                guard let node = outline.item(atRow: row) as? SidebarNode,
+                      let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? HostRowCell
+                else { continue }
+                cell.setDimmed(isDimmed(node))
+            }
+        }
+
+        private func isDimmed(_ node: SidebarNode) -> Bool {
+            guard let matches = parent.matches else { return false }
+            switch node.kind {
+            case .folder(let folder): return !matches.folders.contains(folder.path)
+            case .entry(let entry): return !matches.ids.contains(entry.id)
+            case .group(let group): return !matches.ids.contains(group.id)
             }
         }
 
@@ -314,6 +357,7 @@ struct HostOutlineView: NSViewRepresentable {
                            itemCount: node.isFolder
                                ? parent.store.itemCount(inFolder: node.folderPath ?? "") : 0,
                            toggleFavorite: toggleFavorite)
+            cell.setDimmed(isDimmed(node))
             return cell
         }
 
@@ -901,6 +945,8 @@ private final class RowModel: ObservableObject {
     @Published var node: SidebarNode?
     @Published var itemCount = 0
     @Published var emphasized = false
+    /// Drawn faded because a host filter is active and this row doesn't match.
+    @Published var dimmed = false
     @Published var toggleFavorite: (() -> Void)?
 }
 
@@ -933,6 +979,10 @@ private final class HostRowCell: NSTableCellView {
         model.node = node
         model.itemCount = itemCount
         model.toggleFavorite = toggleFavorite
+    }
+
+    func setDimmed(_ dimmed: Bool) {
+        if model.dimmed != dimmed { model.dimmed = dimmed }
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -985,6 +1035,8 @@ private struct SidebarRowLabel: View {
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 4)
+        // A selected row stays legible even when it doesn't match.
+        .opacity(model.dimmed && !model.emphasized ? 0.35 : 1)
         // Never let a row be compressed below the height its text needs. The
         // outline sizes rows from this view's intrinsic height, and a row whose
         // content is *only* two lines of text — a group — measured shorter than

@@ -635,3 +635,53 @@ enum FolderTree {
         a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 }
+
+/// What a host filter matched. The sidebar keeps drawing the whole tree while
+/// filtering and dims everything not in here, rather than dropping it.
+///
+/// Dropping it was correct but read as broken: a folder left in the tree by
+/// `explicitFolders` opened onto nothing, and with the filter text easy to
+/// forget about, an empty folder looked like navigation had stopped working.
+/// Dimmed rows say "these are here, they just don't match".
+struct SidebarMatches: Equatable {
+    /// Hosts and groups that match.
+    var ids: Set<UUID> = []
+    /// Folders holding a match somewhere beneath them, plus folders whose own
+    /// path matches. These stay undimmed and auto-expand.
+    var folders: Set<String> = []
+    var matchedHostCount = 0
+
+    /// `folderPaths` should be every folder the tree draws, so a folder can
+    /// match on its name even when it is empty.
+    static func compute(filter: String,
+                        entries: [SessionEntry],
+                        groups: [SessionGroup],
+                        folderPaths: [String]) -> SidebarMatches {
+        var result = SidebarMatches()
+        func addWithAncestors(_ path: String) {
+            var prefix = ""
+            for part in path.split(separator: "/") {
+                prefix = prefix.isEmpty ? String(part) : prefix + "/" + part
+                result.folders.insert(prefix)
+            }
+        }
+        for entry in entries where entry.name.localizedCaseInsensitiveContains(filter)
+            || entry.subtitle.localizedCaseInsensitiveContains(filter)
+            || entry.folder.localizedCaseInsensitiveContains(filter) {
+            result.ids.insert(entry.id)
+            result.matchedHostCount += 1
+            addWithAncestors(entry.folder)
+        }
+        // Groups match on their own name, so filtering for "splunk" finds the
+        // group as well as the boxes in it.
+        for group in groups where group.name.localizedCaseInsensitiveContains(filter)
+            || group.folder.localizedCaseInsensitiveContains(filter) {
+            result.ids.insert(group.id)
+            addWithAncestors(group.folder)
+        }
+        for path in folderPaths where path.localizedCaseInsensitiveContains(filter) {
+            addWithAncestors(path)
+        }
+        return result
+    }
+}

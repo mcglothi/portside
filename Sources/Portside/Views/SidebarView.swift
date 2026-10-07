@@ -92,23 +92,20 @@ struct SidebarView: View {
         return text
     }
 
-    private var filteredEntries: [SessionEntry] {
-        guard !filter.isEmpty else { return store.entries }
-        return store.entries.filter {
-            $0.name.localizedCaseInsensitiveContains(filter)
-                || $0.subtitle.localizedCaseInsensitiveContains(filter)
-                || $0.folder.localizedCaseInsensitiveContains(filter)
-        }
+    /// Every row the filter matched, or nil when there's no filter. The tree
+    /// itself is never narrowed; non-matching rows are drawn dimmed.
+    private var searchMatches: SidebarMatches? {
+        guard !filter.isEmpty else { return nil }
+        return SidebarMatches.compute(filter: filter,
+                                      entries: store.entries,
+                                      groups: store.groups,
+                                      folderPaths: store.explicitFolders)
     }
 
-    /// Groups match the host filter on their own name, so filtering for
-    /// "splunk" finds the group as well as the boxes in it.
-    private var filteredGroups: [SessionGroup] {
-        guard !filter.isEmpty else { return store.groups }
-        return store.groups.filter {
-            $0.name.localizedCaseInsensitiveContains(filter)
-                || $0.folder.localizedCaseInsensitiveContains(filter)
-        }
+    private var hostsTree: SidebarTree {
+        FolderTree.build(entries: store.entries,
+                         explicitFolders: store.explicitFolders,
+                         groups: store.groups)
     }
 
     /// The sidebar's actual content, split out from `body`.
@@ -319,15 +316,16 @@ struct SidebarView: View {
     // MARK: - Sections
 
     private var hostsList: some View {
-        let tree = FolderTree.build(entries: filteredEntries,
-                                    explicitFolders: store.explicitFolders,
-                                    groups: filteredGroups)
+        let tree = hostsTree
+        let matches = searchMatches
         // The hosts list is an NSOutlineView (HostOutlineView) so selection and
         // drag are native — SwiftUI's List couldn't do range selection or
         // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(matches == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                    .font(.caption)
                 TextField("Filter hosts", text: $filter)
                     .textFieldStyle(.plain)
                     .onKeyPress(.downArrow) {
@@ -340,15 +338,35 @@ struct SidebarView: View {
                         moveFocusToResults(selectFirst: false)
                         return .handled
                     }
-                if !filter.isEmpty {
+                if let matches {
+                    // Says the list is filtered, and by how much, without
+                    // having to notice the text in the field.
+                    Text("\(matches.matchedHostCount) of \(store.entries.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tint)
+                        .help("Showing \(matches.matchedHostCount) matching hosts; the rest are dimmed")
                     Button { filter = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear filter")
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            // A tinted, outlined field while a filter is active. Easy-to-miss
+            // filter text made a filtered list look like broken navigation.
+            .background {
+                if matches != nil {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.accentColor.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: matches == nil)
 
             Divider()
 
@@ -356,7 +374,7 @@ struct SidebarView: View {
                 tree: tree,
                 selection: $selection,
                 store: store,
-                searching: !filter.isEmpty,
+                matches: matches,
                 focusRequest: sidebarFocusRequest,
                 expandAllRequest: expandAllRequest,
                 collapseAllRequest: collapseAllRequest,
@@ -507,10 +525,8 @@ struct SidebarView: View {
     /// to the host list so further arrow keys navigate it directly (native
     /// NSOutlineView row navigation once it's first responder).
     private func moveFocusToResults(selectFirst: Bool) {
-        let tree = FolderTree.build(entries: filteredEntries,
-                                    explicitFolders: store.explicitFolders,
-                                    groups: filteredGroups)
-        let ids = flattenedEntryIDs(from: tree)
+        guard let matches = searchMatches else { return }
+        let ids = flattenedEntryIDs(from: hostsTree).filter { matches.ids.contains($0) }
         guard !ids.isEmpty else { return }
         if selection.isEmpty {
             selection = [selectFirst ? ids.first! : ids.last!]
@@ -519,8 +535,8 @@ struct SidebarView: View {
     }
 
     /// Entry ids in the same depth-first order `HostOutlineView` renders them
-    /// (folders then their entries, root entries last) — every one is visible
-    /// while searching, since matching folders auto-expand.
+    /// (folders then their entries, root entries last). Matching ones are all
+    /// visible while searching, since folders holding a match auto-expand.
     private func flattenedEntryIDs(from tree: SidebarTree) -> [UUID] {
         var ids: [UUID] = []
         func walk(_ nodes: [SidebarNode]) {
