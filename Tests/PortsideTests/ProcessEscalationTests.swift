@@ -89,7 +89,11 @@ final class ProcessEscalationTests: XCTestCase {
 
         XCTAssertTrue(waitForExit(parent, upTo: 2))
         // The child was in the same group, so it went too. If it hadn't, it
-        // would still be reachable by group signal.
+        // would still be reachable by group signal. Polled, because the child
+        // lingers as a zombie for a moment until launchd reaps it, and a
+        // zombie still answers a group signal.
+        let deadline = Date().addingTimeInterval(2)
+        while kill(-pid, 0) == 0, Date() < deadline { usleep(20_000) }
         XCTAssertEqual(kill(-pid, 0), -1, "nothing should remain in the group")
     }
 }
