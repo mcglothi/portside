@@ -89,6 +89,7 @@ final class TunnelManager: ObservableObject {
         ]
         args += SSHControl.passiveOptions
         args += [forward.kind.flag, forward.spec]
+        args += entry.keepAliveArgs
         args += entry.sshArgs
 
         var environment = ProcessInfo.processInfo.environment

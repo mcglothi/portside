@@ -1140,10 +1140,16 @@ final class SessionManager: ObservableObject {
                 expireSecret = injected.expireSecret
                 cleanup = injected.cleanup
             }
-            return TerminalSession(title: entry.name, executable: executable, args: args,
-                                   entry: entry, appearance: appearance,
-                                   environment: environment, expireSecret: expireSecret,
-                                   cleanup: cleanup, logger: logger)
+            let session = TerminalSession(title: entry.name, executable: executable, args: args,
+                                          entry: entry, appearance: appearance,
+                                          environment: environment, expireSecret: expireSecret,
+                                          cleanup: cleanup, logger: logger)
+            // ssh drops an X11 request silently when there's no DISPLAY, so
+            // say why no windows will appear rather than leave it a mystery.
+            if executable == SSHInvocation.executable, let notice = X11Support.connectNotice(for: entry) {
+                session.terminalView.feed(text: "[portside: \(notice)]\r\n")
+            }
+            return session
         }
     }
 

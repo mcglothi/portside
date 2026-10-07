@@ -103,6 +103,13 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Telnet for legacy endpoints** — save host and port, handle RFC 854 option
   negotiation cleanly, and use the same terminal, logging, and MultiExec tools.
   Telnet sessions carry a prominent **UNENCRYPTED** badge.
+- **Field filters** — the sidebar filter takes `env:prod`, `kind:k8s`,
+  `folder:lab`, `profile:none`, `is:fav`, `-` to exclude and `/regex/`; the
+  **?** beside the field lists them all, typing `env:` suggests values,
+  non-matching hosts dim rather than vanish, and filters can be saved.
+- **`ssh://` and `portside://connect/<name>` links** — open hosts from a wiki,
+  dashboard or script. Unknown hosts always ask first; Settings ▸ Connection can
+  make Portside the default `ssh://` handler.
 - **Quick Connect (⌘K)** — a fuzzy-search command palette over the whole
   library; empty query lists recent hosts so it doubles as fast reconnect.
 - **MultiExec** — tile every session in a grid and type into all of them at
@@ -151,6 +158,9 @@ exists to fill that gap without giving up native speed and macOS polish.
   live mount, but the round trip is invisible: no manual download, edit,
   re-upload. The browser shows exactly what's checked out and when it last
   saved, and a protected host asks before the file is opened.
+- **Per-host connection options** — agent forwarding, X11 forwarding and
+  keepalive, each deferring to `~/.ssh/config` until a host sets it. X11 needs
+  XQuartz (`brew install --cask xquartz`); hosts with X11 on say so if it's missing.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
   Best-effort by design: the status tracks the `ssh` process, not whether

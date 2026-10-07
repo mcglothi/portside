@@ -75,6 +75,23 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>© 2026 Tim McGlothin</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Portside needs local network access to reach mosh servers over UDP on hosts you connect to.</string>
+    <!-- ssh:// and portside://connect/ links (ConnectionLink). Declaring
+         ssh doesn't take it from Terminal; Settings ▸ Connection offers to. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>SSH Link</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>ssh</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Portside Link</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>portside</string></array>
+        </dict>
+    </array>
     <key>SUFeedURL</key>
     <string>${FEED_URL}</string>
     <key>SUPublicEDKey</key>

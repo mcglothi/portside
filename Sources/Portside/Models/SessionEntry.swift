@@ -204,6 +204,15 @@ struct SessionEntry: Identifiable, Hashable {
     var credentialProfileID: UUID?
     /// Pinned to the "Favorites" section of the welcome/start page.
     var isFavorite = false
+    /// Per-host ssh switches. nil leaves the decision to `~/.ssh/config`, so a
+    /// host only overrides what it says it overrides. Plain ssh only: mosh
+    /// carries neither forwarding, and keepalive is moot on it.
+    var forwardAgent: Bool?
+    var forwardX11: Bool?
+    /// `ServerAliveInterval`, in seconds. Also applied to tunnels through this
+    /// host, where it's what makes a dead link end the ssh process instead of
+    /// it sitting on "Running" indefinitely.
+    var keepAliveSeconds: Int?
 
     var icon: String { kind.icon }
 
@@ -269,6 +278,21 @@ struct SessionEntry: Identifiable, Hashable {
     private var identityArgs: [String] {
         guard let path = identityFile, !path.isEmpty else { return [] }
         return ["-i", (path as NSString).expandingTildeInPath]
+    }
+
+    /// Command-line options outrank `~/.ssh/config`, so only switches the
+    /// host actually sets are passed.
+    var sshOptionArgs: [String] {
+        var args: [String] = []
+        if let forwardAgent { args.append(forwardAgent ? "-A" : "-a") }
+        if let forwardX11 { args.append(forwardX11 ? "-X" : "-x") }
+        return args + keepAliveArgs
+    }
+
+    /// Three missed replies and ssh gives up, which is ssh's own default count.
+    var keepAliveArgs: [String] {
+        guard let seconds = keepAliveSeconds, seconds > 0 else { return [] }
+        return ["-o", "ServerAliveInterval=\(seconds)", "-o", "ServerAliveCountMax=3"]
     }
 
     var sshArgs: [String] {
@@ -358,7 +382,7 @@ extension SessionEntry: Codable {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
         case kind, container, kubernetes, serial, telnet, preferMosh, credentialProfileID
-        case isFavorite
+        case isFavorite, forwardAgent, forwardX11, keepAliveSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -384,6 +408,9 @@ extension SessionEntry: Codable {
         preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
         credentialProfileID = try c.decodeIfPresent(UUID.self, forKey: .credentialProfileID)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent)
+        forwardX11 = try c.decodeIfPresent(Bool.self, forKey: .forwardX11)
+        keepAliveSeconds = try c.decodeIfPresent(Int.self, forKey: .keepAliveSeconds)
     }
 }
 
@@ -633,5 +660,275 @@ enum FolderTree {
 
     private static func byGroupName(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
         a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+}
+
+/// A parsed host filter. Whitespace-separated terms, all of which must match:
+///
+/// - a plain word matches a host's name, subtitle or folder, as it always has;
+/// - `env:prod`, `kind:k8s`, `folder:lab`, `profile:ansible`, `is:fav`,
+///   `is:protected` match one field;
+/// - a value wrapped in slashes is a case-insensitive regular expression:
+///   `/^db-\d+/`, `folder:/lab|prod/`;
+/// - a leading `-` negates any term: `-env:prod`.
+///
+/// Field values match by prefix where the field is an enum (`env:st` is
+/// staging) and by substring otherwise. A term with an unknown key is treated
+/// as plain text — `fe80::1` is an address, not a field — and a key with no
+/// value yet (`env:`) is ignored, so the list doesn't blank mid-keystroke. A
+/// pattern that doesn't compile is ignored the same way and reported in
+/// `invalidPatterns`, so the field can say so instead of showing nothing.
+struct HostQuery: Equatable {
+    enum Key: String, CaseIterable {
+        case env, kind, folder, profile, `is`
+    }
+
+    struct Term: Equatable {
+        var key: Key?
+        var value: String
+        var negated = false
+        /// Set when `value` was written as `/pattern/`.
+        var regex: NSRegularExpression?
+    }
+
+    var terms: [Term]
+    /// Slash-wrapped values that aren't valid regular expressions, as typed.
+    var invalidPatterns: [String] = []
+
+    init(_ text: String) {
+        var invalid: [String] = []
+        terms = text.split(whereSeparator: \.isWhitespace).compactMap { raw in
+            var token = Substring(raw)
+            var negated = false
+            if token.hasPrefix("-"), token.count > 1 {
+                negated = true
+                token = token.dropFirst()
+            }
+            var key: Key?
+            var value = String(token)
+            if let colon = token.firstIndex(of: ":"),
+               let k = Key(rawValue: token[..<colon].lowercased()) {
+                key = k
+                value = String(token[token.index(after: colon)...])
+                guard !value.isEmpty else { return nil }
+            }
+            var term = Term(key: key, value: value, negated: negated)
+            if let pattern = Self.slashPattern(value) {
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                    invalid.append(value)
+                    return nil
+                }
+                term.regex = regex
+            }
+            return term
+        }
+        invalidPatterns = invalid
+    }
+
+    var isEmpty: Bool { terms.isEmpty }
+
+    /// `profileNames` resolves `credentialProfileID` for `profile:` terms.
+    func matches(_ entry: SessionEntry, profileNames: [UUID: String] = [:]) -> Bool {
+        terms.allSatisfy { term in
+            let hit: Bool
+            let v = term.value
+            switch term.key {
+            case nil:
+                hit = term.contained(in: entry.name)
+                    || term.contained(in: entry.subtitle)
+                    || term.contained(in: entry.folder)
+            case .env:
+                hit = term.prefixes(entry.environment.rawValue)
+            case .kind:
+                if let regex = term.regex {
+                    hit = Self.kindNames(entry).contains { Self.search(regex, $0) }
+                } else {
+                    switch v.lowercased() {
+                    case "k8s": hit = entry.kind == .kubernetes
+                    case "ssh": hit = entry.kind == .host && !entry.preferMosh
+                    case "mosh": hit = entry.kind == .host && entry.preferMosh
+                    default: hit = Self.prefix(entry.kind.rawValue, v)
+                    }
+                }
+            case .folder:
+                hit = term.contained(in: entry.folder)
+            case .profile:
+                let name = entry.credentialProfileID.flatMap { profileNames[$0] }
+                if term.regex == nil, v.lowercased() == "none" {
+                    hit = name == nil
+                } else {
+                    hit = name.map { term.contained(in: $0) } ?? false
+                }
+            case .is:
+                hit = Self.flag(term, favorite: entry.isFavorite, protected: entry.isProtected)
+            }
+            return hit != term.negated
+        }
+    }
+
+    /// Groups carry a name, a folder and a favourite flag; a field they don't
+    /// have (`env:`, `kind:`, `profile:`) never matches, so `-env:prod` keeps
+    /// them.
+    func matches(_ group: SessionGroup) -> Bool {
+        terms.allSatisfy { term in
+            let hit: Bool
+            switch term.key {
+            case nil:
+                hit = term.contained(in: group.name) || term.contained(in: group.folder)
+            case .folder:
+                hit = term.contained(in: group.folder)
+            case .is:
+                hit = Self.flag(term, favorite: group.isFavorite, protected: false)
+            case .env, .kind, .profile:
+                hit = false
+            }
+            return hit != term.negated
+        }
+    }
+
+    /// A folder matches on its own path only when every term is something a
+    /// path can answer: plain text or `folder:`. `env:prod` lights a folder
+    /// up through the hosts inside it, never through its name.
+    func matches(folderPath path: String) -> Bool {
+        terms.allSatisfy { term in
+            guard term.key == nil || term.key == .folder else { return false }
+            return term.contained(in: path) != term.negated
+        }
+    }
+
+    /// The inner pattern of a `/…/` value, or nil for anything else. `//`
+    /// and a lone `/` stay plain text.
+    private static func slashPattern(_ value: String) -> String? {
+        guard value.count > 2, value.hasPrefix("/"), value.hasSuffix("/") else { return nil }
+        return String(value.dropFirst().dropLast())
+    }
+
+    fileprivate static func search(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// The names `kind:` answers to, aliases included, for a regex to test.
+    private static func kindNames(_ entry: SessionEntry) -> [String] {
+        var names = [entry.kind.rawValue]
+        switch entry.kind {
+        case .kubernetes: names.append("k8s")
+        case .host: names.append(entry.preferMosh ? "mosh" : "ssh")
+        default: break
+        }
+        return names
+    }
+
+    private static func prefix(_ field: String, _ value: String) -> Bool {
+        field.lowercased().hasPrefix(value.lowercased())
+    }
+
+    private static func flag(_ term: Term, favorite: Bool, protected: Bool) -> Bool {
+        if let regex = term.regex {
+            return (favorite && ["fav", "favorite", "favourite", "pinned"].contains { search(regex, $0) })
+                || (protected && search(regex, "protected"))
+        }
+        switch term.value.lowercased() {
+        case "fav", "favorite", "favourite", "pinned": return favorite
+        case "protected": return protected
+        default: return false
+        }
+    }
+}
+
+private extension HostQuery.Term {
+    /// Substring, or a regex search anywhere in the text.
+    func contained(in text: String) -> Bool {
+        if let regex { return HostQuery.search(regex, text) }
+        return text.localizedCaseInsensitiveContains(value)
+    }
+
+    /// Prefix for enum fields; a regex is tested as written, so anchor it
+    /// with `^` if that's what you mean.
+    func prefixes(_ field: String) -> Bool {
+        if let regex { return HostQuery.search(regex, field) }
+        return field.lowercased().hasPrefix(value.lowercased())
+    }
+}
+
+extension HostQuery {
+    /// The values a key can take, for the help popover and completion.
+    /// `folder:` and `profile:` come from the library; the rest are fixed.
+    static func suggestedValues(for key: Key, folders: [String], profiles: [String]) -> [String] {
+        switch key {
+        case .env: return HostEnvironment.allCases.map(\.rawValue).filter { $0 != HostEnvironment.none.rawValue }
+        case .kind: return ["ssh", "mosh", "k8s"] + SessionKind.allCases.map(\.rawValue).filter { $0 != "kubernetes" }
+        case .folder: return folders
+        case .profile: return ["none"] + profiles
+        case .is: return ["fav", "protected"]
+        }
+    }
+
+    /// Completions for the term being typed — the last one, once it reads
+    /// `key:` or `-key:partial`. Each is the whole filter text with that term
+    /// finished, so picking one is a plain assignment. Values containing
+    /// whitespace are skipped: the parser splits on it and they couldn't
+    /// round-trip.
+    static func completions(for text: String, folders: [String], profiles: [String],
+                            limit: Int = 8) -> [String] {
+        guard let last = text.split(whereSeparator: \.isWhitespace).last,
+              !text.last!.isWhitespace else { return [] }
+        let token = last.hasPrefix("-") ? last.dropFirst() : last[...]
+        guard let colon = token.firstIndex(of: ":"),
+              let key = Key(rawValue: token[..<colon].lowercased()) else { return [] }
+        let partial = token[token.index(after: colon)...]
+        guard !partial.hasPrefix("/") else { return [] }
+        let head = text[..<last.startIndex] + last[..<last.index(after: last.firstIndex(of: ":")!)]
+        var seen = Set<String>()
+        return suggestedValues(for: key, folders: folders, profiles: profiles)
+            .filter { !$0.contains(where: \.isWhitespace) && seen.insert($0.lowercased()).inserted }
+            .filter { partial.isEmpty || ($0.lowercased().hasPrefix(partial.lowercased()) && $0.count > partial.count) }
+            .prefix(limit)
+            .map { head + $0 }
+    }
+}
+
+/// What a host filter matched. The sidebar keeps drawing the whole tree while
+/// filtering and dims everything not in here, rather than dropping it.
+///
+/// Dropping it was correct but read as broken: a folder left in the tree by
+/// `explicitFolders` opened onto nothing, and with the filter text easy to
+/// forget about, an empty folder looked like navigation had stopped working.
+/// Dimmed rows say "these are here, they just don't match".
+struct SidebarMatches: Equatable {
+    /// Hosts and groups that match.
+    var ids: Set<UUID> = []
+    /// Folders holding a match somewhere beneath them, plus folders whose own
+    /// path matches. These stay undimmed and auto-expand.
+    var folders: Set<String> = []
+    var matchedHostCount = 0
+
+    /// `folderPaths` should be every folder the tree draws, so a folder can
+    /// match on its name even when it is empty.
+    static func compute(query: HostQuery,
+                        entries: [SessionEntry],
+                        groups: [SessionGroup],
+                        folderPaths: [String],
+                        profileNames: [UUID: String] = [:]) -> SidebarMatches {
+        var result = SidebarMatches()
+        func addWithAncestors(_ path: String) {
+            var prefix = ""
+            for part in path.split(separator: "/") {
+                prefix = prefix.isEmpty ? String(part) : prefix + "/" + part
+                result.folders.insert(prefix)
+            }
+        }
+        for entry in entries where query.matches(entry, profileNames: profileNames) {
+            result.ids.insert(entry.id)
+            result.matchedHostCount += 1
+            addWithAncestors(entry.folder)
+        }
+        for group in groups where query.matches(group) {
+            result.ids.insert(group.id)
+            addWithAncestors(group.folder)
+        }
+        for path in folderPaths where query.matches(folderPath: path) {
+            addWithAncestors(path)
+        }
+        return result
     }
 }

@@ -30,6 +30,11 @@ struct SidebarView: View {
     @EnvironmentObject var library: LibraryCommands
     @State private var section: SidebarSection = .hosts
     @State private var filter = ""
+    /// Filters pinned from the filter field's menu, newline-separated. Per-Mac
+    /// UI state rather than library data: nothing to migrate, and a downgrade
+    /// can't drop part of the library over it.
+    @AppStorage("sidebar.savedFilters") private var savedFiltersRaw = ""
+    @State private var showingFilterHelp = false
     @State private var editingEntry: SessionEntry?
     @State private var editingMacro: Macro?
     @State private var showingImporter = false
@@ -92,23 +97,95 @@ struct SidebarView: View {
         return text
     }
 
-    private var filteredEntries: [SessionEntry] {
-        guard !filter.isEmpty else { return store.entries }
-        return store.entries.filter {
-            $0.name.localizedCaseInsensitiveContains(filter)
-                || $0.subtitle.localizedCaseInsensitiveContains(filter)
-                || $0.folder.localizedCaseInsensitiveContains(filter)
+    /// Every row the filter matched, or nil when there's no filter. The tree
+    /// itself is never narrowed; non-matching rows are drawn dimmed.
+    private var searchMatches: SidebarMatches? {
+        let query = HostQuery(filter)
+        guard !query.isEmpty else { return nil }
+        return SidebarMatches.compute(
+            query: query,
+            entries: store.entries,
+            groups: store.groups,
+            folderPaths: store.explicitFolders,
+            profileNames: Dictionary(store.credentialProfiles.map { ($0.id, $0.name) },
+                                     uniquingKeysWith: { first, _ in first }))
+    }
+
+    private var savedFilters: [String] {
+        savedFiltersRaw.split(separator: "\n").map(String.init)
+    }
+
+    private func setSaved(_ query: String, saved: Bool) {
+        var list = savedFilters.filter { $0 != query }
+        if saved { list.append(query) }
+        savedFiltersRaw = list.joined(separator: "\n")
+    }
+
+    /// Saved filters, and save/remove for the current text. The syntax
+    /// reference is the ? button at the other end of the field.
+    private var filterMenu: some View {
+        Menu {
+            let current = filter.trimmingCharacters(in: .whitespaces)
+            if savedFilters.isEmpty {
+                Text("No saved filters")
+            } else {
+                Section("Saved") {
+                    ForEach(savedFilters, id: \.self) { query in
+                        Button(query) { filter = query }
+                    }
+                }
+            }
+            if !current.isEmpty {
+                Divider()
+                if savedFilters.contains(current) {
+                    Button("Remove \u{201C}\(current)\u{201D} from Saved") { setSaved(current, saved: false) }
+                } else {
+                    Button("Save \u{201C}\(current)\u{201D}") { setSaved(current, saved: true) }
+                }
+            }
+        } label: {
+            Image(systemName: "magnifyingglass")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Saved filters")
+    }
+
+    private var profileNameList: [String] {
+        store.credentialProfiles.map(\.name).sorted()
+    }
+
+    /// Finishes the term being typed (`env:` → `env:prod`) as the user types.
+    private var filterCompletions: [String] {
+        HostQuery.completions(for: filter, folders: store.folders, profiles: profileNameList)
+    }
+
+    /// Adds a term from the help popover, keeping what's already typed.
+    private func addFilterTerm(_ term: String) {
+        let current = filter.trimmingCharacters(in: .whitespaces)
+        filter = current.isEmpty ? term : current + " " + term
+    }
+
+    private var filterHelpButton: some View {
+        Button { showingFilterHelp.toggle() } label: {
+            Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Filter syntax: fields, - to exclude, /regex/")
+        .popover(isPresented: $showingFilterHelp, arrowEdge: .trailing) {
+            FilterHelpView(folders: store.folders, profiles: profileNameList, add: addFilterTerm)
         }
     }
 
-    /// Groups match the host filter on their own name, so filtering for
-    /// "splunk" finds the group as well as the boxes in it.
-    private var filteredGroups: [SessionGroup] {
-        guard !filter.isEmpty else { return store.groups }
-        return store.groups.filter {
-            $0.name.localizedCaseInsensitiveContains(filter)
-                || $0.folder.localizedCaseInsensitiveContains(filter)
-        }
+    private static func lastTerm(of text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? text
+    }
+
+    private var hostsTree: SidebarTree {
+        FolderTree.build(entries: store.entries,
+                         explicitFolders: store.explicitFolders,
+                         groups: store.groups)
     }
 
     /// The sidebar's actual content, split out from `body`.
@@ -319,16 +396,19 @@ struct SidebarView: View {
     // MARK: - Sections
 
     private var hostsList: some View {
-        let tree = FolderTree.build(entries: filteredEntries,
-                                    explicitFolders: store.explicitFolders,
-                                    groups: filteredGroups)
+        let tree = hostsTree
+        let matches = searchMatches
+        let invalidPatterns = HostQuery(filter).invalidPatterns
+        let completions = filterCompletions
         // The hosts list is an NSOutlineView (HostOutlineView) so selection and
         // drag are native — SwiftUI's List couldn't do range selection or
         // reliable drag-to-folder. Macros/Tools stay on SwiftUI List.
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-                TextField("Filter hosts", text: $filter)
+                filterMenu
+                    .foregroundStyle(matches == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                    .font(.caption)
+                TextField("Filter hosts  (env:prod, kind:k8s\u{2026})", text: $filter)
                     .textFieldStyle(.plain)
                     .onKeyPress(.downArrow) {
                         guard !filter.isEmpty else { return .ignored }
@@ -340,15 +420,65 @@ struct SidebarView: View {
                         moveFocusToResults(selectFirst: false)
                         return .handled
                     }
-                if !filter.isEmpty {
+                    .onKeyPress(.tab) {
+                        guard let first = completions.first else { return .ignored }
+                        filter = first + " "
+                        return .handled
+                    }
+                if !invalidPatterns.isEmpty {
+                    // An unparseable regex is ignored rather than blanking the
+                    // list; this says so instead of failing silently.
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .help("Not a valid regular expression, so it's ignored: \(invalidPatterns.joined(separator: " "))")
+                }
+                if let matches {
+                    // Says the list is filtered, and by how much, without
+                    // having to notice the text in the field.
+                    Text("\(matches.matchedHostCount) of \(store.entries.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tint)
+                        .help("Showing \(matches.matchedHostCount) matching hosts; the rest are dimmed")
                     Button { filter = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear filter")
                 }
+                filterHelpButton
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            // A tinted, outlined field while a filter is active. Easy-to-miss
+            // filter text made a filtered list look like broken navigation.
+            .background {
+                if matches != nil {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.accentColor.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: matches == nil)
+
+            if !completions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(completions, id: \.self) { completion in
+                            Button(Self.lastTerm(of: completion)) { filter = completion + " " }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .font(.caption.monospaced())
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .padding(.bottom, 4)
+                .help("Tab picks the first")
+            }
 
             Divider()
 
@@ -356,7 +486,7 @@ struct SidebarView: View {
                 tree: tree,
                 selection: $selection,
                 store: store,
-                searching: !filter.isEmpty,
+                matches: matches,
                 focusRequest: sidebarFocusRequest,
                 expandAllRequest: expandAllRequest,
                 collapseAllRequest: collapseAllRequest,
@@ -507,10 +637,8 @@ struct SidebarView: View {
     /// to the host list so further arrow keys navigate it directly (native
     /// NSOutlineView row navigation once it's first responder).
     private func moveFocusToResults(selectFirst: Bool) {
-        let tree = FolderTree.build(entries: filteredEntries,
-                                    explicitFolders: store.explicitFolders,
-                                    groups: filteredGroups)
-        let ids = flattenedEntryIDs(from: tree)
+        guard let matches = searchMatches else { return }
+        let ids = flattenedEntryIDs(from: hostsTree).filter { matches.ids.contains($0) }
         guard !ids.isEmpty else { return }
         if selection.isEmpty {
             selection = [selectFirst ? ids.first! : ids.last!]
@@ -519,8 +647,8 @@ struct SidebarView: View {
     }
 
     /// Entry ids in the same depth-first order `HostOutlineView` renders them
-    /// (folders then their entries, root entries last) — every one is visible
-    /// while searching, since matching folders auto-expand.
+    /// (folders then their entries, root entries last). Matching ones are all
+    /// visible while searching, since folders holding a match auto-expand.
     private func flattenedEntryIDs(from tree: SidebarTree) -> [UUID] {
         var ids: [UUID] = []
         func walk(_ nodes: [SidebarNode]) {
