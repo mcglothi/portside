@@ -29,6 +29,19 @@ final class ConnectionLinkTests: XCTestCase {
         XCTAssertThrowsError(try parse("http://web01"))
     }
 
+    /// Refused hosts are validated encoded but shown decoded, minus anything
+    /// that could break up the alert.
+    func testRefusedHostIsShownReadably() {
+        XCTAssertThrowsError(try parse("ssh://my%20host")) { error in
+            XCTAssertEqual(error as? ConnectionLink.ParseError,
+                           .invalid("The link's host \u{201C}my host\u{201D} isn't a valid host name or address."))
+        }
+        XCTAssertThrowsError(try parse("ssh://evil%0A%0Ahost%20x")) { error in
+            XCTAssertFalse(error.localizedDescription.contains("\n"))
+            XCTAssertTrue(error.localizedDescription.contains("evilhost x"))
+        }
+    }
+
     func testMatchingRespectsUserAndPort() throws {
         var saved = SessionEntry(name: "web", folder: "", hostname: "web01.example.com")
         saved.user = "deploy"

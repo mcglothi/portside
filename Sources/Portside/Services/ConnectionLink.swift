@@ -37,7 +37,9 @@ enum ConnectionLink: Equatable {
             var host = components.percentEncodedHost ?? ""
             if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
             guard isSafeHost(host) else {
-                throw ParseError.invalid("The link's host “\(host)” isn't a valid host name or address.")
+                // Validate the encoded form (a % never passes), but show what
+                // the link meant: "my%20host" reads as "my host".
+                throw ParseError.invalid("The link's host “\(readable(host))” isn't a valid host name or address.")
             }
             let user = components.user?.removingPercentEncoding
             if let user, !isSafeUser(user) {
@@ -104,6 +106,13 @@ enum ConnectionLink: Equatable {
         case .ssh(let user, let host, let port):
             return (user.map { "\($0)@" } ?? "") + host + (port.map { ":\($0)" } ?? "")
         }
+    }
+
+    /// A rejected host as a person would read it: percent-decoded, with any
+    /// control characters a hostile link smuggled in dropped from the alert.
+    private static func readable(_ host: String) -> String {
+        let decoded = host.removingPercentEncoding ?? host
+        return String(decoded.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
     }
 
     private static func isSafeHost(_ host: String) -> Bool {
