@@ -47,14 +47,16 @@ the flow, the status stays **Running**.
 
 ### There is no keepalive unless you configure one
 
-Portside does not set `ServerAliveInterval`. Without it, ssh has no reason to
+Portside does not set `ServerAliveInterval` unless the host asks it to. Without it, ssh has no reason to
 notice a connection that has gone away silently — a laptop that slept, a NAT
 table that expired, a VPN that dropped. The TCP connection is half-open, the
 process is alive, the status says Running, and connections to the local port
 hang instead of failing.
 
-If you rely on tunnels, put this in `~/.ssh/config` for the hosts you forward
-through:
+Since 0.26 the host a tunnel goes through can set one itself: **Keepalive
+(seconds)** under *Connection options* in the host editor applies to its
+tunnels as well as its sessions. Otherwise, put this in `~/.ssh/config` for
+the hosts you forward through:
 
 ```
 Host jump-host

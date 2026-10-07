@@ -3,6 +3,16 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.26.0
+
+**Filtering the host list no longer makes folders look broken.** A filter used to drop every host that didn't match but keep folders you'd created, so a folder could open onto nothing — and with the filter text easy to forget, that read as navigation that had stopped working. The whole list now stays put: hosts, groups and folders that don't match are dimmed rather than removed, folders holding a match open by themselves, and the filter field turns your accent colour with a match count (`3 of 42`) while a filter is active. Clearing it puts folders back the way you had them.
+
+**Filter by field.** Terms separated by spaces must all match. Plain words work as before; `env:prod`, `kind:k8s` (also `ssh`, `mosh`, `serial`, `telnet`, `container`), `folder:lab`, `profile:ansible` or `profile:none`, and `is:fav` / `is:protected` match one field; a leading `-` excludes, as in `-env:prod`. The magnifying glass is now a menu of saved filters and examples of the syntax. Saved filters belong to this Mac rather than the library, so nothing migrates and a downgrade can't lose them.
+
+**Per-host agent forwarding, X11 forwarding and keepalive**, under *Connection options* in the host editor. Each starts at "Use ssh config" and is only passed to ssh when a host sets it, so imported hosts behave exactly as before. Keepalive also applies to tunnels through that host, which is what lets a dead forward end instead of showing *Running* indefinitely. Explain This Connection shows all three.
+
+**`ssh://` and `portside://connect/` links.** `ssh://deploy@web01:2222` opens the saved host it names — and only one that agrees on any user or port the link spells out. A protected host asks first; a host that isn't in your library always asks, and offers to save it. `portside://connect/<name>` opens a saved host by name or alias, for wikis, dashboards and scripts. Links are parsed strictly, so a host like `-oProxyCommand=…` is refused rather than handed to ssh. macOS gives `ssh://` to Terminal and has no setting to change that; **Settings ▸ Connection ▸ Links** does.
+
 ## 0.25.0
 
 **A remote file you edited could be deleted before it reached the host.** Portside checks a file out to a temp copy, watches it, and uploads on save. Closing that edit — or quitting — deleted the copy unconditionally. Three ordinary situations reached that delete holding the only version of your work: an upload that failed (a read-only file, a connection that dropped), an upload cancelled while it was still running, and a save the watcher had not managed to push yet. Nothing warned you, and the copy a crash left behind was swept away at the next launch. The in-session handling was already careful — a failed upload stays armed so the next save retries, rather than dropping the work silently — but none of that survived the app closing.
