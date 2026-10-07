@@ -217,6 +217,36 @@ struct SessionEditorView: View {
         }
     }
 
+    /// Each switch defaults to "ssh config", so a host imported from
+    /// `~/.ssh/config` keeps behaving exactly as it did there.
+    @ViewBuilder private var connectionOptions: some View {
+        DisclosureGroup("Connection options") {
+            Picker("Agent forwarding", selection: $draft.forwardAgent) {
+                Text("Use ssh config").tag(Bool?.none)
+                Text("On").tag(Bool?.some(true))
+                Text("Off").tag(Bool?.some(false))
+            }
+            Picker("X11 forwarding", selection: $draft.forwardX11) {
+                Text("Use ssh config").tag(Bool?.none)
+                Text("On").tag(Bool?.some(true))
+                Text("Off").tag(Bool?.some(false))
+            }
+            TextField("Keepalive (seconds)", text: keepAliveBinding, prompt: Text("ssh config — e.g. 30"))
+            Text("Keepalive probes the link so a dead connection or tunnel ends instead of hanging. Agent forwarding lets the host use your local keys — only turn it on for hosts you trust. X11 needs XQuartz. None of these apply to mosh sessions.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var keepAliveBinding: Binding<String> {
+        Binding(
+            get: { draft.keepAliveSeconds.map(String.init) ?? "" },
+            set: { text in
+                let digits = text.filter(\.isNumber)
+                draft.keepAliveSeconds = Int(digits).flatMap { $0 > 0 ? $0 : nil }
+            })
+    }
+
     @ViewBuilder private var runOnConnectField: some View {
         VStack(alignment: .leading, spacing: 2) {
             TextField("Run on connect", text: runOnConnectBinding,
@@ -361,6 +391,7 @@ struct SessionEditorView: View {
                     credentialProfilePicker
                     passwordFields
                     runOnConnectField
+                    connectionOptions
                 case .container:
                     transportHeader
                     sshFields

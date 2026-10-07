@@ -21,7 +21,7 @@ enum SSHInvocation {
         if autoAcceptNewHostKeys {
             hostKeyOptions = ["-o", "StrictHostKeyChecking=accept-new"]
         }
-        return SSHControl.options + hostKeyOptions + entry.sshArgs
+        return SSHControl.options + hostKeyOptions + entry.sshOptionArgs + entry.sshArgs
     }
 
     /// The same invocation, asked to resolve and print rather than connect.

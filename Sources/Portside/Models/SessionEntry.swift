@@ -204,6 +204,15 @@ struct SessionEntry: Identifiable, Hashable {
     var credentialProfileID: UUID?
     /// Pinned to the "Favorites" section of the welcome/start page.
     var isFavorite = false
+    /// Per-host ssh switches. nil leaves the decision to `~/.ssh/config`, so a
+    /// host only overrides what it says it overrides. Plain ssh only: mosh
+    /// carries neither forwarding, and keepalive is moot on it.
+    var forwardAgent: Bool?
+    var forwardX11: Bool?
+    /// `ServerAliveInterval`, in seconds. Also applied to tunnels through this
+    /// host, where it's what makes a dead link end the ssh process instead of
+    /// it sitting on "Running" indefinitely.
+    var keepAliveSeconds: Int?
 
     var icon: String { kind.icon }
 
@@ -269,6 +278,21 @@ struct SessionEntry: Identifiable, Hashable {
     private var identityArgs: [String] {
         guard let path = identityFile, !path.isEmpty else { return [] }
         return ["-i", (path as NSString).expandingTildeInPath]
+    }
+
+    /// Command-line options outrank `~/.ssh/config`, so only switches the
+    /// host actually sets are passed.
+    var sshOptionArgs: [String] {
+        var args: [String] = []
+        if let forwardAgent { args.append(forwardAgent ? "-A" : "-a") }
+        if let forwardX11 { args.append(forwardX11 ? "-X" : "-x") }
+        return args + keepAliveArgs
+    }
+
+    /// Three missed replies and ssh gives up, which is ssh's own default count.
+    var keepAliveArgs: [String] {
+        guard let seconds = keepAliveSeconds, seconds > 0 else { return [] }
+        return ["-o", "ServerAliveInterval=\(seconds)", "-o", "ServerAliveCountMax=3"]
     }
 
     var sshArgs: [String] {
@@ -358,7 +382,7 @@ extension SessionEntry: Codable {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
         case kind, container, kubernetes, serial, telnet, preferMosh, credentialProfileID
-        case isFavorite
+        case isFavorite, forwardAgent, forwardX11, keepAliveSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -384,6 +408,9 @@ extension SessionEntry: Codable {
         preferMosh = try c.decodeIfPresent(Bool.self, forKey: .preferMosh) ?? false
         credentialProfileID = try c.decodeIfPresent(UUID.self, forKey: .credentialProfileID)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent)
+        forwardX11 = try c.decodeIfPresent(Bool.self, forKey: .forwardX11)
+        keepAliveSeconds = try c.decodeIfPresent(Int.self, forKey: .keepAliveSeconds)
     }
 }
 
