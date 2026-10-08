@@ -552,6 +552,24 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         shellIdleSince = nil
     }
 
+    /// The program the exec runs as: kubectl or oc, or the container engine.
+    private var execCLI: String {
+        switch entry?.kind {
+        case .kubernetes?: return entry?.kubernetes?.binary.rawValue ?? KubernetesTarget.Binary.kubectl.rawValue
+        default: return entry?.container?.engine.rawValue ?? ContainerTarget.Engine.docker.rawValue
+        }
+    }
+
+    /// Whether process group `group`'s leader runs `name` — by its executable's
+    /// file name, so a full path or a versioned copy (`kubectl-1.31`) counts.
+    static func isExecutable(_ group: pid_t, named name: String) -> Bool {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let path = proc_pidpath(group, &buffer, UInt32(buffer.count)) > 0 ? String(cString: buffer) : ""
+        var short = [CChar](repeating: 0, count: 256)
+        let comm = proc_name(group, &short, UInt32(short.count)) > 0 ? String(cString: short) : ""
+        return [(path as NSString).lastPathComponent, comm].contains { $0 == name || $0.hasPrefix(name + "-") }
+    }
+
     @MainActor func execStage() -> ExecStage? {
         guard entry?.usesLocalTransport == true, isRunning,
               let process = terminalView.process, process.running else { return nil }
@@ -560,8 +578,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         guard front > 0, tcgetattr(process.childfd, &settings) == 0 else { return .starting }
         let lineEditor = settings.c_lflag & tcflag_t(ICANON) == 0 && settings.c_lflag & tcflag_t(ECHO) == 0
         guard front == getpgid(process.shellPid) else {
-            execWasInFront = true
             shellIdleSince = nil
+            // Only the exec itself counts. A login shell runs its rc file's
+            // external commands (`brew shellenv`, a version manager) as
+            // foreground jobs of their own; taking one of those for the exec
+            // made the shell's return read as the exec failing, before the
+            // exec had even been read (PR #30 review).
+            guard Self.isExecutable(front, named: execCLI) else { return .starting }
+            execWasInFront = true
             return lineEditor ? .attached : .starting
         }
         if execWasInFront { return .returned }

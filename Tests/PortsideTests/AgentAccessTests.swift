@@ -859,5 +859,47 @@ final class AgentAccessTests: XCTestCase {
         }
         XCTAssertEqual(cmd["output"], .string(marker))
     }
+
+    /// A login shell runs its rc file's external commands as foreground jobs of
+    /// their own — `brew shellenv`, a version manager, here a `sleep`. Taking
+    /// one of those for the exec, and the shell's return for the exec failing,
+    /// answered "returned to the local shell" before the exec had even been
+    /// read (PR #30 review, on a Mac whose zsh takes 8s to start).
+    func testASlowShellStartupIsNotTakenForAFailedExec() async throws {
+        let home = root.appendingPathComponent("slow-home-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        // Two external commands with the shell itself busy in between, as a real
+        // rc file is: each command takes the foreground, then the shell has it
+        // back while it works through builtins before the next.
+        try "sleep 1\ninteger i\nfor ((i = 0; i < 400000; i++)); do :; done\nsleep 2\n"
+            .write(to: home.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+        let saved = ["HOME", "SHELL"].map { ($0, ProcessInfo.processInfo.environment[$0]) }
+        setenv("HOME", home.path, 1)
+        setenv("SHELL", "/bin/zsh", 1)
+        defer { for (k, v) in saved { if let v { setenv(k, v, 1) } else { unsetenv(k) } } }
+
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+
+        let started = Date()
+        let r = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                                   from: claude)
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"],
+              case .object(let pane)? = panes.first, case .string(let id)? = pane["pane"] else {
+            return XCTFail("\(String(describing: r.error)) \(String(describing: r.result))")
+        }
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 3, "answered while the rc file was still running")
+        XCTAssertEqual(pane["state"], .string("returned to the local shell"))
+        let screen = await agent.handle(.init(method: "screen", params: .init(pane: id)), from: claude)
+        guard case .object(let row)? = screen.result, case .string(let text)? = row["text"] else {
+            return XCTFail("\(String(describing: screen))")
+        }
+        XCTAssertTrue(text.contains("not found"), "the exec had run and failed by then: \(text)")
+    }
 }
 
