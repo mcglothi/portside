@@ -224,12 +224,30 @@ library and your team's shared inventories:
 `sources` and `preview` only need read access. `pull` needs open access.
 Everything else needs the editing switch.
 
+`host add` also creates Kubernetes and container entries:
+
+```
+portside host add 'web (nkp)' --kind kubernetes --target deploy/web \
+    --context nkp-prod --namespace shop --container app
+portside host add redis --kind container --target redis-1 --engine podman
+```
+
+Point a Kubernetes entry at a **workload** (`deploy/web`, `sts/db`) rather
+than a pod when you can: kubectl picks a running replica at connect time, and
+the name survives rollouts, where a pod's name doesn't. `--kubeconfig` names a
+file of its own (NKP hands out one per cluster), and `--cli oc` uses
+OpenShift's CLI. With `--host` or `--alias`, kubectl or docker runs on that
+ssh host instead of this Mac. Over MCP these are `kind` plus a `kubernetes` or
+`container` object on `portside_add_host`. Shared inventories still carry SSH
+hosts only.
+
 **What an agent still can't do:**
 - Change a team's shared hosts. Those are read-only, so it edits the copies
   in your linked folder and publishes them for review.
 - Subscribe to a new source. Choosing what to trust is yours.
 - Remove protection from a host.
-- Pass a host, alias or user that ssh would read as an option.
+- Pass a host, alias, user, pod or workload that ssh or kubectl would read as
+  an option.
 
 **What asks you:**
 - **The first edit each session**, offering "Allow Edits This Session" or

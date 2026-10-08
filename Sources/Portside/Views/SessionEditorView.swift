@@ -20,7 +20,7 @@ struct SessionEditorView: View {
     @State private var serial: SerialTarget
     @State private var telnet: TelnetTarget
     @State private var availableDevices: [String] = []
-    @State private var showingPicker = false
+    @State private var picker: ContainerPickerView.Mode?
     private let isNew: Bool
     private let folders: [String]
     private let onComplete: (EditorResult<SessionEntry>) -> Void
@@ -278,7 +278,7 @@ struct SessionEditorView: View {
         }
         HStack {
             TextField("Container", text: $container.name, prompt: Text("name or id — e.g. web"))
-            Button("Browse…") { showingPicker = true }
+            Button("Browse…") { picker = .targets }
         }
         TextField("Shell", text: $container.shell, prompt: Text("sh"))
         TextField("Exec as user", text: $container.user, prompt: Text("optional — e.g. root"))
@@ -286,17 +286,31 @@ struct SessionEditorView: View {
     }
 
     @ViewBuilder private var kubernetesFields: some View {
-        TextField("Context", text: $kubernetes.context,
-                  prompt: Text("optional — e.g. nkp-prod or gke_proj_zone_cluster"))
+        Picker("CLI", selection: $kubernetes.binary) {
+            Text("kubectl").tag(KubernetesTarget.Binary.kubectl)
+            Text("oc (OpenShift)").tag(KubernetesTarget.Binary.oc)
+        }
+        .pickerStyle(.segmented)
+        TextField("Kubeconfig", text: $kubernetes.kubeconfig,
+                  prompt: Text("optional — default $KUBECONFIG or ~/.kube/config"))
+        HStack {
+            TextField("Context", text: $kubernetes.context,
+                      prompt: Text("optional — e.g. nkp-prod or gke_proj_zone_cluster"))
+            Button("Browse…") { picker = .contexts }
+        }
         TextField("Namespace", text: $kubernetes.namespace, prompt: Text("optional — default"))
         HStack {
-            TextField("Pod", text: $kubernetes.pod, prompt: Text("e.g. api-7d9f8"))
-            Button("Browse…") { showingPicker = true }
+            TextField("Pod or workload", text: $kubernetes.pod, prompt: Text("e.g. deploy/web or api-7d9f8"))
+            Button("Browse…") { picker = .targets }
         }
-        TextField("Container", text: $kubernetes.container,
-                  prompt: Text("optional — for multi-container pods"))
+        HStack {
+            TextField("Container", text: $kubernetes.container,
+                      prompt: Text("optional — for multi-container pods"))
+            Button("Browse…") { picker = .containers }
+                .disabled(kubernetes.pod.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
         TextField("Shell", text: $kubernetes.shell, prompt: Text("sh"))
-        commandPreview(kubernetes.execCommand)
+        commandPreview(kubernetes.execCommand(local: draftForPicker.usesLocalTransport))
     }
 
     @ViewBuilder private var serialFields: some View {
@@ -489,12 +503,13 @@ struct SessionEditorView: View {
         .padding(.vertical, 20)
         .padding(.horizontal, 32)
         .frame(width: 484)
-        .sheet(isPresented: $showingPicker) {
-            ContainerPickerView(entry: draftForPicker) { picked in
-                if draft.kind == .kubernetes {
-                    kubernetes.pod = picked
-                } else {
-                    container.name = picked
+        .sheet(item: $picker) { mode in
+            ContainerPickerView(entry: draftForPicker, mode: mode) { picked in
+                switch (draft.kind, mode) {
+                case (.kubernetes, .contexts): kubernetes.context = picked
+                case (.kubernetes, .containers): kubernetes.container = picked
+                case (.kubernetes, .targets): kubernetes.pod = picked
+                default: container.name = picked
                 }
             }
         }

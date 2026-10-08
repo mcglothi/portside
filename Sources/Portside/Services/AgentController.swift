@@ -723,9 +723,28 @@ final class AgentController: ObservableObject {
             guard !name.isEmpty else { return .failure(.badRequest("A host needs a name.")) }
             let folder = SharedManifest.normalizedFolder(params.folder ?? "") ?? ""
             var entry = SessionEntry(name: name, folder: folder, hostname: "")
+            // Only the kinds an agent can describe completely; serial and
+            // telnet need a device or a port the user should pick.
+            let kindName = params.kind?.lowercased() ?? "host"
+            guard let kind = SessionKind(rawValue: kindName), [.host, .kubernetes, .container].contains(kind) else {
+                return .failure(.badRequest("kind must be host, kubernetes or container."))
+            }
+            entry.kind = kind
             if let problem = applyHostFields(params, to: &entry) { return .failure(.badRequest(problem)) }
-            guard !entry.hostname.isEmpty || !(entry.sshAlias ?? "").isEmpty else {
-                return .failure(.badRequest("A host needs a hostname or an ssh alias."))
+            switch kind {
+            case .kubernetes:
+                // hostname / alias, if given, is the ssh host kubectl runs on.
+                guard entry.kubernetes?.execCommand(local: entry.usesLocalTransport) != nil else {
+                    return .failure(.badRequest("A Kubernetes entry needs kubernetes.target: a pod, or a workload like deploy/web."))
+                }
+            case .container:
+                guard entry.container?.execCommand != nil else {
+                    return .failure(.badRequest("A container entry needs container.target: the container's name or id."))
+                }
+            default:
+                guard !entry.hostname.isEmpty || !(entry.sshAlias ?? "").isEmpty else {
+                    return .failure(.badRequest("A host needs a hostname or an ssh alias."))
+                }
             }
             if let failure = await ensureEdit(client, "add \u{201C}\(name)\u{201D}\(folder.isEmpty ? "" : " to \(folder)")",
                                               hosts: [entry]) { return .failure(failure) }
@@ -749,8 +768,13 @@ final class AgentController: ObservableObject {
                 return .failure(.denied("\u{201C}\(found.name)\u{201D} is protected; an agent can\u{2019}t remove that."))
             }
             guard updated != found else { return .success(AgentPolicy.hostRow(found, source: nil)) }
-            let changes = InventoryPublishing.fieldChanges(found, updated)
+            var changes = InventoryPublishing.fieldChanges(found, updated)
                 .map { "\($0.field): \($0.before.isEmpty ? "\u{2014}" : $0.before) \u{2192} \($0.after.isEmpty ? "\u{2014}" : $0.after)" }
+            // The manifest's field list is SSH-only; say what a container or
+            // pod edit changes rather than asking about nothing.
+            if found.postConnectCommand != updated.postConnectCommand {
+                changes.append("command: \(found.postConnectCommand ?? "\u{2014}") \u{2192} \(updated.postConnectCommand ?? "\u{2014}")")
+            }
             if let failure = await ensureEdit(client, "change \u{201C}\(found.name)\u{201D}: " + changes.joined(separator: ", "),
                                               hosts: [found], protected: found.isProtected) {
                 return .failure(failure)
@@ -1163,6 +1187,52 @@ final class AgentController: ObservableObject {
             e.environment = parsed
         }
         if let prot = p.protected { e.isProtected = prot }
+        if let k = p.kubernetes {
+            guard e.kind == .kubernetes else { return "kubernetes fields are only for a Kubernetes entry." }
+            var t = e.kubernetes ?? KubernetesTarget()
+            let values = [k.context, k.namespace, k.target, k.container, k.shell, k.kubeconfig, k.cli].compactMap { $0 }
+            if values.contains(where: InventorySource.hasControlCharacters) {
+                return "Kubernetes fields can\u{2019}t contain control characters."
+            }
+            // Flags go as --flag=value, so only the positional slots can be
+            // mistaken for an option.
+            for v in [k.target, k.shell].compactMap({ $0?.trimmingCharacters(in: .whitespaces) })
+            where v.looksLikeShellOption {
+                return "\u{201C}\(v)\u{201D} would be read by kubectl as an option."
+            }
+            if let cli = k.cli {
+                guard let b = KubernetesTarget.Binary(rawValue: cli.lowercased()) else { return "cli must be kubectl or oc." }
+                t.binary = b
+            }
+            if let v = k.context { t.context = v.trimmingCharacters(in: .whitespaces) }
+            if let v = k.namespace { t.namespace = v.trimmingCharacters(in: .whitespaces) }
+            if let v = k.target { t.pod = v.trimmingCharacters(in: .whitespaces) }
+            if let v = k.container { t.container = v.trimmingCharacters(in: .whitespaces) }
+            if let v = k.shell { t.shell = v.trimmingCharacters(in: .whitespaces) }
+            if let v = k.kubeconfig { t.kubeconfig = v.trimmingCharacters(in: .whitespaces) }
+            e.kubernetes = t
+        }
+        if let c = p.container {
+            guard e.kind == .container else { return "container fields are only for a container entry." }
+            var t = e.container ?? ContainerTarget()
+            if [c.engine, c.target, c.shell, c.user].compactMap({ $0 }).contains(where: InventorySource.hasControlCharacters) {
+                return "Container fields can\u{2019}t contain control characters."
+            }
+            for v in [c.target, c.shell, c.user].compactMap({ $0?.trimmingCharacters(in: .whitespaces) })
+            where v.looksLikeShellOption {
+                return "\u{201C}\(v)\u{201D} would be read as an option."
+            }
+            if let engine = c.engine {
+                guard let parsed = ContainerTarget.Engine(rawValue: engine.lowercased()) else {
+                    return "engine must be docker, podman or nerdctl."
+                }
+                t.engine = parsed
+            }
+            if let v = c.target { t.name = v.trimmingCharacters(in: .whitespaces) }
+            if let v = c.shell { t.shell = v.trimmingCharacters(in: .whitespaces) }
+            if let v = c.user { t.user = v.trimmingCharacters(in: .whitespaces) }
+            e.container = t
+        }
         return nil
     }
 

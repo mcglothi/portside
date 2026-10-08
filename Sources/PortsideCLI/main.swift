@@ -39,6 +39,11 @@ shared inventories and your own hosts (editing needs its switch on in Settings):
   link SOURCE FOLDER             copy a source's hosts into FOLDER for publishing
   host add NAME --host H [--user U] [--port P] [--folder F] [--alias A]
                                  [--identity PATH] [--env prod|staging|dev|personal] [--protected]
+  host add NAME --kind kubernetes --target deploy/web|POD [--context C] [--namespace NS]
+                                 [--container C] [--shell sh] [--kubeconfig PATH] [--cli kubectl|oc]
+  host add NAME --kind container --target NAME [--engine docker|podman|nerdctl]
+                                 [--shell sh] [--exec-user U]
+                                 (with --host or --alias, kubectl/docker run on that ssh host)
   host update ID|NAME [same fields] [--rename NEW]   (rename needs the id)
   host remove ID|NAME ...        remove your own hosts (asks; undoable)
 
@@ -73,6 +78,9 @@ var waitSeconds: Int?
 var ids: [String]?
 /// Host fields and publishing options, passed through as given.
 var hostFields: [String: Any] = [:]
+/// --target, --context, … for Kubernetes and container entries; sent as the
+/// `kubernetes` or `container` object depending on the kind.
+var targetFields: [String: String] = [:]
 var resolutions: [String: String] = [:]
 var positional: [String] = []
 
@@ -116,6 +124,15 @@ while i < args.count {
         }
     case "--protected":
         hostFields["protected"] = true
+    case "--kind":
+        i += 1
+        guard i < args.count else { fail("--kind needs host, kubernetes or container", .usage) }
+        hostFields["kind"] = args[i]
+    case "--target", "--context", "--namespace", "--container", "--shell", "--kubeconfig", "--cli", "--engine",
+         "--exec-user":
+        i += 1
+        guard i < args.count else { fail("\(a) needs a value", .usage) }
+        targetFields[a == "--exec-user" ? "user" : String(a.dropFirst(2))] = args[i]
     case "--resolve":
         i += 1
         let pair = i < args.count ? args[i].split(separator: "=", maxSplits: 1).map(String.init) : []
@@ -196,6 +213,20 @@ case "host":
     guard let verb = parts.first else { fail("host needs add, update or remove", .usage) }
     let target = parts.dropFirst().joined(separator: " ")
     for (k, v) in hostFields where k != "message" { params[k] = v }
+    if !targetFields.isEmpty {
+        let isContainer = (hostFields["kind"] as? String)?.lowercased() == "container" || targetFields["engine"] != nil
+        if isContainer {
+            if targetFields["container"] != nil || targetFields["context"] != nil || targetFields["namespace"] != nil {
+                fail("--container, --context and --namespace are for Kubernetes entries", .usage)
+            }
+            params["container"] = targetFields
+        } else {
+            if targetFields["engine"] != nil || targetFields["user"] != nil {
+                fail("--engine and --exec-user are for container entries (--kind container)", .usage)
+            }
+            params["kubernetes"] = targetFields
+        }
+    }
     switch verb {
     case "add":
         method = "host-add"

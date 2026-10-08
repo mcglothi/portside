@@ -94,6 +94,47 @@ final class AgentInventoryTests: XCTestCase {
         XCTAssertEqual(store.entries.map(\.name), ["ok"])
     }
 
+    /// #26: an agent can add a Kubernetes entry pointed at a workload, and a
+    /// container entry, not only SSH hosts.
+    func testAddingKubernetesAndContainerEntries() async throws {
+        let (agent, store) = controller()
+        let k = await run(agent, "host-add",
+                          .init(name: "web (nkp)", folder: "k8s", kind: "kubernetes",
+                                kubernetes: .init(context: "nkp-prod", namespace: "shop", target: "deploy/web",
+                                                  container: "app", kubeconfig: "~/.kube/nkp-prod.conf", cli: "kubectl")),
+                          answering: [0, 0])
+        XCTAssertNil(k.error, "\(String(describing: k.error))")
+        let entry = try XCTUnwrap(store.entries.first { $0.name == "web (nkp)" })
+        XCTAssertEqual(entry.kind, .kubernetes)
+        XCTAssertEqual(entry.kubernetes?.pod, "deploy/web")
+        XCTAssertTrue(entry.postConnectCommand?.contains("exec -it deploy/web --container=app -- sh") == true,
+                      entry.postConnectCommand ?? "nil")
+
+        let c = await run(agent, "host-add", .init(name: "redis", kind: "container",
+                                                   container: .init(engine: "podman", target: "redis-1")))
+        XCTAssertNil(c.error, "\(String(describing: c.error))")
+        XCTAssertEqual(store.entries.first { $0.name == "redis" }?.postConnectCommand, "podman exec -it redis-1 sh")
+    }
+
+    func testKubernetesEntriesAreCheckedLikeHosts() async {
+        let (agent, store) = controller()
+        _ = await run(agent, "host-add", .init(name: "ok", hostname: "ok.example.com"), answering: [0, 0])
+        let bad: [AgentProtocol.Params] = [
+            .init(name: "a", kind: "kubernetes"),                                             // no target
+            .init(name: "b", kind: "kubernetes", kubernetes: .init(target: "--raw=/")),       // option-shaped
+            .init(name: "c", kind: "kubernetes", kubernetes: .init(target: "web", cli: "helm")),
+            .init(name: "d", kind: "kubernetes", kubernetes: .init(context: "x\u{1B}]0;y", target: "web")),
+            .init(name: "e", hostname: "e.example.com", kubernetes: .init(target: "web")),    // wrong kind
+            .init(name: "f", kind: "serial"),
+            .init(name: "g", kind: "container", container: .init(engine: "lxc", target: "x")),
+        ]
+        for params in bad {
+            let r = await run(agent, "host-add", params)
+            XCTAssertEqual(r.error?.code, "bad_request", "\(params)")
+        }
+        XCTAssertEqual(store.entries.map(\.name), ["ok"])
+    }
+
     func testProtectionCanBeAddedNeverRemovedAndAsksEveryTime() async {
         let (agent, store) = controller([host("db1", protected: true)])
         // Even after "this session", a protected host asks again.

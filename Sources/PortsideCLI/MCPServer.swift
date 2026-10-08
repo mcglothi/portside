@@ -225,7 +225,8 @@ struct MCPServer {
                  return ["source": src, "folder": f]
              }),
         Tool(name: "portside_add_host",
-             description: "Add an SSH host to one of the user's own folders (to share it, add it to the folder linked "
+             description: "Add an SSH host, Kubernetes workload/pod, or container to one of the user's own folders "
+                + "(to share an SSH host, add it to the folder linked "
                 + "to a shared inventory, then preview and publish). Values that could be read by ssh as options "
                 + "are refused. Requires agent editing to be on; the first edit each session asks the user."
                 + approvalNote,
@@ -267,6 +268,23 @@ struct MCPServer {
             "identityFile": ["type": "string", "description": "Path to a private key, e.g. ~/.ssh/id_ed25519."],
             "environment": ["type": "string", "enum": ["none", "prod", "staging", "dev", "personal"]],
             "protected": ["type": "boolean", "description": "Mark protected (asks before MultiExec etc.)."],
+            "kind": ["type": "string", "enum": ["host", "kubernetes", "container"],
+                     "description": "For add: what this entry opens. Default host (SSH). For kubernetes or "
+                        + "container, hostname/alias is optional and names the ssh host the CLI runs on."],
+            "kubernetes": ["type": "object", "description": "For kind kubernetes.", "properties": [
+                "target": ["type": "string", "description": "A workload like deploy/web or sts/db (survives "
+                    + "rollouts; preferred) or a pod name."],
+                "context": ["type": "string"], "namespace": ["type": "string"],
+                "container": ["type": "string", "description": "For multi-container pods."],
+                "shell": ["type": "string", "description": "Default sh."],
+                "kubeconfig": ["type": "string", "description": "A kubeconfig file, if not the default."],
+                "cli": ["type": "string", "enum": ["kubectl", "oc"]],
+            ]],
+            "container": ["type": "object", "description": "For kind container.", "properties": [
+                "target": ["type": "string", "description": "Container name or id."],
+                "engine": ["type": "string", "enum": ["docker", "podman", "nerdctl"]],
+                "shell": ["type": "string"], "user": ["type": "string", "description": "exec -u user."],
+            ]],
         ]
         if includeName { schema["name"] = ["type": "string"] }
         return schema
@@ -279,6 +297,9 @@ struct MCPServer {
         }
         if let port = args["port"] as? Int { p["port"] = port }
         if let prot = args["protected"] as? Bool { p["protected"] = prot }
+        if let kind = args["kind"] as? String { p["kind"] = kind }
+        if let k = args["kubernetes"] as? [String: Any] { p["kubernetes"] = k }
+        if let c = args["container"] as? [String: Any] { p["container"] = c }
         return p
     }
 

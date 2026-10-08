@@ -1,0 +1,64 @@
+# Disposable Kubernetes fixture for Portside's Kubernetes features.
+#   kubectl --context=<ctx> apply -f Scripts/k8s-fixture/fixture.yaml
+#   kubectl --context=<ctx> delete namespace portside-fixture
+# Everything lives in one namespace so deleting it removes all of it.
+# Shapes covered: a multi-replica Deployment whose pods have two containers and
+# a default-container annotation (the container picker), a StatefulSet, and a
+# bare pod (renamed on every rollout vs. stable names).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: portside-fixture
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: portside-fixture
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+      annotations:
+        kubectl.kubernetes.io/default-container: app
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep infinity"]
+        - name: sidecar
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep infinity"]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: portside-fixture
+spec:
+  replicas: 1
+  serviceName: db
+  selector:
+    matchLabels: {app: db}
+  template:
+    metadata:
+      labels: {app: db}
+    spec:
+      containers:
+        - name: db
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep infinity"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lone
+  namespace: portside-fixture
+spec:
+  containers:
+    - name: lone
+      image: alpine:3.20
+      command: ["sh", "-c", "sleep infinity"]
