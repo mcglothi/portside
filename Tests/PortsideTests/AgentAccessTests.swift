@@ -279,6 +279,19 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(AgentPolicy.screenText(raw, lines: 2), "two\nthree")
     }
 
+    /// A line longer than the terminal comes back whole. CI's hostname made
+    /// the prompt long enough to wrap an echoed command, and the screen read
+    /// split it in two, so an agent searching for it found nothing.
+    @MainActor
+    func testScreenReadJoinsSoftWrappedRows() {
+        let h = TerminalHarness(cols: 10, rows: 5)
+        h.feed("abcdefghij klmnopq\r\nnext\r\nhard\r\nbreak")
+        XCTAssertEqual(AgentController.screenLines(h.terminal)
+                        .components(separatedBy: "\n").filter { !$0.isEmpty },
+                       ["abcdefghij klmnopq", "next", "hard", "break"],
+                       "the wrapped row joins its line, the space at the edge kept; real newlines stay")
+    }
+
     func testTypingIsRefusedUntilItsOwnSwitchIsOn() async {
         let (agent, _, _) = controller([host("web1")])
         agent.setEnabled(true)
@@ -300,7 +313,7 @@ final class AgentAccessTests: XCTestCase {
         sessions.openLocalShell()
         let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
         // Let the shell come up before typing.
-        for _ in 0..<100 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await waitForPrompt(pane)
 
         let marker = "portside-agent-\(UUID().uuidString.prefix(6))"
         // First: approve typing for the client, then "Allow for This Pane".
@@ -319,7 +332,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(multi.error?.code, "declined")
 
         var text = ""
-        for _ in 0..<60 {
+        for _ in 0..<200 {
             let screen = await run(agent, "screen", .init(pane: pane.id.uuidString, lines: 50))
             guard case .object(let o)? = screen.result else { return XCTFail("\(String(describing: screen.error))") }
             XCTAssertEqual(o["untrusted"], .bool(true))
@@ -354,7 +367,7 @@ final class AgentAccessTests: XCTestCase {
         sessions.openLocalShell()
         let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
         XCTAssertNotNil(pane.terminalView.outputCapture, "captured while typing is allowed")
-        for _ in 0..<100 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await waitForPrompt(pane)
 
         let marker = "agent-\(UUID().uuidString.prefix(6))"
         // printf turns \033 into ESC in the *output*; the typed line itself
@@ -364,7 +377,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertNil(sent.error, "\(String(describing: sent.error))")
 
         var output = ""
-        for _ in 0..<60 {
+        for _ in 0..<200 {
             let r = await run(agent, "last-command", .init(pane: "current"))
             if case .object(let o)? = r.result, case .array(let cmds)? = o["commands"],
                case .object(let first)? = cmds.first, first["finished"] == .bool(true) {
@@ -499,7 +512,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(off.error?.code, "denied", "typing off means off, whatever Don't Ask says")
 
         agent.setAllowInput(true)
-        for _ in 0..<300 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await waitForPrompt(pane)
         pane.sendText("read -s portside_secret\r")
         for _ in 0..<200 where !pane.isReadingSecret { try await Task.sleep(nanoseconds: 50_000_000) }
         XCTAssertTrue(pane.isReadingSecret)
@@ -656,7 +669,7 @@ final class AgentAccessTests: XCTestCase {
         defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
         sessions.openLocalShell()
         let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
-        for _ in 0..<300 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await waitForPrompt(pane)
         // Local shells aren't in a host scope; the default (all) covers them.
 
         let marker = "waited-\(UUID().uuidString.prefix(6))"
@@ -687,5 +700,21 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
         if case .object(let o)? = r.result { XCTAssertEqual(o["waitedOut"], .bool(true)) }
         else { XCTAssertNotNil(r.error, "nothing ran: either an empty result or a not-found, never a hang") }
+    }
+
+    /// Waits until the shell's line editor is running — echo and canonical
+    /// mode both off — rather than for a fixed time. A login shell with a
+    /// heavy rc took seven seconds to get there idle, and far longer with the
+    /// suite running in parallel; typing before then lands in the shell's
+    /// startup, not at its prompt.
+    private func waitForPrompt(_ pane: TerminalSession, seconds: Double = 60) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            var t = termios()
+            if let p = pane.terminalView.process, tcgetattr(p.childfd, &t) == 0,
+               t.c_lflag & tcflag_t(ECHO) == 0, t.c_lflag & tcflag_t(ICANON) == 0 { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTFail("the shell never reached its prompt")
     }
 }

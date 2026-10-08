@@ -114,7 +114,10 @@ fi
 #    concurrency build.
 if [ -z "$UNSAFE" ]; then
     echo "==> Running tests"
-    swift test
+    # In parallel: most of the suite waits on real shells, git and ssh, and
+    # starting a process on this Mac costs ~0.2 s, so overlapping test classes
+    # takes the gate from ~280 s to ~115 s. A failure still exits non-zero.
+    swift test --parallel
     echo "==> Running Swift 6 strict-concurrency ratchet"
     Scripts/strict-concurrency-check.sh
 fi

@@ -17,6 +17,18 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
 BASELINE=".github/strict-concurrency-baseline.txt"
+# The compiler the baseline was counted with. Counts are per compiler: the
+# same tree is 168 warnings under Swift 6.4 and 149 under the CI image's
+# older Swift, so comparing across compilers fails on every commit while
+# proving nothing. A different compiler reports and skips; the check is
+# enforced where the baseline is made, which is also where release.sh runs it.
+COMPILER_FILE=".github/strict-concurrency-compiler.txt"
+COMPILER="$(swift --version 2>/dev/null | grep -m1 -o 'Apple Swift version [^ ]*' || true)"
+if [ "${1:-}" != "--update" ] && [ -f "$COMPILER_FILE" ] && [ "$COMPILER" != "$(cat "$COMPILER_FILE")" ]; then
+    echo "==> Skipped: baseline is for $(cat "$COMPILER_FILE"), this is ${COMPILER:-an unknown compiler}."
+    echo "    Counts differ between compilers; run the ratchet with the baseline's compiler."
+    exit 0
+fi
 # A unique scratch dir per invocation: a fixed path means two concurrent runs
 # delete and build into each other's tree.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/portside-strict.XXXXXX")"
@@ -53,7 +65,8 @@ echo "==> $TOTAL strict-concurrency warnings"
 
 if [ "${1:-}" = "--update" ]; then
     cp "$CURRENT" "$BASELINE"
-    echo "==> Baseline updated. Commit $BASELINE alongside the change."
+    echo "$COMPILER" > "$COMPILER_FILE"
+    echo "==> Baseline updated for $COMPILER. Commit $BASELINE and $COMPILER_FILE alongside the change."
     exit 0
 fi
 

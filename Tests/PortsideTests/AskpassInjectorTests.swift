@@ -82,11 +82,21 @@ final class AskpassInjectorTests: XCTestCase {
         try "leftover-secret".write(
             to: stale.appendingPathComponent("pw-leftover"), atomically: true, encoding: .utf8
         )
+        let live = temp.appendingPathComponent("portside-askpass-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: live) }
 
+        // Purging as if an hour has passed for `stale`, with `live` just made:
+        // only the abandoned one goes. (Ages are set via `now`, not by
+        // backdating files, so this can't race another test's directories.)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)],
+                                              ofItemAtPath: stale.path)
         AskpassInjector.purgeStaleDirectories()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path),
                        "a stale askpass directory should be removed at launch")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.path),
+                      "a live one — another Portside mid-login — must be left alone")
     }
 
     func testPurgeLeavesUnrelatedDirectoriesAlone() throws {
@@ -103,8 +113,12 @@ final class AskpassInjectorTests: XCTestCase {
     /// Prepends a fake `osascript` to PATH so dialog fallbacks are testable
     /// (and tests never pop real dialogs).
     private func envWithFakeOsascript(_ pairs: [String], returning answer: String) throws -> [String] {
+        // Not "portside-askpass-…": that prefix is what the launch purge
+        // removes, and under `swift test --parallel` the purge test ran beside
+        // this one, deleted the fake, and the helper fell through to the real
+        // osascript — a live "Portside SSH Prompt" on the user's screen.
         let fakeBin = FileManager.default.temporaryDirectory
-            .appendingPathComponent("portside-askpass-test-\(UUID().uuidString)")
+            .appendingPathComponent("portside-fakebin-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: fakeBin, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: fakeBin) }
 

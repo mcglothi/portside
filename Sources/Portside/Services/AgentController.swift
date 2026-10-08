@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SwiftTerm
 
 /// Agent Access: lets a program on this Mac — Claude Code, Codex, a script —
 /// read the inventory and open sessions in the running app, through the
@@ -614,7 +615,7 @@ final class AgentController: ObservableObject {
             // tty (it stays raw), so the last line on screen is checked too.
             // Matching text is a heuristic, which is fine *here*: a false
             // positive only means refusing to type.
-            let screen = String(decoding: pane.terminalView.getTerminal().getBufferAsData(), as: UTF8.self)
+            let screen = Self.screenLines(pane.terminalView.getTerminal())
             if AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(screen, lines: 1)) {
                 return .failure(.denied("\(paneName(pane)) looks like it\u{2019}s asking for a password; "
                                         + "an agent can\u{2019}t type there."))
@@ -768,9 +769,28 @@ final class AgentController: ObservableObject {
         AgentServer.isProcess(caller.pid, descendantOf: pane.terminalView.process.shellPid)
     }
 
+    /// The buffer as text, one line per *logical* line. SwiftTerm's own
+    /// `getBufferAsData` ends every screen row with a newline, so a command
+    /// longer than the terminal is wide came back split in two, and an agent
+    /// looking for it, or for its output, didn't find it. A row the terminal
+    /// soft-wrapped joins the row before it.
+    static func screenLines(_ terminal: Terminal) -> String {
+        var text = ""
+        var row = terminal.buffer.totalLinesTrimmed
+        while let line = terminal.getScrollInvariantLine(row: row) {
+            if row > terminal.buffer.totalLinesTrimmed && !line.isWrapped { text += "\n" }
+            // A row that wraps is full to the edge; trimming it would drop a
+            // space that sits in the last column.
+            let wraps = terminal.getScrollInvariantLine(row: row + 1)?.isWrapped == true
+            text += line.translateToString(trimRight: !wraps)
+            row += 1
+        }
+        return text
+    }
+
     private func screenRow(_ pane: TerminalSession, lines: Int?) -> JSONValue {
         let terminal = pane.terminalView.getTerminal()
-        let raw = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+        let raw = Self.screenLines(terminal)
         let limit = min(max(lines ?? terminal.rows, 1), 500)
         return .object([
             "pane": .string(pane.id.uuidString),
