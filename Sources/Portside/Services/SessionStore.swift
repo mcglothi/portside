@@ -37,6 +37,19 @@ final class SessionStore: ObservableObject {
     /// The last-persisted open session layout, replayed on launch when
     /// `terminal.restoreMode` allows. Written continuously as tabs change.
     @Published private(set) var workspace = WorkspaceSnapshot()
+    /// Team inventories subscribed to over git — see `InventorySource`.
+    @Published private(set) var inventorySources: [InventorySource] = []
+    /// The user's own settings on shared hosts, keyed by Portside entry id.
+    @Published private(set) var sharedOverlays: [UUID: SharedOverlay] = [:]
+    /// Each source's last-read contents and pull status, keyed by source id.
+    @Published private(set) var sharedState: [UUID: SharedInventoryState] = [:]
+    /// Every shared host as this user connects to it — overlays applied — in
+    /// source order. Rebuilt whenever a source, its contents or an overlay
+    /// changes, rather than computed per read: the sidebar, search and every
+    /// `entry(id:)` lookup go through it.
+    @Published private(set) var sharedEntries: [SessionEntry] = []
+    /// Which source each shared host came from.
+    private(set) var sharedSourceByEntry: [UUID: UUID] = [:]
 
     private struct Document: Codable {
         var entries: [SessionEntry]
@@ -60,6 +73,8 @@ final class SessionStore: ObservableObject {
         // Read-only now: present in libraries written before history moved to
         // its own file, and migrated out on first load.
         var commandHistory: [CommandEvent]?
+        var inventorySources: LenientArray<InventorySource>?
+        var sharedOverlays: LenientArray<SharedOverlay>?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -179,7 +194,11 @@ final class SessionStore: ObservableObject {
     /// it is indistinguishable from sweeping against nothing.
     private func purgeOrphanedCredentials() {
         guard usesDefaultLibraryLocation, loadFailure == nil else { return }
-        CredentialStore.purgeOrphanedPasswords(keeping: Set(entries.map(\.id)))
+        // Shared hosts count as live through their overlays: a saved password
+        // needs one, and overlays persist even while a source is unreachable
+        // or its manifest won't parse — when its hosts aren't loaded at all.
+        CredentialStore.purgeOrphanedPasswords(
+            keeping: Set(entries.map(\.id)).union(sharedOverlays.keys))
     }
 
     /// Test seam: an isolated library backed by `fileURL`, never touching the
@@ -231,6 +250,10 @@ final class SessionStore: ObservableObject {
     // MARK: - CRUD
 
     func upsert(_ entry: SessionEntry) {
+        if isShared(entry.id) {
+            updateSharedOverlay(from: entry)
+            return
+        }
         if let i = entries.firstIndex(where: { $0.id == entry.id }) {
             entries[i] = entry
         } else {
@@ -372,7 +395,7 @@ final class SessionStore: ObservableObject {
     /// flag; it doesn't (can't) invent an actual password for the Keychain —
     /// each host still needs its password entered once in the editor.
     func setSavePassword(_ on: Bool, ids: Set<UUID>) {
-        var changed = false
+        var changed = updateOverlays(ids) { $0.savePassword = on }
         for i in entries.indices where ids.contains(entries[i].id) && entries[i].savePassword != on {
             entries[i].savePassword = on
             changed = true
@@ -384,7 +407,7 @@ final class SessionStore: ObservableObject {
     /// Favorited hosts, alphabetical — feeds the welcome screen's Favorites
     /// section.
     var favoriteEntries: [SessionEntry] {
-        entries.filter(\.isFavorite)
+        allEntries.filter(\.isFavorite)
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -401,6 +424,10 @@ final class SessionStore: ObservableObject {
     }
 
     func toggleFavorite(_ id: UUID) {
+        if isShared(id) {
+            updateOverlays([id]) { $0.isFavorite.toggle() }
+            return
+        }
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
         entries[i].isFavorite.toggle()
         save()
@@ -411,7 +438,7 @@ final class SessionStore: ObservableObject {
     /// Bulk environment tagging, for classifying a large imported inventory
     /// without editing hosts one at a time.
     func setEnvironment(_ environment: HostEnvironment, ids: Set<UUID>) {
-        var changed = false
+        var changed = updateOverlays(ids) { $0.environment = environment }
         for i in entries.indices where ids.contains(entries[i].id) && entries[i].environment != environment {
             entries[i].environment = environment
             changed = true
@@ -421,7 +448,7 @@ final class SessionStore: ObservableObject {
     }
 
     func setFavorite(_ on: Bool, ids: Set<UUID>) {
-        var changed = false
+        var changed = updateOverlays(ids) { $0.isFavorite = on }
         for i in entries.indices where ids.contains(entries[i].id) && entries[i].isFavorite != on {
             entries[i].isFavorite = on
             changed = true
@@ -469,7 +496,7 @@ final class SessionStore: ObservableObject {
     /// assigning a profile no longer silently opts a host into an unrelated
     /// credential it happens to have lying in the Keychain.
     func applyCredentialProfile(_ id: UUID?, to ids: Set<UUID>) {
-        var changed = false
+        var changed = updateOverlays(ids) { $0.credentialProfileID = id }
         for i in entries.indices where ids.contains(entries[i].id) {
             if entries[i].credentialProfileID != id {
                 entries[i].credentialProfileID = id
@@ -520,7 +547,9 @@ final class SessionStore: ObservableObject {
     func duplicate(_ entry: SessionEntry) -> SessionEntry {
         var copy = entry
         copy.id = UUID()
-        copy.name = entry.name + " copy"
+        // Copying a shared host into your own library isn't a duplicate — it
+        // lands in a different tree, so it keeps its name.
+        copy.name = isShared(entry.id) ? entry.name : entry.name + " copy"
         copy.savePassword = false
         copy.source = .manual
         if let i = entries.firstIndex(where: { $0.id == entry.id }) {
@@ -621,6 +650,9 @@ final class SessionStore: ObservableObject {
     /// against its credential profile on the way out — real work, repeated for
     /// every folder row on every redraw, to produce a number.
     func itemCount(inFolder path: String) -> Int {
+        if let shared = SharedFolderPath.parse(path) {
+            return sharedEntries(inSource: shared.sourceID, folder: shared.folder).count
+        }
         let prefix = path + "/"
         func isInside(_ folder: String) -> Bool { folder == path || folder.hasPrefix(prefix) }
         return entries.count(where: { isInside($0.folder) })
@@ -668,7 +700,7 @@ final class SessionStore: ObservableObject {
     /// The library entry a forward tunnels through, if it still exists.
     func entry(id: UUID?) -> SessionEntry? {
         guard let id else { return nil }
-        return entries.first { $0.id == id }
+        return entries.first { $0.id == id } ?? sharedEntries.first { $0.id == id }
     }
 
     // MARK: - Recent connections
@@ -1069,6 +1101,11 @@ final class SessionStore: ObservableObject {
 
     /// All sessions in a folder and its subfolders, resolved and sorted by name.
     func entriesInFolder(_ path: String) -> [SessionEntry] {
+        if let shared = SharedFolderPath.parse(path) {
+            return sharedEntries(inSource: shared.sourceID, folder: shared.folder)
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map(resolved)
+        }
         let prefix = path + "/"
         return entries
             .filter { $0.folder == path || $0.folder.hasPrefix(prefix) }
@@ -1375,6 +1412,227 @@ final class SessionStore: ObservableObject {
         entry.savePassword = true
     }
 
+    // MARK: - Shared inventory
+
+    /// Your own hosts and every subscribed source's, for anything that should
+    /// see both: search, Quick Connect, link matching, favourites.
+    var allEntries: [SessionEntry] { entries + sharedEntries }
+
+    func isShared(_ id: UUID) -> Bool { sharedSourceByEntry[id] != nil }
+
+    func inventorySource(id: UUID?) -> InventorySource? {
+        guard let id else { return nil }
+        return inventorySources.first { $0.id == id }
+    }
+
+    /// The source a shared host came from, or nil for a host of your own.
+    func inventorySource(forEntry id: UUID) -> InventorySource? {
+        inventorySource(id: sharedSourceByEntry[id])
+    }
+
+    /// A shared host exactly as its source publishes it, before the overlay.
+    func publishedEntry(id: UUID) -> SessionEntry? {
+        guard let sourceID = sharedSourceByEntry[id] else { return nil }
+        return sharedState[sourceID]?.entries.first { $0.id == id }
+    }
+
+    /// A source's hosts, optionally only those in `folder` and beneath it
+    /// ("" is the whole source).
+    func sharedEntries(inSource sourceID: UUID, folder: String = "") -> [SessionEntry] {
+        let prefix = folder + "/"
+        return sharedEntries.filter {
+            sharedSourceByEntry[$0.id] == sourceID
+                && (folder.isEmpty || $0.folder == folder || $0.folder.hasPrefix(prefix))
+        }
+    }
+
+    /// Each source as a sidebar root, in subscription order.
+    var sharedSidebarRoots: [FolderNode] {
+        inventorySources.map { source in
+            FolderTree.sourceNode(id: source.id, name: source.name,
+                                  entries: sharedEntries(inSource: source.id),
+                                  folders: sharedState[source.id]?.folders ?? [])
+        }
+    }
+
+    /// Where each source's clone lives — beside the library, so a throwaway
+    /// `PORTSIDE_LIBRARY_DIR` or a test's temp file gets throwaway clones too.
+    var sourcesDirectory: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent("sources", isDirectory: true)
+    }
+
+    func cloneDirectory(for sourceID: UUID) -> URL {
+        sourcesDirectory.appendingPathComponent(sourceID.uuidString, isDirectory: true)
+    }
+
+    /// Subscribes to a source. Returns why it can't be added, or nil.
+    /// Doesn't pull; the caller does, so the UI can show the pull happening.
+    @discardableResult
+    func addInventorySource(_ source: InventorySource) -> String? {
+        if let problem = source.validationProblem { return problem }
+        var source = source
+        source.name = source.name.trimmingCharacters(in: .whitespaces)
+        source.remote = source.remote.trimmingCharacters(in: .whitespaces)
+        inventorySources.append(source)
+        sharedState[source.id] = SharedInventoryState()
+        save()
+        return nil
+    }
+
+    /// Edits a source. A new remote or branch means a new history, which a
+    /// fast-forward can never reach, so the clone is discarded and the next
+    /// pull starts fresh — a deliberate edit, unlike a force-push upstream.
+    @discardableResult
+    func updateInventorySource(_ source: InventorySource) -> String? {
+        if let problem = source.validationProblem { return problem }
+        guard let i = inventorySources.firstIndex(where: { $0.id == source.id }) else { return nil }
+        let old = inventorySources[i]
+        inventorySources[i] = source
+        if old.remote != source.remote || old.ref != source.ref {
+            try? FileManager.default.removeItem(at: cloneDirectory(for: source.id))
+            sharedState[source.id] = SharedInventoryState()
+        } else if old.path != source.path {
+            loadShared(from: source)
+        }
+        rebuildShared()
+        save()
+        return nil
+    }
+
+    /// Unsubscribes: the source, its clone, and every overlay on its hosts.
+    func removeInventorySource(id: UUID) {
+        guard inventorySources.contains(where: { $0.id == id }) else { return }
+        let hosts = Set(sharedState[id]?.entries.map(\.id) ?? [])
+        for host in hosts where sharedOverlays[host]?.savePassword == true {
+            CredentialStore.deletePassword(for: host)
+        }
+        sharedOverlays = sharedOverlays.filter { !hosts.contains($0.key) }
+        inventorySources.removeAll { $0.id == id }
+        sharedState[id] = nil
+        try? FileManager.default.removeItem(at: cloneDirectory(for: id))
+        rebuildShared()
+        save()
+    }
+
+    /// Pulls every source, one after another.
+    @MainActor
+    func refreshInventorySources() async {
+        for source in inventorySources { await refreshInventorySource(id: source.id) }
+    }
+
+    /// Fetches, fast-forwards and re-reads one source. A failure keeps what
+    /// was there and records why.
+    @MainActor
+    func refreshInventorySource(id: UUID) async {
+        guard let source = inventorySource(id: id), sharedState[id]?.isSyncing != true else { return }
+        sharedState[id, default: SharedInventoryState()].isSyncing = true
+        let directory = cloneDirectory(for: id)
+        let outcome = await Task.detached(priority: .userInitiated) {
+            () -> Swift.Result<(InventoryGit.Result, SharedManifest.Parsed), InventoryGit.Failure> in
+            do {
+                let pulled = try InventoryGit.sync(source, into: directory)
+                let data = try InventoryGit.readManifest(source, in: directory)
+                return .success((pulled, try SharedManifest.parse(data, sourceID: source.id)))
+            } catch {
+                return .failure(error as? InventoryGit.Failure
+                                ?? InventoryGit.Failure(message: error.localizedDescription))
+            }
+        }.value
+        // Removed while the pull was running: nothing to update.
+        guard inventorySource(id: id) != nil else { return }
+        var state = sharedState[id] ?? SharedInventoryState()
+        state.isSyncing = false
+        switch outcome {
+        case .success(let (pulled, parsed)):
+            state.entries = parsed.entries
+            state.folders = parsed.folders
+            state.skipped = parsed.skipped
+            state.commit = pulled.commit
+            state.lastSynced = Date()
+            state.error = nil
+        case .failure(let failure):
+            state.error = failure.message
+        }
+        sharedState[id] = state
+        rebuildShared()
+    }
+
+    /// Reads each source's manifest from its existing clone, with no network —
+    /// so shared hosts are there at launch, offline included.
+    private func loadSharedFromDisk() {
+        sharedState = [:]
+        for source in inventorySources { loadShared(from: source) }
+        rebuildShared()
+    }
+
+    private func loadShared(from source: InventorySource) {
+        var state = SharedInventoryState()
+        let directory = cloneDirectory(for: source.id)
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".git").path) {
+            do {
+                let parsed = try SharedManifest.parse(InventoryGit.readManifest(source, in: directory),
+                                                      sourceID: source.id)
+                state.entries = parsed.entries
+                state.folders = parsed.folders
+                state.skipped = parsed.skipped
+            } catch {
+                state.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            }
+        }
+        sharedState[source.id] = state
+    }
+
+    private func rebuildShared() {
+        var byEntry: [UUID: UUID] = [:]
+        var resolved: [SessionEntry] = []
+        for source in inventorySources {
+            for entry in sharedState[source.id]?.entries ?? [] where byEntry[entry.id] == nil {
+                byEntry[entry.id] = source.id
+                resolved.append(sharedOverlays[entry.id]?.applied(to: entry) ?? entry)
+            }
+        }
+        sharedSourceByEntry = byEntry
+        if resolved != sharedEntries { sharedEntries = resolved }
+    }
+
+    /// Applies `change` to the overlay of each *shared* host in `ids`, saving
+    /// if anything moved. Your own hosts in the same selection are left to the
+    /// caller, so a mixed selection works in one action.
+    @discardableResult
+    private func updateOverlays(_ ids: Set<UUID>, _ change: (inout SharedOverlay) -> Void) -> Bool {
+        var changed = false
+        for id in ids where isShared(id) {
+            var overlay = sharedOverlays[id] ?? SharedOverlay(entryID: id)
+            let before = overlay
+            change(&overlay)
+            guard overlay != before else { continue }
+            sharedOverlays[id] = overlay.isEmpty ? nil : overlay
+            changed = true
+        }
+        guard changed else { return false }
+        rebuildShared()
+        save()
+        return true
+    }
+
+    /// An edited shared host, saved as far as it can be: the fields a user
+    /// owns go into the overlay, and everything the source owns is ignored.
+    private func updateSharedOverlay(from edited: SessionEntry) {
+        guard let published = publishedEntry(id: edited.id) else { return }
+        updateOverlays([edited.id]) { overlay in
+            overlay.environment = edited.environment == published.environment ? nil : edited.environment
+            // Only what the user adds: the source's protection isn't theirs to lift.
+            overlay.isProtected = edited.isProtected && !published.isProtected
+            overlay.isFavorite = edited.isFavorite
+            overlay.credentialProfileID = edited.credentialProfileID
+            overlay.savePassword = edited.savePassword
+            let command = edited.runOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines)
+            overlay.runOnConnect = (command?.isEmpty ?? true) ? nil : edited.runOnConnect
+            overlay.forwardAgent = edited.forwardAgent
+            overlay.forwardX11 = edited.forwardX11
+        }
+    }
+
     // MARK: - Persistence
 
     /// Set when the library existed but could not be decoded. Saving is
@@ -1451,6 +1709,10 @@ final class SessionStore: ObservableObject {
             keyBindings = doc.keyBindings ?? KeyBindings()
             credentialProfiles = doc.credentialProfiles ?? []
             defaultProfileID = doc.defaultProfileID
+            inventorySources = doc.inventorySources?.elements ?? []
+            sharedOverlays = Dictionary((doc.sharedOverlays?.elements ?? []).map { ($0.entryID, $0) },
+                                        uniquingKeysWith: { first, _ in first })
+            loadSharedFromDisk()
             // Both cleanups rewrite the library, and only after everything
             // above has been read out of the document — rewriting mid-load
             // would persist the fields not yet applied as their empty defaults.
@@ -1523,7 +1785,10 @@ final class SessionStore: ObservableObject {
                                         terminal: nil, workspace: nil, keyBindings: keyBindings,
                                         credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID,
                                         connectionStats: nil, connectionLog: nil,
-                                        history: history))
+                                        history: history,
+                                        inventorySources: LenientArray(inventorySources),
+                                        sharedOverlays: LenientArray(sharedOverlays.values
+                                            .sorted { $0.entryID.uuidString < $1.entryID.uuidString })))
                 .write(to: fileURL, options: .atomic)
             // Our own write moved the date on; adopt it so the next save
             // compares against this one rather than refusing.

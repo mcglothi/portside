@@ -88,7 +88,7 @@ struct PortsideApp: App {
             return
         }
 
-        if let entry = link.match(in: store.entries) {
+        if let entry = link.match(in: store.allEntries) {
             if entry.isProtected {
                 let alert = NSAlert()
                 alert.messageText = "Open protected host \(entry.name)?"
@@ -157,6 +157,11 @@ struct PortsideApp: App {
                         store?.recordCommand(event)
                     }
                     LogManager.runMaintenance(settings: store.logging)
+                    // Shared inventories are already on screen from their
+                    // local clones; this brings them up to date in the
+                    // background, and a source that can't be reached just
+                    // says so on its row.
+                    Task { [store] in await store.refreshInventorySources() }
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
                         store.entry(id: id).map(store.resolved)
                     }
@@ -250,6 +255,8 @@ struct PortsideApp: App {
                 Button("Export Macros…") { library.requestExportMacros() }
                     .disabled(store.macros.isEmpty)
                 Button("Re-import ~/.ssh/config") { library.requestReimportSSHConfig() }
+                Divider()
+                Button("Shared Inventory\u{2026}") { library.requestSharedInventory() }
             }
             // Directly under AppKit's own Undo/Redo, which is where an undo
             // belongs and — more to the point — the only place it reads

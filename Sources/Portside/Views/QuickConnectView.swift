@@ -41,7 +41,7 @@ struct QuickConnectView: View {
         let legacy = store.recentEntries(limit: 8).map(\.entry).filter { !rankedIDs.contains($0.id) }
         return Self.ordered(
             query: query,
-            entries: store.entries,
+            entries: store.allEntries,
             groups: store.groups,
             recents: Array((ranked + legacy).prefix(8))
         )
@@ -123,7 +123,8 @@ struct QuickConnectView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { index, item in
-                                QuickConnectRow(item: item, selected: index == selectedIndex)
+                                QuickConnectRow(item: item, selected: index == selectedIndex,
+                                                sourceName: store.inventorySource(forEntry: item.id)?.name)
                                     .id(item.id)
                                     .contentShape(Rectangle())
                                     .onTapGesture { open(item) }
@@ -239,6 +240,8 @@ struct QuickConnectView: View {
 private struct QuickConnectRow: View {
     let item: QuickConnectView.Item
     let selected: Bool
+    /// The shared inventory a host came from, nil for one of your own.
+    var sourceName: String? = nil
 
     var body: some View {
         switch item {
@@ -312,7 +315,11 @@ private struct QuickConnectRow: View {
         )
     }
 
+    /// A shared host names its source in front of its folder, because two
+    /// sources — or a source and your own library — can both have a `web01`.
     private func subtitle(_ entry: SessionEntry) -> String {
-        entry.folder.isEmpty ? entry.subtitle : "\(entry.subtitle) · \(entry.folder)"
+        let place = [sourceName, entry.folder.isEmpty ? nil : entry.folder]
+            .compactMap { $0 }.joined(separator: "/")
+        return place.isEmpty ? entry.subtitle : "\(entry.subtitle) · \(place)"
     }
 }

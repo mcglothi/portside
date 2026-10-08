@@ -52,6 +52,9 @@ struct HostOutlineView: NSViewRepresentable {
     /// Shows the effective ssh configuration for a host. Defaulted so the
     /// preview and any other construction site needn't supply one.
     var explain: (SessionEntry) -> Void = { _ in }
+    /// Pulls one shared source, and opens the sheet that manages them all.
+    var refreshSource: (UUID) -> Void = { _ in }
+    var manageSources: () -> Void = {}
     let newSubfolder: (String) -> Void
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
@@ -199,10 +202,17 @@ struct HostOutlineView: NSViewRepresentable {
 
         // MARK: Tree building
 
-        func rebuild(from tree: SidebarTree) {
-            roots = tree.folders.map(SidebarNode.folder)
+        /// The user's own tree first, then each subscribed source as a root of
+        /// its own — below, so "my hosts" stay where they always were.
+        private static func rootNodes(_ tree: SidebarTree) -> [SidebarNode] {
+            tree.folders.map(SidebarNode.folder)
                 + tree.rootGroups.map(SidebarNode.group)
                 + tree.root.map(SidebarNode.entry)
+                + tree.sources.map(SidebarNode.folder)
+        }
+
+        func rebuild(from tree: SidebarTree) {
+            roots = Self.rootNodes(tree)
             lastSignature = tree.signature
             outline?.reloadData()
             expandAfterReload()
@@ -213,9 +223,7 @@ struct HostOutlineView: NSViewRepresentable {
             let signature = tree.signature
             if signature != lastSignature {
                 let previouslyExpanded = expandedPaths
-                roots = tree.folders.map(SidebarNode.folder)
-                + tree.rootGroups.map(SidebarNode.group)
-                + tree.root.map(SidebarNode.entry)
+                roots = Self.rootNodes(tree)
                 lastSignature = signature
                 outline?.reloadData()
                 expandedPaths = previouslyExpanded
@@ -343,6 +351,15 @@ struct HostOutlineView: NSViewRepresentable {
 
         // MARK: NSOutlineViewDelegate
 
+        /// Pull status for a source's root row; nil for every other row.
+        private func sourceStatus(for node: SidebarNode) -> SourceRowStatus? {
+            guard case .folder(let folder) = node.kind, folder.isSourceRoot, let id = folder.sourceID else {
+                return nil
+            }
+            let state = parent.store.sharedState[id]
+            return SourceRowStatus(isSyncing: state?.isSyncing ?? false, error: state?.error)
+        }
+
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard let node = item as? SidebarNode else { return nil }
             let id = NSUserInterfaceItemIdentifier("row")
@@ -356,7 +373,8 @@ struct HostOutlineView: NSViewRepresentable {
             cell.configure(node: node,
                            itemCount: node.isFolder
                                ? parent.store.itemCount(inFolder: node.folderPath ?? "") : 0,
-                           toggleFavorite: toggleFavorite)
+                           toggleFavorite: toggleFavorite,
+                           sourceStatus: sourceStatus(for: node))
             cell.setDimmed(isDimmed(node))
             return cell
         }
@@ -444,7 +462,8 @@ struct HostOutlineView: NSViewRepresentable {
         }
 
         private func deleteSelection() {
-            let entries = selectedEntries
+            // Shared hosts belong to their source; there's nothing to delete.
+            let entries = selectedEntries.filter { !parent.store.isShared($0.id) }
             let groups = selectedGroups
             guard !entries.isEmpty || !groups.isEmpty else { return }
             // One prompt covering the whole selection. Deleting a group throws
@@ -483,10 +502,10 @@ struct HostOutlineView: NSViewRepresentable {
             let pb = NSPasteboardItem()
             if let group = node.group {
                 pb.setString(group.id.uuidString, forType: HostOutlineView.groupDragType)
-            } else if let id = node.entryID {
+            } else if let id = node.entryID, !parent.store.isShared(id) {
                 pb.setString(id.uuidString, forType: HostOutlineView.dragType)
             } else {
-                return nil // folders aren't draggable
+                return nil // folders and shared hosts aren't draggable
             }
             return pb
         }
@@ -499,6 +518,8 @@ struct HostOutlineView: NSViewRepresentable {
             // Always retarget to a drop *onto* a folder (or the whole outline for
             // top level) — we don't reorder, so between-row drops make no sense.
             let node = item as? SidebarNode
+            // A source is read-only; nothing of the user's can be filed in it.
+            if let node, node.isSharedRow(in: parent.store) { return [] }
             if let node, node.isFolder {
                 outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .move
@@ -671,6 +692,9 @@ struct HostOutlineView: NSViewRepresentable {
             let selected = Set(selectedEntries.map(\.id))
             let store = parent.store
             let multi = selected.count > 1 && selected.contains(entry.id)
+            // Move and delete only ever touch the user's own hosts; a shared
+            // one stays where its source puts it.
+            let own = selected.filter { !store.isShared($0) }
 
             if multi {
                 menu.addItem(ClosureMenuItem(title: "Connect \(selected.count) Selected") {
@@ -680,7 +704,7 @@ struct HostOutlineView: NSViewRepresentable {
                     self.parent.connectSelected(true)
                 })
                 menu.addItem(.separator())
-                addMoveMenu(menu, forSelection: selected, currentFolder: nil)
+                if !own.isEmpty { addMoveMenu(menu, forSelection: own, currentFolder: nil) }
                 menu.addItem(ClosureMenuItem(title: "Save Password in Keychain for \(selected.count) Selected") {
                     store.setSavePassword(true, ids: selected)
                 })
@@ -697,9 +721,18 @@ struct HostOutlineView: NSViewRepresentable {
                 addRotateKeyItem(menu, hosts: selectedEntries.filter { selected.contains($0.id) },
                                  title: "Rotate SSH Key on \(selected.count) Selected…")
                 menu.addItem(.separator())
-                menu.addItem(ClosureMenuItem(title: "Delete \(selected.count) Selected") {
-                    if self.confirmDelete(hosts: selected.count, groups: 0) { store.delete(ids: selected) }
-                })
+                if !own.isEmpty {
+                    let title = own.count == selected.count
+                        ? "Delete \(own.count) Selected" : "Delete \(own.count) of Your Own"
+                    menu.addItem(ClosureMenuItem(title: title) {
+                        if self.confirmDelete(hosts: own.count, groups: 0) { store.delete(ids: own) }
+                    })
+                }
+                return
+            }
+
+            if let source = store.inventorySource(forEntry: entry.id) {
+                buildSharedEntryMenu(menu, entry: entry, source: source)
                 return
             }
 
@@ -730,6 +763,29 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(title: "Delete", role: .destructive) { store.delete(entry) })
         }
 
+        /// A shared host: everything the user can decide for themselves, and
+        /// nothing that would change what the source publishes.
+        private func buildSharedEntryMenu(_ menu: NSMenu, entry: SessionEntry, source: InventorySource) {
+            let store = parent.store
+            menu.addItem(ClosureMenuItem(title: "Connect") { self.parent.connect(entry) })
+            menu.addItem(ClosureMenuItem(title: "Your Settings for This Host\u{2026}") { self.parent.edit(entry) })
+            menu.addItem(ClosureMenuItem(title: "Copy to My Hosts") { _ = store.duplicate(entry) })
+            menu.addItem(ClosureMenuItem(title: entry.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                store.toggleFavorite(entry.id)
+            })
+            addCredentialProfileMenu(menu, forSelection: [entry.id])
+            addEnvironmentMenu(menu, forSelection: [entry.id])
+            addCopyKeyItem(menu, hosts: [entry], title: "Copy SSH Key\u{2026}")
+            if entry.kind == .host {
+                menu.addItem(ClosureMenuItem(title: "Explain Connection\u{2026}") { self.parent.explain(entry) })
+            }
+            menu.addItem(.separator())
+            let from = NSMenuItem(title: "From \u{201C}\(source.name)\u{201D} \u{2014} read-only",
+                                  action: nil, keyEquivalent: "")
+            from.isEnabled = false
+            menu.addItem(from)
+        }
+
         /// Asks whether to install a just-assigned profile's key on the hosts
         /// that now use it. Silent when the profile has no public key beside
         /// its identity file, or when none of the hosts can take one.
@@ -737,7 +793,7 @@ struct HostOutlineView: NSViewRepresentable {
             let store = parent.store
             guard CredentialProfileKey.publicKeyPath(for: profile) != nil else { return }
             let affected = KeyDistributionPlan.candidates(
-                from: store.entries.filter { ids.contains($0.id) })
+                from: store.allEntries.filter { ids.contains($0.id) })
             guard !affected.isEmpty else { return }
 
             let alert = NSAlert()
@@ -887,6 +943,11 @@ struct HostOutlineView: NSViewRepresentable {
                 self.setSubtreeExpanded(false, folderPath: folder.path)
             })
             menu.addItem(.separator())
+            if let sourceID = folder.sourceID {
+                menu.addItem(ClosureMenuItem(title: "Pull Latest") { self.parent.refreshSource(sourceID) })
+                menu.addItem(ClosureMenuItem(title: "Shared Inventory\u{2026}") { self.parent.manageSources() })
+                return
+            }
             menu.addItem(ClosureMenuItem(title: "New Subfolder…") { self.parent.newSubfolder(folder.path) })
             menu.addItem(ClosureMenuItem(title: "Rename…") { self.parent.renameFolder(folder.path, folder.name) })
             menu.addItem(.separator())
@@ -935,6 +996,15 @@ final class SidebarNode {
     var entryID: UUID? { entry?.id }
     var group: SessionGroup? { if case .group(let g) = kind { return g }; return nil }
     var folderPath: String? { if case .folder(let f) = kind { return f.path }; return nil }
+
+    /// A shared source's folder or one of its hosts.
+    func isSharedRow(in store: SessionStore) -> Bool {
+        switch kind {
+        case .folder(let folder): return folder.isShared
+        case .entry(let entry): return store.isShared(entry.id)
+        case .group: return false
+        }
+    }
 }
 
 // MARK: - Row cell
@@ -948,6 +1018,13 @@ private final class RowModel: ObservableObject {
     /// Drawn faded because a host filter is active and this row doesn't match.
     @Published var dimmed = false
     @Published var toggleFavorite: (() -> Void)?
+    @Published var sourceStatus: SourceRowStatus?
+}
+
+/// What a shared source's root row shows beside its name.
+struct SourceRowStatus: Equatable {
+    var isSyncing = false
+    var error: String?
 }
 
 private final class HostRowCell: NSTableCellView {
@@ -975,9 +1052,11 @@ private final class HostRowCell: NSTableCellView {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(node: SidebarNode, itemCount: Int, toggleFavorite: (() -> Void)? = nil) {
+    func configure(node: SidebarNode, itemCount: Int, toggleFavorite: (() -> Void)? = nil,
+                   sourceStatus: SourceRowStatus? = nil) {
         model.node = node
         model.itemCount = itemCount
+        model.sourceStatus = sourceStatus
         model.toggleFavorite = toggleFavorite
     }
 
@@ -1114,9 +1193,19 @@ private struct SidebarRowLabel: View {
 
     private func folderRow(_ folder: FolderNode) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "folder").foregroundStyle(model.emphasized ? .white : .secondary)
+            Image(systemName: folder.isSourceRoot ? "person.2.fill" : "folder")
+                .foregroundStyle(model.emphasized ? .white : .secondary)
+                .help(folder.isSourceRoot ? "Shared inventory \u{2014} read-only" : "")
             Text(folder.name).foregroundStyle(primary)
             Spacer(minLength: 4)
+            if let status = model.sourceStatus {
+                if status.isSyncing {
+                    ProgressView().controlSize(.mini)
+                } else if let error = status.error {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.caption)
+                        .foregroundStyle(.orange).help(error)
+                }
+            }
             if model.itemCount > 0 {
                 Text("\(model.itemCount)").font(.caption).foregroundStyle(secondary)
             }

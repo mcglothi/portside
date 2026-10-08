@@ -124,6 +124,13 @@ struct SessionEditorView: View {
         }
     }
 
+    /// Set when editing a host from a shared inventory. Where it is and how
+    /// it's reached belong to the source; the rest is this user's overlay.
+    private var sharedSource: InventorySource? { store.inventorySource(forEntry: draft.id) }
+
+    /// Protection the source set can't be lifted here, only added to.
+    private var sourceProtects: Bool { store.publishedEntry(id: draft.id)?.isProtected == true }
+
     // MARK: - Field groups
 
     @ViewBuilder private var folderRow: some View {
@@ -379,21 +386,34 @@ struct SessionEditorView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text(isNew ? "New Session" : "Edit Session")
+            Text(sharedSource != nil ? "Your Settings for \(draft.name)" : isNew ? "New Session" : "Edit Session")
                 .font(.headline)
+            if let sharedSource {
+                Text("From \u{201C}\(sharedSource.name)\u{201D}. The address, user and key come from the shared inventory "
+                     + "and change when it's pulled. Everything else here is yours and stays on this Mac.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Form {
-                TextField("Name", text: $draft.name)
-                folderRow
-                Picker("Type", selection: $draft.kind) {
-                    ForEach(SessionKind.allCases) { kind in
-                        Text(kind.label).tag(kind)
+                Group {
+                    TextField("Name", text: $draft.name)
+                    folderRow
+                    Picker("Type", selection: $draft.kind) {
+                        ForEach(SessionKind.allCases) { kind in
+                            Text(kind.label).tag(kind)
+                        }
                     }
                 }
+                .disabled(sharedSource != nil)
 
                 switch draft.kind {
                 case .host:
-                    sshFields
-                    moshToggle
+                    Group {
+                        sshFields
+                        moshToggle
+                    }
+                    .disabled(sharedSource != nil)
                     credentialProfilePicker
                     passwordFields
                     runOnConnectField
@@ -422,10 +442,11 @@ struct SessionEditorView: View {
                     }
                 }
                 Toggle("Protected host — excluded from MultiExec unless confirmed", isOn: $draft.isProtected)
+                    .disabled(sourceProtects)
                 Toggle("Favorite — shown on the welcome/start page", isOn: $draft.isFavorite)
             }
             HStack {
-                if !isNew {
+                if !isNew && sharedSource == nil {
                     Button("Delete", role: .destructive) {
                         // Credential cleanup lives in SessionStore.delete now,
                         // reached via onComplete(.delete) — so every deletion
