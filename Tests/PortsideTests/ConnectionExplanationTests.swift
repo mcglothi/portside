@@ -196,6 +196,9 @@ final class ConnectionExplanationTests: XCTestCase {
     /// tilde form, and `userknownhostsfile` as several space-separated paths
     /// on one line.
     func testRealSSHOutputParsesTheWayTheUIExpects() {
+        // ssh prints the running user's real home, so the fixture uses it too;
+        // a hardcoded one is only abbreviated on the machine it was copied from.
+        let home = NSHomeDirectory()
         let real = """
             user tim
             hostname 10.0.0.4
@@ -205,7 +208,7 @@ final class ConnectionExplanationTests: XCTestCase {
             identityfile ~/.ssh/id_rsa
             identityfile ~/.ssh/id_ecdsa
             identityfile ~/.ssh/id_ed25519
-            userknownhostsfile /Users/mcglothi/.ssh/known_hosts /Users/mcglothi/.ssh/known_hosts2
+            userknownhostsfile \(home)/.ssh/known_hosts \(home)/.ssh/known_hosts2
             """
         let explained = parse(real)
 
@@ -220,7 +223,7 @@ final class ConnectionExplanationTests: XCTestCase {
         let known = value(of: "Known hosts files", in: explained)
         XCTAssertEqual(known?.split(separator: "\n").count, 2)
         XCTAssertFalse(
-            known?.contains("/Users/") ?? true,
+            known?.contains(home) ?? true,
             "every known-hosts path should read as ~/…, not just the first"
         )
     }
