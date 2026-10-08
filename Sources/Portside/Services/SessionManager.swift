@@ -50,6 +50,9 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// markers, ignores them, and we read them here on the way past.
     var onCommand: ((CommandEvent) -> Void)?
     var commandTimeline: CommandTimeline?
+    /// Recent commands' output, for agents. Nil unless agents may read
+    /// sessions — see `SessionManager.capturesCommandOutput`.
+    var outputCapture: CommandOutputCapture?
     /// When set, input bytes go here instead of the child pty. Sits below the
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
@@ -212,6 +215,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         // arrived, and so does the terminal. Nothing in this path may rewrite
         // them: transcript offsets have to keep matching what is on disk.
         logger?.append(slice)
+        outputCapture?.consume(slice)
         rememberOutput(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
@@ -478,7 +482,19 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         guard isRunning, let process = terminalView.process, process.running else { return false }
         var settings = termios()
         guard tcgetattr(process.childfd, &settings) == 0 else { return false }
-        return settings.c_lflag & tcflag_t(ECHO) == 0
+        // Echo off *and* canonical mode on. Echo off alone is not a secret:
+        // measured, zsh and bash at an ordinary prompt (their line editors)
+        // and every connected interactive ssh session (raw mode) all run with
+        // ECHO off — so the echo-only check read every live session as a
+        // password prompt, and post-connect commands on password-auth hosts
+        // waited out their whole timeout. What a secret prompt actually does
+        // (readpassphrase, ssh's own prompt, sudo, `read -s`) is turn echo off
+        // while still reading a whole line: ICANON stays on. Raw-mode readers
+        // turn both off.
+        //
+        // The limit, stated plainly: a password prompt on the *remote* side of
+        // an ssh session can't be seen here at all — the local tty stays raw.
+        return settings.c_lflag & tcflag_t(ECHO) == 0 && settings.c_lflag & tcflag_t(ICANON) != 0
     }
 
     /// Positive evidence the session actually came up.
@@ -898,6 +914,17 @@ final class SessionManager: ObservableObject {
     /// Source of truth: each open tab owns a pane tree of live sessions. Today
     /// every tab is a single leaf; splitting (0.9) grows the trees.
     @Published var tabs: [Tab] = []
+    /// Keep each session's recent command output for agents. Set by Agent
+    /// Access while typing is allowed; applies to open sessions at once, and
+    /// clears what was kept when switched off.
+    var capturesCommandOutput = false {
+        didSet {
+            guard capturesCommandOutput != oldValue else { return }
+            for leaf in tabs.flatMap(\.leaves) {
+                leaf.terminalView.outputCapture = capturesCommandOutput ? CommandOutputCapture() : nil
+            }
+        }
+    }
     @Published var selectedTabID: UUID? {
         didSet { clearActivityForSelectedTab(); notifyWorkspaceChanged() }
     }
@@ -2502,6 +2529,7 @@ final class SessionManager: ObservableObject {
             guard let self, let session else { return true }
             return self.confirmPasteIfNeeded(text, from: session)
         }
+        if capturesCommandOutput { session.terminalView.outputCapture = CommandOutputCapture() }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {

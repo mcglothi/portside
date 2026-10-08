@@ -9,9 +9,12 @@ import XCTest
 /// credential, and logged as a failed one by the server.
 ///
 /// The whole fix rests on one claim: that a pty master reports the slave's
-/// termios, so a cleared `ECHO` bit is a direct reading of "something is asking
-/// for a secret". If that claim is wrong the fix is inert and looks fine, so it
-/// is tested against a real shell rather than asserted in a comment.
+/// termios, and that a secret prompt shows there as echo off *with* canonical
+/// mode on. The first version of this test asserted "a shell at its prompt has
+/// echo on" — which is false once zsh's or bash's line editor is running (both
+/// turn echo and canonical mode off), and only passed by catching the moment
+/// before the editor started. So it's tested against a real shell, at a
+/// settled prompt, with a real secret read.
 @MainActor
 final class SecretPromptTests: XCTestCase {
 
@@ -31,17 +34,27 @@ final class SecretPromptTests: XCTestCase {
         manager.openLocalShell()
         let session = try XCTUnwrap(manager.selectedTab?.leaves.first)
 
-        // Let the shell come up and settle at a prompt.
-        XCTAssertTrue(wait(upTo: 10) { session.isRunning && !session.isReadingSecret },
-                      "a shell at its prompt has echo on")
+        // Wait for the shell's line editor itself — echo and canonical mode
+        // both off — rather than for a fixed time: a login shell with a heavy
+        // rc took seven seconds to get there, and checking any earlier only
+        // sees the startup window, when echo is still on and the bug can't show.
+        func lineEditorRunning() -> Bool {
+            var t = termios()
+            guard let p = session.terminalView.process, tcgetattr(p.childfd, &t) == 0 else { return false }
+            return t.c_lflag & tcflag_t(ECHO) == 0 && t.c_lflag & tcflag_t(ICANON) == 0
+        }
+        XCTAssertTrue(wait(upTo: 30) { session.isRunning && lineEditorRunning() },
+                      "the shell never reached its line editor")
+        XCTAssertFalse(session.isReadingSecret,
+                       "an ordinary prompt (echo off, raw) is not a password prompt")
 
-        // `stty -echo` is exactly what ssh/sudo/PAM do before reading a secret.
-        session.sendText("stty -echo\r")
+        // `read -s` sets the tty exactly as readpassphrase/ssh/sudo do.
+        session.sendText("read -s portside_secret\r")
         XCTAssertTrue(wait(upTo: 10) { session.isReadingSecret },
-                      "echo off on the slave must be visible from the master — "
+                      "a secret read must be visible from the master — "
                       + "if this fails the post-connect guard does nothing at all")
 
-        session.sendText("stty echo\r")
+        session.sendText("hunter2\r")
         XCTAssertTrue(wait(upTo: 10) { !session.isReadingSecret },
                       "and it must clear again, or a command would never be sent")
     }
