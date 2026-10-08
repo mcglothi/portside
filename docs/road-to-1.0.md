@@ -170,6 +170,11 @@ The maintainer's call, not a readiness question.
   wanted for 1.0. Read-only team inventory over plain git, alongside personal
   sessions rather than instead of them.
 
+  **Built after 0.26.0**, see [shared-inventory.md](shared-inventory.md). Like
+  key distribution, it now needs mileage: a second person's library
+  subscribed to a real team repo, and gate 1 applies to the new on-disk state
+  (sources and overlays in the library, clones under `sources/`).
+
 - **Key distribution** — **built at 0.23.0**, see
   [key-distribution.md](key-distribution.md). A front end for `ssh-copy-id` that
   pushes a key to a *selection* of hosts, not one at a time, using the passwords

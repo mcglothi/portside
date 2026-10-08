@@ -3,6 +3,14 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Shared inventory.** Subscribe to a team's hosts published in a git repository, and they appear read-only in the sidebar beside your own — each source its own root, below your library, never mixed into it. File ▸ Shared Inventory… adds one: a name, any git URL your own git can reach, a branch, and the manifest path. Publishing is File ▸ Export Sessions… and a commit. Portside clones and fast-forwards with `/usr/bin/git`, never pushes, never prompts, pulls every source at launch, and reads from the local clone in between, so shared hosts work offline and a source that can't be reached keeps what it had and says why on its row.
+
+A manifest is someone else's file arriving by `git pull`, so it is read strictly: only plain SSH hosts, and only where they are. Run-on-connect, agent and X11 forwarding, credential profiles and saved-password flags are dropped; containers, pods, serial and telnet entries are skipped; a host, alias or user that could reach ssh as an option is refused. **A rewritten history is not followed** — a force-push is how a host would be slipped into everyone's sidebar unreviewed, so the source keeps its previous contents and reports it until you re-add it. A manifest path or symlink that leads outside the clone is refused.
+
+Your own settings on a shared host — credential profile, saved password, environment, favourite, run-on-connect, forwarding, and protection — are kept on this Mac and survive pulls. You can add protection to a shared host but not lift the team's. Copy to My Hosts makes an editable copy. Shared hosts show up in Quick Connect (with their source named), the host filter, `ssh://` links, favourites, recents and history. See `docs/shared-inventory.md`.
+
 ## 0.26.0
 
 **Filtering the host list no longer makes folders look broken.** A filter used to drop every host that didn't match but keep folders you'd created, so a folder could open onto nothing — and with the filter text easy to forget, that read as navigation that had stopped working. The whole list now stays put: hosts, groups and folders that don't match are dimmed rather than removed, folders holding a match open by themselves, and the filter field turns your accent colour with a match count (`3 of 42`) while a filter is active. Clearing it puts folders back the way you had them.

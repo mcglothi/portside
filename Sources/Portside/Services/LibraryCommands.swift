@@ -27,6 +27,7 @@ final class LibraryCommands: ObservableObject {
     @Published private(set) var saveTabAsGroup = 0
     @Published private(set) var copyKeyToHosts = 0
     @Published private(set) var rotateKey = 0
+    @Published private(set) var sharedInventory = 0
 
     func requestNewSession() { newSession += 1 }
     func requestNewFolder() { newFolder += 1 }
@@ -41,4 +42,5 @@ final class LibraryCommands: ObservableObject {
     func requestSaveTabAsGroup() { saveTabAsGroup += 1 }
     func requestCopyKeyToHosts() { copyKeyToHosts += 1 }
     func requestRotateKey() { rotateKey += 1 }
+    func requestSharedInventory() { sharedInventory += 1 }
 }

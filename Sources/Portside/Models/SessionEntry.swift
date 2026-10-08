@@ -530,6 +530,40 @@ struct FolderNode: Identifiable {
     /// a way to open several of them at once, so it reads as the heading for
     /// the folder rather than one more item in it.
     var groups: [SessionGroup] = []
+    /// Set on a subscribed source's root and every folder beneath it — the
+    /// difference between "yours to rename, delete and drop into" and "the
+    /// team's, read-only". Such a node's `path` is a `SharedFolderPath`.
+    var sourceID: UUID? = nil
+
+    var isShared: Bool { sourceID != nil }
+    var isSourceRoot: Bool { sourceID != nil && !path.contains("/") }
+}
+
+/// Folder paths for shared sources, kept out of the user's own path space.
+///
+/// The sidebar keys expansion, filter matches and folder actions by path, and
+/// a team's `prod` must not be the same folder as the user's `prod`. So each
+/// source's tree lives under a root no typed folder name can produce — a
+/// control character, which `SharedManifest` strips from shared folder names
+/// too — and the rest of the path is the manifest's own.
+enum SharedFolderPath {
+    private static let marker = "\u{1}shared:"
+
+    static func root(_ sourceID: UUID) -> String { marker + sourceID.uuidString }
+
+    static func path(sourceID: UUID, folder: String) -> String {
+        folder.isEmpty ? root(sourceID) : root(sourceID) + "/" + folder
+    }
+
+    /// The source and the folder within it, or nil for one of the user's own.
+    static func parse(_ path: String) -> (sourceID: UUID, folder: String)? {
+        guard path.hasPrefix(marker) else { return nil }
+        let rest = path.dropFirst(marker.count)
+        let idPart = rest.prefix { $0 != "/" }
+        guard let id = UUID(uuidString: String(idPart)) else { return nil }
+        let folder = rest.dropFirst(idPart.count).drop { $0 == "/" }
+        return (id, String(folder))
+    }
 }
 
 /// What the sidebar renders: loose hosts and groups at the top level, then the
@@ -541,6 +575,12 @@ struct SidebarTree {
     var root: [SessionEntry] = []
     var rootGroups: [SessionGroup] = []
     var folders: [FolderNode] = []
+    /// Subscribed sources, each a read-only root below the user's own tree.
+    var sources: [FolderNode] = []
+    /// Each source's pull status, flattened. A root row's spinner and warning
+    /// change without the tree's contents changing, and the outline only
+    /// redraws rows when this fingerprint moves.
+    var sourceStatusSignature = ""
 
     /// A fingerprint of everything the sidebar draws, used to skip rebuilding
     /// the outline when nothing visible changed.
@@ -585,6 +625,10 @@ struct SidebarTree {
         walk(folders)
         rootGroups.forEach(groupLine)
         root.forEach(line)
+        for source in sources {
+            parts.append("s:\(source.path):\(source.name):\(sourceStatusSignature)")
+            walk([source])
+        }
         return parts.joined(separator: "|")
     }
 }
@@ -630,6 +674,21 @@ enum FolderTree {
             root: root, rootGroups: rootGroups,
             folders: childNodes(parent: "", paths: paths,
                        directEntries: directEntries, directGroups: directGroups))
+    }
+
+    /// One subscribed source as a sidebar root: its manifest's folders beneath
+    /// it, every path namespaced by `SharedFolderPath`.
+    static func sourceNode(id: UUID, name: String, entries: [SessionEntry], folders: [String]) -> FolderNode {
+        let inner = build(entries: entries, explicitFolders: folders)
+        func rehome(_ node: FolderNode) -> FolderNode {
+            FolderNode(path: SharedFolderPath.path(sourceID: id, folder: node.path),
+                       name: node.name,
+                       subfolders: node.subfolders.map(rehome),
+                       entries: node.entries,
+                       sourceID: id)
+        }
+        return FolderNode(path: SharedFolderPath.root(id), name: name,
+                          subfolders: inner.folders.map(rehome), entries: inner.root, sourceID: id)
     }
 
     private static func childNodes(

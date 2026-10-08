@@ -115,12 +115,12 @@ enum ConnectionLink: Equatable {
         return String(decoded.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
     }
 
-    private static func isSafeHost(_ host: String) -> Bool {
+    static func isSafeHost(_ host: String) -> Bool {
         guard !host.isEmpty, host.count <= 253, !host.hasPrefix("-") else { return false }
         return host.unicodeScalars.allSatisfy { safeHostCharacters.contains($0) }
     }
 
-    private static func isSafeUser(_ user: String) -> Bool {
+    static func isSafeUser(_ user: String) -> Bool {
         guard user.count <= 64, !user.hasPrefix("-") else { return false }
         return user.unicodeScalars.allSatisfy { safeUserCharacters.contains($0) }
     }

@@ -278,7 +278,7 @@ boxes are protected together make a very good target-selection document.
 | 1. Host groups | — | S–M | Yes | **done** (model, persistence, launch, UI) |
 | 2. Portable manifest | — | S | Yes (fixes export) | **done** (profiles in exports, library split) |
 | 3. Library location + guard | 2 | M | Yes | **done** (override, guard, split) |
-| 4. Shared sources | 2, 3 | L | No | not started |
+| 4. Shared sources | 2, 3 | L | No | **built** — see `docs/shared-inventory.md` |
 
 Recommended order: **2 → 1 → 3 → 4.** The manifest fix is small, ships
 immediately, and repairs a real defect in export today. Groups follow because
@@ -336,6 +336,23 @@ silent clobbering.
 What's left for phase 3 is the split itself — until `workspace`, `recents`,
 `connectionStats`, appearance and terminal settings stop travelling with the
 portable data, "put the library in Dropbox" also syncs your open tabs.
+
+### Phase 4 as built
+
+Mostly as planned, with three deliberate departures:
+
+- **No `EntryRef`.** A shared host's id is derived from (source id, manifest
+  id) by hashing — stable across pulls, distinct when one repo is subscribed
+  twice. Everything already keyed by `UUID` (recents, stats, history, group
+  layouts, Keychain passwords, overlays) works unchanged, so no migration.
+- **The manifest is sanitized, not trusted.** SSH hosts only; run-on-connect,
+  forwarding and credential fields dropped; option-shaped values refused. The
+  plan treated the manifest as data; it is data that reaches `ssh`.
+- **Fast-forward is enforced, not just preferred.** A rewritten history is
+  refused and reported rather than reset onto, and accepting it is a re-add.
+
+Overlays also carry run-on-connect and agent/X11 forwarding, since those are
+exactly what the source is no longer allowed to set.
 
 ## Relationship to 1.0
 

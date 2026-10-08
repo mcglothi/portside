@@ -258,6 +258,11 @@ exists to fill that gap without giving up native speed and macOS polish.
   updating from, not just the latest release's own notes, since releases
   ship fast enough that auto-updaters often jump several versions at once.
 
+- ✅ **Shared inventory** — subscribe to a team's hosts in a git repo, shown
+  read-only beside your own, with your own settings layered on top. Plain
+  `git`, fast-forward only, manifest sanitized. See
+  [docs/shared-inventory.md](docs/shared-inventory.md).
+
 ### Next up
 
 - Nothing named. See **Later** for the standing list.

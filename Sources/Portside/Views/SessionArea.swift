@@ -1149,7 +1149,7 @@ struct WelcomeView: View {
     private var searchResults: [SessionEntry] {
         guard !query.isEmpty else { return [] }
         var scored: [(entry: SessionEntry, score: Int)] = []
-        for entry in store.entries {
+        for entry in store.allEntries {
             if let score = QuickConnectView.rank(entry, query: query) {
                 scored.append((entry, score))
             }

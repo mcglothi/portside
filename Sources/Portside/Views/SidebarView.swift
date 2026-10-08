@@ -102,13 +102,29 @@ struct SidebarView: View {
     private var searchMatches: SidebarMatches? {
         let query = HostQuery(filter)
         guard !query.isEmpty else { return nil }
-        return SidebarMatches.compute(
+        let profileNames = Dictionary(store.credentialProfiles.map { ($0.id, $0.name) },
+                                      uniquingKeysWith: { first, _ in first })
+        var result = SidebarMatches.compute(
             query: query,
             entries: store.entries,
             groups: store.groups,
             folderPaths: store.explicitFolders,
-            profileNames: Dictionary(store.credentialProfiles.map { ($0.id, $0.name) },
-                                     uniquingKeysWith: { first, _ in first }))
+            profileNames: profileNames)
+        // Each source matched on its own, then its folder paths moved into
+        // that source's namespace — a team's `prod` is not the user's `prod`.
+        for source in store.inventorySources {
+            let shared = SidebarMatches.compute(
+                query: query,
+                entries: store.sharedEntries(inSource: source.id),
+                groups: [],
+                folderPaths: store.sharedState[source.id]?.folders ?? [],
+                profileNames: profileNames)
+            result.ids.formUnion(shared.ids)
+            result.matchedHostCount += shared.matchedHostCount
+            if !shared.ids.isEmpty { result.folders.insert(SharedFolderPath.root(source.id)) }
+            result.folders.formUnion(shared.folders.map { SharedFolderPath.path(sourceID: source.id, folder: $0) })
+        }
+        return result
     }
 
     private var savedFilters: [String] {
@@ -183,9 +199,15 @@ struct SidebarView: View {
     }
 
     private var hostsTree: SidebarTree {
-        FolderTree.build(entries: store.entries,
-                         explicitFolders: store.explicitFolders,
-                         groups: store.groups)
+        var tree = FolderTree.build(entries: store.entries,
+                                    explicitFolders: store.explicitFolders,
+                                    groups: store.groups)
+        tree.sources = store.sharedSidebarRoots
+        tree.sourceStatusSignature = store.inventorySources.map { source in
+            let state = store.sharedState[source.id]
+            return "\(source.id):\(state?.isSyncing ?? false):\(state?.error ?? "")"
+        }.joined(separator: ",")
+        return tree
     }
 
     /// The sidebar's actual content, split out from `body`.
@@ -436,7 +458,7 @@ struct SidebarView: View {
                 if let matches {
                     // Says the list is filtered, and by how much, without
                     // having to notice the text in the field.
-                    Text("\(matches.matchedHostCount) of \(store.entries.count)")
+                    Text("\(matches.matchedHostCount) of \(store.allEntries.count)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.tint)
                         .help("Showing \(matches.matchedHostCount) matching hosts; the rest are dimmed")
@@ -507,6 +529,8 @@ struct SidebarView: View {
                     showingKeyRotation = true
                 },
                 explain: { sessions.explainingEntry = $0 },
+                refreshSource: { id in Task { await store.refreshInventorySource(id: id) } },
+                manageSources: { library.requestSharedInventory() },
                 newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
             )
@@ -515,7 +539,7 @@ struct SidebarView: View {
                 // hosts yet" straight over a sidebar with folders and groups
                 // visible in it — the list is right there underneath, being
                 // told it doesn't exist.
-                if store.entries.isEmpty && store.groups.isEmpty {
+                if store.entries.isEmpty && store.groups.isEmpty && store.inventorySources.isEmpty {
                     EmptyStateView(
                         icon: "server.rack",
                         title: "No hosts yet",
@@ -934,10 +958,11 @@ private struct LibrarySheets: ViewModifier {
     @Binding var portForwarding: Bool
     @Binding var keyDistribution: Bool
     @Binding var keyRotation: Bool
+    @State private var sharedInventory = false
     let keyPreselection: Set<UUID>
     let keyPath: String?
     let store: SessionStore
-    let library: LibraryCommands
+    @ObservedObject var library: LibraryCommands
     let tunnels: TunnelManager
 
     func body(content: Content) -> some View {
@@ -965,6 +990,10 @@ private struct LibrarySheets: ViewModifier {
             .sheet(isPresented: $keyRotation) {
                 KeyRotationView(preselected: keyPreselection).environmentObject(store)
             }
+            .sheet(isPresented: $sharedInventory) {
+                SharedInventoryView().environmentObject(store)
+            }
+            .onChange(of: library.sharedInventory) { sharedInventory = true }
     }
 }
 
