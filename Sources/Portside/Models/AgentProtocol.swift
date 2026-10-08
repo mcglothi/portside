@@ -33,6 +33,25 @@ enum AgentProtocol {
 
     /// Every method's parameters in one flat bag. Unknown keys are ignored, so
     /// a newer CLI talking to an older app degrades rather than failing.
+    /// `target` is a pod or a workload (`deploy/web`); `cli` is kubectl or oc.
+    struct KubernetesFields: Codable, Equatable, Sendable {
+        var context: String?
+        var namespace: String?
+        var target: String?
+        var container: String?
+        var shell: String?
+        var kubeconfig: String?
+        var cli: String?
+    }
+
+    /// `target` is the container's name or id; `engine` docker, podman or nerdctl.
+    struct ContainerFields: Codable, Equatable, Sendable {
+        var engine: String?
+        var target: String?
+        var shell: String?
+        var user: String?
+    }
+
     struct Params: Codable, Equatable, Sendable {
         /// A host filter in the sidebar's syntax: `env:prod folder:web -is:protected`.
         var query: String?
@@ -70,6 +89,12 @@ enum AgentProtocol {
         var identityFile: String?
         var environment: String?
         var `protected`: Bool?
+        /// For host-add: `host` (the default), `kubernetes` or `container`.
+        var kind: String?
+        /// Kubernetes fields for host-add / host-update of a Kubernetes entry.
+        var kubernetes: KubernetesFields?
+        /// Container fields for host-add / host-update of a container entry.
+        var container: ContainerFields?
         /// The commit message for publish.
         var message: String?
         /// For publish: host name or id → "mine" or "theirs", for every host

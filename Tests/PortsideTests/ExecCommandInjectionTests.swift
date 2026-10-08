@@ -10,20 +10,32 @@ import XCTest
 final class ExecCommandInjectionTests: XCTestCase {
 
     /// Runs a generated exec command the same way `postConnect` effectively
-    /// does — as text typed at a shell prompt — and reports what actually ran.
+    /// does — as text typed at a shell prompt — and reports whether the
+    /// injected `touch` actually ran: "PWNED-…" if its file exists.
+    ///
+    /// The evidence is the file, not the output. This used to look for the
+    /// marker in what the command printed, which held only while docker and
+    /// kubectl were missing: installed, they answer "No such container:
+    /// web; touch /tmp/PWNED-…", echoing the argument, and every test read
+    /// as an injection that never happened. PATH is cut down to the system
+    /// tools for the same reason — the shell's quoting is what's under test,
+    /// and nothing here should exec into whatever cluster this machine has.
     private func run(_ command: String) -> String {
         let marker = "PWNED-\(UUID().uuidString)"
+        let file = "/tmp/\(marker)"
+        defer { try? FileManager.default.removeItem(atPath: file) }
         let script = command.replacingOccurrences(of: "PWNED_MARKER", with: marker)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
+        process.environment = ["PATH": "/usr/bin:/bin"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
         try? process.run()
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
-        return output.contains(marker) ? marker : output
+        return FileManager.default.fileExists(atPath: file) ? marker : output
     }
 
     func testCrafted_ContainerName_CannotEscapeIntoTheHostShell() throws {

@@ -5,6 +5,10 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Kubernetes: pick the context, the workload and the container.** A Kubernetes entry's Context, Pod and Container fields each have a **Browse…** that asks the cluster, using the same CLI and kubeconfig the session will: contexts from your kubeconfig with the current one marked; workloads (`deploy/web`, `sts/db`, `ds/…`) listed before pods, with their ready counts; and the containers of the chosen pod or workload, with the one kubectl uses by default marked. Point an entry at a workload and it keeps working across rollouts, which rename every pod. Entries can name their own **kubeconfig** file — NKP hands out one per cluster — and use **`oc`** instead of kubectl for OpenShift. Libraries from before this load unchanged.
+
+**Agents can add Kubernetes and container entries**, not only SSH hosts: `portside host add NAME --kind kubernetes --target deploy/web --context … --namespace …`, or `kind` plus a `kubernetes` object over MCP. Pods, workloads and shells that kubectl would read as an option are refused, as for ssh.
+
 **Commands are labelled with what you typed, on RHEL and anywhere else with a busy prompt.** On hosts whose `PROMPT_COMMAND` runs more than one thing — RHEL and Rocky set a window-title `printf` there — the bash shell integration recorded that `printf` as every command, so the command history and an agent's `last` showed the right output and exit code under the wrong name. Records now start only for a line typed at a prompt, and carry the whole line (`ls / | wc -l; false`, not just `ls /`). Lines from startup files and ^C at a prompt no longer make records. Reinstall shell integration on a host to get it (v4); hosts with v3 are repaired in place, keeping a backup of the rc file. Reported, diagnosed and fix-tested on bash 3.2, 4.4 and 5.3 in #24.
 
 **An agent's `send --wait` and `last --wait` return the command they waited for.** They returned the newest record, which could already be the next command, still running and without an exit code.

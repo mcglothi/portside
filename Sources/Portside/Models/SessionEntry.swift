@@ -76,35 +76,94 @@ struct ContainerTarget: Codable, Hashable {
     }
 }
 
-/// A Kubernetes pod to exec into. `context` selects the cluster (NKP, GKE, …)
-/// so the same host/kubeconfig can reach many clusters.
+/// A Kubernetes pod or workload to exec into. `context` selects the cluster
+/// (NKP, GKE, OpenShift, …) so one kubeconfig can reach many clusters, and
+/// `kubeconfig` names a file of its own for platforms that hand out one per
+/// cluster, as NKP does.
 struct KubernetesTarget: Codable, Hashable {
+    /// The CLI that talks to the cluster. `oc` takes the same `exec`, `get`
+    /// and `config` commands as kubectl, and on OpenShift it is the one that
+    /// holds the login (`oc login`).
+    enum Binary: String, Codable, CaseIterable, Identifiable {
+        case kubectl, oc
+        var id: String { rawValue }
+    }
+
     var context = ""
     var namespace = ""
+    /// A pod name, or a workload — `deploy/web`, `sts/db` — which kubectl
+    /// resolves to one of its pods at connect time. A pod's name changes on
+    /// every rollout; the workload's doesn't.
     var pod = ""
     var container = ""     // optional -c for multi-container pods
     var shell = "sh"
+    var kubeconfig = ""
+    var binary: Binary = .kubectl
 
-    /// `kubectl [--context=c] [--namespace=ns] exec -it <pod> [--container=c] -- <shell>`.
-    /// Quoted at this boundary with `ShellQuoting`, same as
-    /// `ContainerTarget.execCommand` and `ContainerLister.enumerationArguments`
-    /// — `--flag=value` rather than `--flag value` so a value beginning with a
-    /// dash can't be read by kubectl as another flag, and `pod` is checked
-    /// separately since it lands in a positional slot no `=` form protects.
-    var execCommand: String? {
-        let pod = pod.trimmingCharacters(in: .whitespaces).strippingControlCharacters
-        guard !pod.isEmpty, !pod.looksLikeShellOption else { return nil }
-        var parts = ["kubectl"]
+    /// The binary and the flags that pick cluster, namespace and kubeconfig —
+    /// the prefix of every command run against this target, so exec, listing
+    /// and the pickers can't disagree about which cluster they mean.
+    ///
+    /// `--flag=value` rather than `--flag value`, so a value beginning with a
+    /// dash can't be read as another flag. `local` says where the command
+    /// runs: a `~/` kubeconfig is expanded to this Mac's home there, and made
+    /// relative over ssh, where commands start in the remote home. (Quoting
+    /// the argument stops the shell expanding `~` itself.)
+    func baseArguments(local: Bool = true) -> [String] {
+        var parts = [binary.rawValue]
+        let config = kubeconfig.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        if !config.isEmpty {
+            var path = config
+            if config == "~" || config.hasPrefix("~/") {
+                let rest = String(config.dropFirst(config == "~" ? 1 : 2))
+                path = local ? (NSHomeDirectory() as NSString).appendingPathComponent(rest)
+                             : (rest.isEmpty ? "." : rest)
+            }
+            parts.append("--kubeconfig=\(path)")
+        }
         let ctx = context.trimmingCharacters(in: .whitespaces).strippingControlCharacters
         if !ctx.isEmpty { parts.append("--context=\(ctx)") }
         let ns = namespace.trimmingCharacters(in: .whitespaces).strippingControlCharacters
         if !ns.isEmpty { parts.append("--namespace=\(ns)") }
+        return parts
+    }
+
+    /// `kubectl [--kubeconfig=f] [--context=c] [--namespace=ns] exec -it <pod> [--container=c] -- <shell>`.
+    /// Quoted at this boundary with `ShellQuoting`, same as
+    /// `ContainerTarget.execCommand` and `ContainerLister.enumerationArguments`,
+    /// and `pod` is checked separately since it lands in a positional slot no
+    /// `=` form protects.
+    func execCommand(local: Bool) -> String? {
+        let pod = pod.trimmingCharacters(in: .whitespaces).strippingControlCharacters
+        guard !pod.isEmpty, !pod.looksLikeShellOption else { return nil }
+        var parts = baseArguments(local: local)
         parts += ["exec", "-it", pod]
         let c = container.trimmingCharacters(in: .whitespaces).strippingControlCharacters
         if !c.isEmpty { parts.append("--container=\(c)") }
         let sh = shell.strippingControlCharacters
         parts += ["--", sh.isEmpty ? "sh" : sh]
         return ShellQuoting.command(parts)
+    }
+
+    /// The command as it runs on this Mac.
+    var execCommand: String? { execCommand(local: true) }
+}
+
+extension KubernetesTarget {
+    /// Every field optional, so a library written before `kubeconfig` and
+    /// `binary` existed still loads — a missing key must not fail the entry,
+    /// let alone the whole library. Older versions ignore the new keys.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = KubernetesTarget()
+        context = try c.decodeIfPresent(String.self, forKey: .context) ?? d.context
+        namespace = try c.decodeIfPresent(String.self, forKey: .namespace) ?? d.namespace
+        pod = try c.decodeIfPresent(String.self, forKey: .pod) ?? d.pod
+        container = try c.decodeIfPresent(String.self, forKey: .container) ?? d.container
+        shell = try c.decodeIfPresent(String.self, forKey: .shell) ?? d.shell
+        kubeconfig = try c.decodeIfPresent(String.self, forKey: .kubeconfig) ?? d.kubeconfig
+        // An unknown CLI from a newer version falls back rather than failing.
+        binary = (try? c.decodeIfPresent(Binary.self, forKey: .binary)) ?? d.binary
     }
 }
 
@@ -235,7 +294,7 @@ struct SessionEntry: Identifiable, Hashable {
         case .container:
             return container?.execCommand
         case .kubernetes:
-            return kubernetes?.execCommand
+            return kubernetes?.execCommand(local: usesLocalTransport)
         }
     }
 

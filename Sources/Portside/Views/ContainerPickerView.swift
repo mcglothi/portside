@@ -2,9 +2,17 @@ import SwiftUI
 
 /// Lists running containers/pods for an in-progress session and returns the
 /// one the user picks, so they don't have to remember churning names/ids.
+/// For Kubernetes it also picks the context and the container, from the same
+/// CLI and kubeconfig the session will use.
 struct ContainerPickerView: View {
+    enum Mode: String, Identifiable {
+        case targets, contexts, containers
+        var id: String { rawValue }
+    }
+
     @Environment(\.dismiss) private var dismiss
     let entry: SessionEntry
+    var mode: Mode = .targets
     let onPick: (String) -> Void
 
     @State private var state: LoadState = .loading
@@ -17,11 +25,27 @@ struct ContainerPickerView: View {
 
     private var isKubernetes: Bool { entry.kind == .kubernetes }
 
+    private var title: String {
+        switch mode {
+        case .targets: return isKubernetes ? "Workloads and Pods" : "Running Containers"
+        case .contexts: return "Kubernetes Contexts"
+        case .containers: return "Containers in \(entry.kubernetes?.pod ?? "Pod")"
+        }
+    }
+
+    /// What's being listed, for "Listing …", "No …" and "Couldn't list …".
+    private var noun: String {
+        switch mode {
+        case .targets: return isKubernetes ? "workloads and pods" : "containers"
+        case .contexts: return "contexts"
+        case .containers: return "containers"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label(isKubernetes ? "Running Pods" : "Running Containers",
-                      systemImage: entry.icon)
+                Label(title, systemImage: entry.icon)
                     .font(.headline)
                 Spacer()
                 Button {
@@ -62,7 +86,7 @@ struct ContainerPickerView: View {
         case .loading:
             VStack(spacing: 8) {
                 ProgressView()
-                Text(isKubernetes ? "Listing pods…" : "Listing containers…")
+                Text("Listing \(noun)\u{2026}")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -71,9 +95,9 @@ struct ContainerPickerView: View {
         case .loaded(let items) where items.isEmpty:
             EmptyStateView(
                 icon: entry.icon,
-                title: isKubernetes ? "No running pods" : "No running containers",
-                detail: isKubernetes
-                    ? "Nothing is running in this namespace and context."
+                title: "No \(noun)",
+                detail: mode == .contexts ? "The kubeconfig has no contexts."
+                    : isKubernetes ? "Nothing is running in this namespace and context."
                     : "Nothing is running on this host."
             )
 
@@ -107,7 +131,7 @@ struct ContainerPickerView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.title)
                     .foregroundStyle(.orange)
-                Text("Couldn't list \(isKubernetes ? "pods" : "containers")")
+                Text("Couldn\u{2019}t list \(noun)")
                     .fontWeight(.medium)
                 Text(message)
                     .font(.caption)
@@ -131,8 +155,22 @@ struct ContainerPickerView: View {
 
     private func load() async {
         do {
-            let items = try await ContainerLister.list(for: entry)
-            state = .loaded(items)
+            switch mode {
+            case .targets:
+                state = .loaded(try await ContainerLister.list(for: entry))
+            case .contexts:
+                let (contexts, current) = try await ContainerLister.contexts(for: entry)
+                state = .loaded(contexts.map { c in
+                    let detail = [c.name == current ? "current" : "", c.cluster == c.name ? "" : c.cluster,
+                                  c.namespace.isEmpty ? "" : "namespace \(c.namespace)"]
+                    return RunningContainer(name: c.name, detail: detail.filter { !$0.isEmpty }.joined(separator: " · "))
+                })
+            case .containers:
+                let (names, defaultName) = try await ContainerLister.containers(for: entry)
+                state = .loaded(names.map {
+                    RunningContainer(name: $0, detail: $0 == defaultName ? "default \u{2014} used when none is set" : "")
+                })
+            }
         } catch {
             state = .failed(error.localizedDescription)
         }
