@@ -734,4 +734,52 @@ final class AgentAccessTests: XCTestCase {
         }
         XCTFail("the shell never reached its prompt")
     }
+
+    // MARK: Container sessions and client names
+
+    /// Claude Code's process is named after its version folder; asking about
+    /// "2.1.291" meant every update looked like a new program.
+    func testVersionNamedProcessesTakeTheirProgramsName() {
+        XCTAssertEqual(AgentServer.displayName("2.1.291", path: "/Users/x/.local/share/claude/versions/2.1.291"),
+                       "claude")
+        XCTAssertEqual(AgentServer.displayName("1.0.0-beta.2", path: "/opt/tool/1.0.0-beta.2"), "tool")
+        XCTAssertEqual(AgentServer.displayName("codex", path: "/usr/local/bin/codex"), "codex")
+        XCTAssertEqual(AgentServer.displayName("python3.12", path: "/usr/bin/python3.12"), "python3.12",
+                       "a name with a version in it is still a name")
+        XCTAssertEqual(AgentServer.displayName("2.1.291", path: ""), "2.1.291", "nothing better to offer")
+    }
+
+    /// A container exec that never reaches the container is not "connected",
+    /// and a wait on a command there answers at once: nothing in a container
+    /// session marks commands, so waiting could only run out.
+    func testContainerSessionsSayWhereTheyGotAndDontWaitForNothing() async throws {
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+
+        // nerdctl isn't installed here, so the exec fails at once and the
+        // local shell comes back.
+        let r = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                                   from: claude)
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"],
+              case .object(let pane)? = panes.first, case .string(let id)? = pane["pane"] else {
+            return XCTFail("\(String(describing: r.error)) \(String(describing: r.result))")
+        }
+        XCTAssertEqual(o["waitedOut"], .bool(false))
+        XCTAssertEqual(pane["state"], .string("returned to the local shell"), "the local shell is not the container")
+
+        let started = Date()
+        let s = await agent.handle(.init(method: "send", params: .init(pane: id, text: "true", enter: true, wait: 20)),
+                                   from: claude)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "answered without waiting out the 20s")
+        guard case .object(let sent)? = s.result, case .object(let result)? = sent["result"],
+              case .string(let error)? = result["error"] else { return XCTFail("\(String(describing: s.result))") }
+        XCTAssertTrue(error.contains("Container"), error)
+        XCTAssertFalse(error.contains("Settings"), "installing integration can't help a container: \(error)")
+    }
 }
+

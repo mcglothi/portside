@@ -27,7 +27,7 @@ struct CommandOutputCapture {
     static let kept = 5
 
     private var parser = OSC133Parser()
-    private var stripper = ANSIStripper()
+    private var stripper = ANSIStripper(keepsLineEditing: true)
     private var recording = false
     private var raw: [UInt8] = []
     private var dropped = false
@@ -37,12 +37,20 @@ struct CommandOutputCapture {
     /// `completed`, which is capped — so "has a command finished since I
     /// asked?" stays answerable after the fifth one.
     private(set) var finishedTotal = 0
+    /// Whether any OSC 133 marker has arrived. Without one nothing will ever
+    /// finish, so an agent's wait can answer at once instead of running out.
+    private(set) var sawShellIntegration = false
+    /// The terminal's width, kept current by the view. A carriage return goes
+    /// back to the start of the *row*, so a line that wrapped can only be
+    /// replayed knowing where it wrapped. 0 means unknown: each line is then
+    /// treated as one row, which is right for anything that never wrapped.
+    var columns = 0
 
     /// The command still running, with what it has printed so far.
     var running: Command? {
         guard recording else { return nil }
         var copy = stripper
-        return Command(command: pendingCommand, exitCode: nil, output: Self.text(copy.strip(raw)),
+        return Command(command: pendingCommand, exitCode: nil, output: Self.text(copy.strip(raw), columns: columns),
                        truncated: dropped, finished: false)
     }
 
@@ -69,6 +77,7 @@ struct CommandOutputCapture {
                 }
             }
             for marker in parser.consume([byte][...]) {
+                sawShellIntegration = true
                 switch marker {
                 case .commandStart:
                     if recording { finish(exitCode: nil) }
@@ -88,11 +97,11 @@ struct CommandOutputCapture {
         recording = true
         raw = []
         dropped = false
-        stripper = ANSIStripper()
+        stripper = ANSIStripper(keepsLineEditing: true)
     }
 
     private mutating func finish(exitCode: Int?) {
-        let output = Self.text(stripper.strip(raw))
+        let output = Self.text(stripper.strip(raw), columns: columns)
         completed.append(Command(command: pendingCommand, exitCode: exitCode, output: output,
                                  truncated: dropped, finished: true))
         finishedTotal += 1
@@ -102,14 +111,63 @@ struct CommandOutputCapture {
         pendingCommand = ""
     }
 
-    /// Stripped bytes as text: carriage returns resolved to line ends, and
+    /// Stripped bytes as text: line editing replayed (see `render`), then
     /// control characters (already mostly gone) removed.
-    private static func text(_ bytes: [UInt8]) -> String {
-        String(decoding: bytes, as: UTF8.self)
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+    static func text(_ bytes: [UInt8], columns: Int) -> String {
+        render(String(decoding: bytes, as: UTF8.self), columns: columns)
             .unicodeScalars.filter { $0 == "\n" || $0 == "\t" || !CharacterSet.controlCharacters.contains($0) }
             .reduce(into: "") { $0.unicodeScalars.append($1) }
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Replays CR, BS and erase-in-line (VT, from the stripper) the way the
+    /// terminal did, so the text is what was on screen rather than every
+    /// keystroke of how it got there.
+    ///
+    /// Treating CR as a line break used to turn a progress bar into one line
+    /// per frame. Dropping it doubled a character at every wrap of a long
+    /// command line: once a line has wrapped, readline returns to the start
+    /// of the new row and rewrites the character it just printed there
+    /// (`…MN\rNOPQ…`), which reads as `MNN` with the CR gone.
+    ///
+    /// The cursor is a position within the current logical line; with the
+    /// width known, a CR goes back to the start of its row. A position that
+    /// is an exact multiple of the width is still on the row it filled — the
+    /// terminal defers the wrap until the next character — so CR there goes
+    /// to the start of that row, not the next. Wide characters count as one
+    /// column; the cost is an occasional misplaced overwrite in CJK output.
+    static func render(_ text: String, columns: Int) -> String {
+        let width = columns > 0 ? columns : Int.max
+        func rowStart(_ pos: Int) -> Int { pos == 0 ? 0 : (pos - 1) / width * width }
+        var lines: [String] = []
+        var row: [Character] = []
+        var pos = 0
+        for ch in text {
+            switch ch {
+            case "\n", "\r\n":
+                lines.append(String(row))
+                row = []
+                pos = 0
+            case "\r":
+                pos = rowStart(pos)
+            case "\u{08}":
+                if pos > rowStart(pos) { pos -= 1 }
+            case "\u{0B}":
+                guard pos < row.count else { break }
+                let start = rowStart(pos)
+                let end = width == .max ? row.count : min(row.count, start + width)
+                if end == row.count { row.removeSubrange(pos..<end) }
+                else { row.replaceSubrange(pos..<end, with: repeatElement(" ", count: end - pos)) }
+            default:
+                if pos < row.count { row[pos] = ch }
+                else {
+                    row.append(contentsOf: repeatElement(" ", count: pos - row.count))
+                    row.append(ch)
+                }
+                pos += 1
+            }
+        }
+        lines.append(String(row))
+        return lines.joined(separator: "\n")
     }
 }

@@ -70,4 +70,42 @@ final class CommandOutputCaptureTests: XCTestCase {
         XCTAssertEqual(c.completed.count, CommandOutputCapture.kept)
         XCTAssertEqual(c.recent.first?.output, "run 7")
     }
+
+    // MARK: Line editing replayed, not dropped
+
+    private func output(_ body: String, columns: Int) -> String? {
+        var c = CommandOutputCapture()
+        c.columns = columns
+        feed(&c, osc("C") + body + osc("D;0"))
+        return c.completed.first?.output
+    }
+
+    /// Once a long line has wrapped, readline returns to the start of the new
+    /// row and rewrites the character already there. With CR dropped that read
+    /// as a doubled character at every wrap (`MNN`).
+    func testReadlineRewriteAtAWrapIsNotDoubled() {
+        XCTAssertEqual(output("0123456789A\rABCD", columns: 10), "0123456789ABCD")
+        // Bytes as bash 4.4 sent them in a 20-column pty.
+        XCTAssertEqual(output("$ echo ABCDEFGHIJKLMN\rNOPQRSTUVWXYZabcdefgh\rhij", columns: 20),
+                       "$ echo ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")
+    }
+
+    /// A row filled exactly hasn't wrapped yet — the terminal defers that to the
+    /// next character — so CR there goes back to the start of the same row.
+    func testCarriageReturnAtAFullRowStaysOnThatRow() {
+        XCTAssertEqual(output("0123456789\rX", columns: 10), "X123456789")
+    }
+
+    func testProgressRedrawKeepsTheLastFrame() {
+        XCTAssertEqual(output(" 10%\r 50%\r100%\r\ndone\r\n", columns: 0), "100%\ndone")
+        XCTAssertEqual(output("downloading\r\u{1B}[Kok", columns: 80), "ok", "erase-in-line clears the tail")
+        XCTAssertEqual(output("abc\u{8}d", columns: 80), "abd")
+    }
+
+    /// The log keeps its own behaviour: it has no width to replay against.
+    func testTheLogsStripperStillDropsLineEditing() {
+        var plain = ANSIStripper()
+        XCTAssertEqual(plain.strip(Array("a\rb\u{8}c\u{1B}[Kd".utf8)), Array("abcd".utf8))
+    }
 }
+

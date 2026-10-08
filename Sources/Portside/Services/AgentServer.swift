@@ -202,12 +202,30 @@ final class AgentServer: @unchecked Sendable {
         var fallback = AgentClient(pid: pid, name: "unknown", path: "")
         for _ in 0..<12 {
             guard current > 1, let info = processInfo(current) else { break }
-            let client = AgentClient(pid: pid, name: info.name, path: executablePath(current))
+            let path = executablePath(current)
+            let client = AgentClient(pid: pid, name: displayName(info.name, path: path), path: path)
             if fallback.name == "unknown" { fallback = client }
             if !passThrough.contains(info.name.lowercased()) { return client }
             current = info.parent
         }
         return fallback
+    }
+
+    /// The name people know a program by, from its process name and path.
+    ///
+    /// Claude Code installs each release as `…/claude/versions/2.1.291`, so
+    /// the process is named after its version. Shown as is, the prompt asked
+    /// about "2.1.291", the log recorded that, and — since approval keys on
+    /// the name — every update looked like a new program asking for access.
+    /// A name that is only a version takes the folder the versions live in
+    /// (skipping a `versions` level), which is the program's real name.
+    static func displayName(_ name: String, path: String) -> String {
+        let isVersion = name.range(of: #"^v?\d+(\.\d+)+([-+][0-9A-Za-z.\-]+)?$"#, options: .regularExpression) != nil
+        guard isVersion else { return name }
+        let folders = path.split(separator: "/").dropLast()
+        let owner = folders.last?.lowercased() == "versions" ? folders.dropLast().last : folders.last
+        guard let owner, !owner.isEmpty else { return name }
+        return String(owner)
     }
 
     /// Whether `pid` is `ancestor` or runs somewhere beneath it — how a pane

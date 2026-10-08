@@ -3,6 +3,16 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**A container or pod session is "connected" when it reaches the container.** Agents were told `connected` as soon as the local shell that runs `kubectl exec` started — while a browser sign-in was still waiting, or after the exec had already failed. Portside now reads the terminal itself: the exec in front with the terminal still cooked is `connecting`, raw mode means it attached, and the local shell back at its prompt means it failed or ended. `connect --wait` waits for that, and `tabs` reports the same `state` with any `problem`.
+
+**Waiting on a command answers at once where nothing can be recorded.** `send --wait` and `last --wait` in a container, pod, serial or telnet session — or on a host with no shell integration — used to sit out their whole timeout. They now say why straight away, with advice that fits: installing shell integration helps a host, not a container.
+
+**Agent output reads the way the terminal drew it.** Carriage returns, backspaces and erase-in-line in a command's output are replayed instead of dropped, so a progress bar is its last frame, not every frame run together, and a long line that wrapped no longer doubles a character at each wrap. Session logs are unchanged.
+
+**Claude Code is asked about as "claude", not its version number.** Its executable lives in a folder per release (`…/claude/versions/2.1.291`), so prompts and the log named the version, and every update looked like a new program asking for access. It's asked about once more under its real name.
+
 ## 0.32.0
 
 **Kubernetes sessions say why they didn't reach the pod, and offer to sign in.** When kubectl fails, the shell it was typed into stays open, so the pane used to just sit at your local prompt with kubectl's error above it. Portside now reads that error and puts a bar under the pane: not signed in or expired, sign-in plugin not installed (for example NKP's `konvoy-async-plugin` missing from the login shell's PATH), signed in but not allowed, cluster unreachable, unknown context, kubeconfig unreadable, pod or namespace not found, container not in the pod, or no such shell in the image. Each comes with what to do and kubectl's own line as evidence. **Sign In** types the platform's own command into the pane where you can watch it: `gcloud auth login` for GKE, `oc login --web` for OpenShift, and for browser-based plugins such as NKP's, a kubectl call that starts that plugin's sign-in. **Try Again** runs the exec again. Portside never signs in by itself and never reads a token. Browse… now gives up after two minutes instead of waiting forever on a browser sign-in nobody saw, and says what to do. Agents see the same problem on the pane in `tabs`.

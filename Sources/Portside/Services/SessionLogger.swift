@@ -124,6 +124,15 @@ struct ANSIStripper {
     /// Bytes consumed since the current sequence began. Reset on every return
     /// to `.normal`.
     private var sequenceLength = 0
+    /// Keep CR and BS, and mark erase-in-line (CSI K) as VT (0x0B), for a
+    /// caller that replays line editing instead of discarding it — see
+    /// `CommandOutputCapture.render`. Off for the log, which keeps its bytes
+    /// as text and never had a width to replay them against.
+    private let keepsLineEditing: Bool
+
+    init(keepsLineEditing: Bool = false) {
+        self.keepsLineEditing = keepsLineEditing
+    }
 
     /// How long a single escape sequence may run before the stripper assumes
     /// the stream is malformed, gives up, and resumes emitting text.
@@ -162,7 +171,8 @@ struct ANSIStripper {
                 switch b {
                 case 0x1B: state = .escape          // ESC
                 case 0x0A, 0x09: out.append(b)      // keep LF, TAB
-                case 0x0D, 0x08: break              // drop CR, BS (overwrite noise)
+                case 0x0D, 0x08:                    // CR, BS: overwrite noise, unless replayed
+                    if keepsLineEditing { out.append(b) }
                 case 0..<0x20, 0x7F: break          // drop other control chars
                 default: out.append(b)              // printable / UTF-8
                 }
@@ -182,7 +192,10 @@ struct ANSIStripper {
                 }
             case .csi:
                 // Parameters/intermediates until a final byte 0x40–0x7E.
-                if (0x40...0x7E).contains(b) { state = .normal }
+                if (0x40...0x7E).contains(b) {
+                    state = .normal
+                    if keepsLineEditing, b == 0x4B { out.append(0x0B) }   // EL
+                }
             case .osc:
                 // BEL, or ST in either spelling. 0x9C is the C1 form; treating
                 // it as a terminator can in principle cut an OSC short when

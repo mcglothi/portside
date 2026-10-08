@@ -168,10 +168,18 @@ An agent shouldn't have to poll. Three requests can wait, up to 120 seconds:
 - **`last PANE --wait 30`** waits for a command that's still running.
 - **`connect QUERY --wait 20`** answers once every session has connected,
   failed, or stopped at a password prompt, and reports each one's state.
+  A container or pod session is `connected` only once its exec has attached
+  to the container, not when the local shell that runs it starts. Until then
+  it's `connecting` (often a browser sign-in the user has to finish), and an
+  exec that failed or ended is `failed` (with a `problem`) or `returned to the
+  local shell`. `tabs` reports the same `state` per pane.
 
 A wait that runs out says so (`waitedOut`) instead of hanging. Waiting on a
 command needs shell integration on the host, which is the same thing that
-marks where commands start and end.
+marks where commands start and end. Where there can't be any — a container,
+pod, serial or telnet session, or a host that shows no sign of it within a
+few seconds — the wait answers at once with an `error` saying so, instead of
+running out its timeout.
 
 ### Several panes at once
 
@@ -188,13 +196,15 @@ read, so six hosts cost roughly what one does.
 starts and ends, so Portside keeps the last five commands' output, stripped of
 escape codes and capped at 32 KB each, keeping the end. An agent gets
 `df -h → exit 0 → 12 lines` for a few hundred tokens. It doesn't scrape a
-screen or re-read a transcript. This needs shell integration on the host
+screen or re-read a transcript. Carriage returns, backspaces and erase-in-line
+are replayed the way the terminal drew them, so a progress bar comes back as
+its last frame rather than every frame. This needs shell integration on the host
 (Settings ▸ Terminal). Without it, `screen` reads the visible screen and
 scrollback instead.
 
 Portside injects shell integration into SSH sessions only, so container and
-Kubernetes sessions never have it. There, `last` and `send --wait` have
-nothing to report, and an agent should use `screen`.
+Kubernetes sessions never have it (issue #25). There, `last` and
+`send --wait` say so at once, and an agent should use `screen`.
 
 Session logs are deliberately not offered to agents. They're the whole
 history, which is expensive to read and rarely what the question is about.
