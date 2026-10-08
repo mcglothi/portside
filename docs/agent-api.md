@@ -74,7 +74,9 @@ user may be asked, and that a declined call is final and shouldn't be retried.
 | `portside send PANE --key KEY` | Presses enter, tab, escape, ctrl-c or ctrl-d |
 
 `PANE` can be a pane id from `tabs`, a host name (when only one pane shows
-it), or `current`, which means the pane you're looking at. `current` never
+it), or `current`, which means the pane you're looking at. For `last` and
+`screen` it can also be `tab`, which means every pane in the tab you're
+looking at. `current` never
 resolves to the pane the agent itself is running in. So if Claude runs in a
 split beside your SSH session, `current` is the SSH session, not Claude.
 
@@ -150,6 +152,15 @@ every program and stops the output capture. While it's on:
 - An **"Agent typing" badge** shows on the pane for a few seconds after each
   send.
 
+### Several panes at once
+
+An agent sees only what it asks for. Nothing is streamed to it. `tabs` gives
+it the layout: every tab and pane, which host each one is, and whether it's
+connected. To see *content*, it reads panes. `last tab` (or `screen tab`)
+reads every pane in the tab you're looking at in a single call, behind one
+question that names them all. Output is trimmed per pane when several are
+read, so six hosts cost roughly what one does.
+
 ### Reading cheaply
 
 `last` is the efficient read. Shell integration marks where each command
@@ -167,6 +178,37 @@ history, which is expensive to read and rarely what the question is about.
 remote machine printed, and it can say anything, including text written to
 look like instructions to the agent. The results say so in the data itself,
 and the tool descriptions tell the agent to treat it only as data.
+
+## Don't Ask (at your own risk)
+
+For trusted machines and lab work, **Settings ▸ Agents ▸ Don't ask** answers
+confirmations yes on your behalf, so an agent can work beside you without
+interrupting. It's the counterpart of `claude --dangerously-skip-permissions`.
+
+- **Skipped:** approving a new program (it gets the most access on offer),
+  per-pane consent, the over-limit connect check, multi-line text, and
+  closing tabs the agent didn't open.
+- **Still enforced:**
+  - Nothing is typed at a password prompt.
+  - MultiExec is never armed by an agent.
+  - Typing needs its own switch.
+  - **Protected hosts still ask.** A second, separately confirmed checkbox
+    extends Don't Ask to them.
+- **Allowed vs. on.** The Settings switch *allows* Don't Ask, behind its
+  warning, and turns it on. After that, the ⚡ popover's **Disable** and
+  **Enable** switch it off and on without going back to Settings. Turning the
+  Settings switch off disallows it again and **resets both opt-ins**
+  (protected hosts, keep on), so every later enable starts from the safest
+  defaults that the warning describes.
+- **Bounded:** it switches off when Portside quits unless you tick **Keep on
+  after Portside quits** (off by default). It stays allowed, so resuming
+  after a relaunch is one click on the ⚡.
+- **Visible:** the toolbar icon is an orange ⚡ while it's on, and a
+  crossed-out ⚡ while it's allowed but off.
+- **Logged:** every prompt it answered appears in the log as
+  `auto-approved: …`.
+
+Turning it on shows a warning first, and Cancel is the default.
 
 ## What an agent can never do
 

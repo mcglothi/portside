@@ -24,7 +24,8 @@ usage: portside <command> [args] [--json] [--socket PATH]
   send PANE --key KEY            press enter, tab, escape, ctrl-c or ctrl-d
   screen PANE [--lines N]        read a pane's screen as plain text
   last PANE [--count N]          the last command(s) in a pane: text, exit code, output
-                                 (PANE may be `current`: the pane you're looking at)
+                                 PANE may be `current` (the pane you're looking at) or,
+                                 for screen and last, `tab` (every pane in that tab)
   mcp                            run as an MCP server on stdio (for Claude Code, etc.)
 
 QUERY uses the sidebar filter syntax: words, env:prod, folder:lab, kind:ssh,
