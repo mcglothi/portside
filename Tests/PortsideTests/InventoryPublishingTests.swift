@@ -160,4 +160,66 @@ final class InventoryPublishingTests: XCTestCase {
         XCTAssertEqual(findings.count, 1)
         XCTAssertTrue(findings[0].text.hasPrefix("name "))
     }
+
+    // MARK: - The CI validator agrees with the app
+
+    /// `Scripts/portside-inventory-check.py` reimplements the sanitizer and
+    /// secret scan in Python so teams can run it in CI anywhere. Two
+    /// implementations of one rule drift — so the same records go through
+    /// both, and they must agree record by record.
+    func testCIValidatorAgreesWithTheApp() throws {
+        var records: [SessionEntry] = []
+        func add(_ name: String, _ change: (inout SessionEntry) -> Void = { _ in }) {
+            var e = SessionEntry(name: name, folder: "", hostname: "\(name).example.com")
+            change(&e)
+            records.append(e)
+        }
+        add("plain")
+        add("option-host") { $0.hostname = "-oProxyCommand=x" }
+        // Only the leading-dash rule refuses this one: every character is a
+        // legal host character. Without it, a drift in that rule went unseen.
+        add("dash-host") { $0.hostname = "-oops" }
+        add("dash-alias") { $0.hostname = ""; $0.sshAlias = "-v" }
+        add("space-host") { $0.hostname = "a b" }
+        add("semicolon-alias") { $0.hostname = ""; $0.sshAlias = "a;b" }
+        add("dash-user") { $0.user = "-l" }
+        add("ad-user") { $0.user = "CORP\\tim" }
+        add("ipv6") { $0.hostname = "fe80::1" }
+        add("no-target") { $0.hostname = ""; $0.sshAlias = nil }
+        add("container") { $0.kind = .container }
+        add("serial") { $0.kind = .serial }
+        add("db ghp_0123456789abcdefghijABCDEFGHIJ")
+        add("folder-secret") { $0.folder = "https://admin:pw@host" }
+        add("key-path") { $0.identityFile = "~/.ssh/id_ed25519" }
+        add("random") { $0.name = "Zq8vN3kL0pR7tY2wX5cB9mJ4hF6gD1sA" }
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("check-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try LibraryTransfer.encodeSessions(entries: records, folders: [], credentialProfiles: []).write(to: file)
+
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Scripts/portside-inventory-check.py")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", script.path, "--json", file.path]
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let report = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rows = try XCTUnwrap(report["hosts"] as? [[String: Any]])
+        let python = Dictionary(uniqueKeysWithValues: rows.map {
+            ($0["name"] as! String, ($0["verdict"] as! String, $0["secret"] as! Bool))
+        })
+
+        for e in records {
+            let swiftKeeps = SharedManifest.sanitized(e, sourceID: UUID()) != nil
+            let swiftSecret = !InventoryPublishing.secretFindings(in: [e]).isEmpty
+            let (verdict, secret) = try XCTUnwrap(python[e.name], e.name)
+            XCTAssertEqual(verdict == "keep", swiftKeeps, "\(e.name): app and CI validator disagree on keeping it")
+            XCTAssertEqual(secret, swiftSecret, "\(e.name): app and CI validator disagree on a secret")
+        }
+        XCTAssertEqual(process.terminationStatus, 1, "errors make CI fail")
+    }
 }

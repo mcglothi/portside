@@ -28,6 +28,9 @@ final class LibraryCommands: ObservableObject {
     @Published private(set) var copyKeyToHosts = 0
     @Published private(set) var rotateKey = 0
     @Published private(set) var sharedInventory = 0
+    /// A publishing sheet to show: create, link or publish. Cleared by the
+    /// sheet's dismissal.
+    @Published var publishRequest: PublishRequest?
 
     func requestNewSession() { newSession += 1 }
     func requestNewFolder() { newFolder += 1 }

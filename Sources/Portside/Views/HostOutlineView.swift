@@ -55,6 +55,8 @@ struct HostOutlineView: NSViewRepresentable {
     /// Pulls one shared source, and opens the sheet that manages them all.
     var refreshSource: (UUID) -> Void = { _ in }
     var manageSources: () -> Void = {}
+    /// Create a shared inventory from a folder, link one, or publish changes.
+    var publish: (PublishRequest) -> Void = { _ in }
     let newSubfolder: (String) -> Void
     let renameFolder: (_ path: String, _ currentName: String) -> Void
 
@@ -374,7 +376,9 @@ struct HostOutlineView: NSViewRepresentable {
                            itemCount: node.isFolder
                                ? parent.store.itemCount(inFolder: node.folderPath ?? "") : 0,
                            toggleFavorite: toggleFavorite,
-                           sourceStatus: sourceStatus(for: node))
+                           sourceStatus: sourceStatus(for: node),
+                           publishesTo: node.folderPath.flatMap { parent.store.publishLink(forFolder: $0) }
+                               .flatMap { parent.store.inventorySource(id: $0.sourceID)?.name })
             cell.setDimmed(isDimmed(node))
             return cell
         }
@@ -945,8 +949,39 @@ struct HostOutlineView: NSViewRepresentable {
             menu.addItem(.separator())
             if let sourceID = folder.sourceID {
                 menu.addItem(ClosureMenuItem(title: "Pull Latest") { self.parent.refreshSource(sourceID) })
+                if folder.isSourceRoot {
+                    if let link = store.publishLink(forSource: sourceID) {
+                        menu.addItem(ClosureMenuItem(title: "Publish Changes from \u{201C}\(link.folder)\u{201D}\u{2026}") {
+                            self.parent.publish(.publish(sourceID: sourceID))
+                        })
+                    } else {
+                        menu.addItem(ClosureMenuItem(title: "Link Folder for Publishing\u{2026}") {
+                            self.parent.publish(.link(sourceID: sourceID))
+                        })
+                    }
+                }
                 menu.addItem(ClosureMenuItem(title: "Shared Inventory\u{2026}") { self.parent.manageSources() })
                 return
+            }
+            if let link = store.publishLink(forFolder: folder.path) {
+                let sourceName = store.inventorySource(id: link.sourceID)?.name ?? "shared inventory"
+                menu.addItem(ClosureMenuItem(title: "Publish Changes to \u{201C}\(sourceName)\u{201D}\u{2026}") {
+                    self.parent.publish(.publish(sourceID: link.sourceID))
+                })
+                let direct = ClosureMenuItem(title: "Push Directly to \(store.inventorySource(id: link.sourceID)?.ref ?? "main")") {
+                    store.setDirectPush(!link.directPush, forSource: link.sourceID)
+                }
+                direct.state = link.directPush ? .on : .off
+                menu.addItem(direct)
+                menu.addItem(ClosureMenuItem(title: "Stop Publishing from This Folder") {
+                    store.unlinkPublishing(sourceID: link.sourceID)
+                })
+                menu.addItem(.separator())
+            } else if !folder.path.isEmpty {
+                menu.addItem(ClosureMenuItem(title: "New Shared Inventory from Folder\u{2026}") {
+                    self.parent.publish(.create(folder: folder.path))
+                })
+                menu.addItem(.separator())
             }
             menu.addItem(ClosureMenuItem(title: "New Subfolder…") { self.parent.newSubfolder(folder.path) })
             menu.addItem(ClosureMenuItem(title: "Rename…") { self.parent.renameFolder(folder.path, folder.name) })
@@ -1019,6 +1054,8 @@ private final class RowModel: ObservableObject {
     @Published var dimmed = false
     @Published var toggleFavorite: (() -> Void)?
     @Published var sourceStatus: SourceRowStatus?
+    /// For one of your folders that publishes to a shared inventory: its name.
+    @Published var publishesTo: String?
 }
 
 /// What a shared source's root row shows beside its name.
@@ -1053,10 +1090,11 @@ private final class HostRowCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(node: SidebarNode, itemCount: Int, toggleFavorite: (() -> Void)? = nil,
-                   sourceStatus: SourceRowStatus? = nil) {
+                   sourceStatus: SourceRowStatus? = nil, publishesTo: String? = nil) {
         model.node = node
         model.itemCount = itemCount
         model.sourceStatus = sourceStatus
+        model.publishesTo = publishesTo
         model.toggleFavorite = toggleFavorite
     }
 
@@ -1209,6 +1247,13 @@ private struct SidebarRowLabel: View {
                 .layoutPriority(1)
                 .help(folder.name)
             Spacer(minLength: 4)
+            if let target = model.publishesTo {
+                Image(systemName: "arrow.up.circle")
+                    .font(.caption)
+                    .foregroundStyle(model.emphasized ? .white : .accentColor)
+                    .help("Publishes to \u{201C}\(target)\u{201D} \u{2014} right-click to publish changes")
+                    .fixedSize()
+            }
             if let status = model.sourceStatus {
                 if status.isSyncing {
                     ProgressView().controlSize(.mini)
