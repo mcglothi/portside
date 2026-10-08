@@ -27,7 +27,9 @@ let package = Package(
         ),
         .testTarget(
             name: "PortsideTests",
-            dependencies: ["Portside"]
+            // portside-cli too, so `swift test` builds the binary that
+            // MCPServerTests runs as a real process.
+            dependencies: ["Portside", "portside-cli"]
         )
     ]
 )

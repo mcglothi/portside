@@ -78,6 +78,7 @@ struct PaneNodeView: View {
 struct PaneLeafView: View {
     @EnvironmentObject var store: SessionStore
     @EnvironmentObject var sessions: SessionManager
+    @EnvironmentObject var agent: AgentController
     @ObservedObject var session: TerminalSession
     @ObservedObject var tab: Tab
     @State private var hovering = false
@@ -121,9 +122,30 @@ struct PaneLeafView: View {
         }
     }
 
+    /// Shown for a few seconds after an agent types into this pane, so the
+    /// person watching always knows which session is being driven, and by
+    /// what. Bottom trailing: the corner a shell prompt reaches last.
+    @ViewBuilder private var agentBadge: some View {
+        if let typed = agent.agentTypedAt[session.id] {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if context.date.timeIntervalSince(typed) < 8 {
+                    Label("Agent typing", systemImage: "sparkles")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.85), in: Capsule())
+                        .padding(8)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             TerminalPane(session: session)
+                .overlay(alignment: .bottomTrailing) { agentBadge }
                 .opacity(armed && !included ? 0.55 : 1)
             // A real bar rather than a floating chip: the old overlay sat on
             // top of the terminal's first line, hiding output on every pane

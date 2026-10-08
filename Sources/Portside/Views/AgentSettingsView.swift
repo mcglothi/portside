@@ -6,6 +6,7 @@ import SwiftUI
 struct AgentSettingsView: View {
     @EnvironmentObject var agent: AgentController
     @State private var installMessage: String?
+    @State private var showingLog = false
 
     /// The CLI inside this app bundle.
     static var bundledCLI: URL {
@@ -17,6 +18,10 @@ struct AgentSettingsView: View {
     static var linkLocation: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/portside")
     }
+
+    /// Uses the bundled binary's own path, so it works before (or without)
+    /// the ~/.local/bin link and survives the link being removed.
+    static var mcpCommand: String { "claude mcp add portside -- \(bundledCLI.path) mcp" }
 
     var body: some View {
         Form {
@@ -56,6 +61,35 @@ struct AgentSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section("MCP") {
+                HStack {
+                    Text(Self.mcpCommand).font(.caption.monospaced()).textSelection(.enabled)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Self.mcpCommand, forType: .string)
+                    }
+                }
+                Text("Run this once to give Claude Code Portside\u{2019}s tools directly. Any MCP client works "
+                     + "the same way: the server is `portside mcp` on stdio, and every call goes through the "
+                     + "same approvals as the command.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Typing") {
+                Toggle("Allow agents to type into sessions", isOn: Binding(
+                    get: { agent.settings.allowInput }, set: { agent.setAllowInput($0) }))
+                    .disabled(!agent.settings.enabled)
+                Text("Lets an approved program type into a session and read its screen. Each pane asks "
+                     + "the first time; protected hosts and multi-line input ask every time; nothing is ever "
+                     + "typed at a password prompt or broadcast to MultiExec. A pane being typed into shows "
+                     + "\u{201C}Agent typing\u{201D}. Turning this off takes typing back from every program.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("Confirmation") {
                 Stepper(value: Binding(get: { agent.settings.connectCap }, set: { agent.setConnectCap($0) }),
                         in: 1...500) {
@@ -90,6 +124,7 @@ struct AgentSettingsView: View {
             Section {
                 AgentActivityList(limit: 12)
                 HStack {
+                    Button("View Log\u{2026}") { showingLog = true }
                     Spacer()
                     Button("Show Log in Finder") {
                         if let url = agent.logURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -102,6 +137,8 @@ struct AgentSettingsView: View {
         }
         .formStyle(.grouped)
         .settingsPageSizing()
+        // Settings is its own window, so it presents its own copy of the sheet.
+        .sheet(isPresented: $showingLog) { AgentLogView().environmentObject(agent) }
     }
 
     private func installCLI() {
@@ -173,8 +210,9 @@ struct AgentIndicator: View {
                 AgentActivityList(limit: 8)
                 Divider()
                 HStack {
-                    Button("Turn Off Agent Access") { agent.setEnabled(false); showing = false }
+                    Button("View Log\u{2026}") { showing = false; agent.showingLog = true }
                     Spacer()
+                    Button("Turn Off Agent Access") { agent.setEnabled(false); showing = false }
                 }
             }
             .padding(14)
