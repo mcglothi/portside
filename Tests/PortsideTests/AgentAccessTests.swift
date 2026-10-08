@@ -734,4 +734,172 @@ final class AgentAccessTests: XCTestCase {
         }
         XCTFail("the shell never reached its prompt")
     }
+
+    // MARK: Container sessions and client names
+
+    /// Claude Code's process is named after its version folder; asking about
+    /// "2.1.291" meant every update looked like a new program.
+    func testVersionNamedProcessesTakeTheirProgramsName() {
+        XCTAssertEqual(AgentServer.displayName("2.1.291", path: "/Users/x/.local/share/claude/versions/2.1.291"),
+                       "claude")
+        XCTAssertEqual(AgentServer.displayName("1.0.0-beta.2", path: "/opt/tool/1.0.0-beta.2"), "tool")
+        XCTAssertEqual(AgentServer.displayName("codex", path: "/usr/local/bin/codex"), "codex")
+        XCTAssertEqual(AgentServer.displayName("python3.12", path: "/usr/bin/python3.12"), "python3.12",
+                       "a name with a version in it is still a name")
+        XCTAssertEqual(AgentServer.displayName("2.1.291", path: ""), "2.1.291", "nothing better to offer")
+    }
+
+    /// A container exec that never reaches the container is not "connected",
+    /// and a wait on a command there answers once the marker grace has passed
+    /// rather than running out its timeout — saying why, in terms that fit a
+    /// container.
+    func testContainerSessionsSayWhereTheyGotAndDontWaitForNothing() async throws {
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+
+        // nerdctl isn't installed here, so the exec fails at once and the
+        // local shell comes back.
+        let r = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                                   from: claude)
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"],
+              case .object(let pane)? = panes.first, case .string(let id)? = pane["pane"] else {
+            return XCTFail("\(String(describing: r.error)) \(String(describing: r.result))")
+        }
+        XCTAssertEqual(o["waitedOut"], .bool(false))
+        XCTAssertEqual(pane["state"], .string("returned to the local shell"), "the local shell is not the container")
+
+        let started = Date()
+        let s = await agent.handle(.init(method: "send", params: .init(pane: id, text: "true", enter: true, wait: 20)),
+                                   from: claude)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "answered without waiting out the 20s")
+        guard case .object(let sent)? = s.result, case .object(let result)? = sent["result"],
+              case .string(let error)? = result["error"] else { return XCTFail("\(String(describing: s.result))") }
+        XCTAssertTrue(error.contains("container and pod sessions"), error)
+        XCTAssertFalse(error.contains("Settings"), "installing integration can't help a container: \(error)")
+    }
+
+    // MARK: A quiet pane isn't a pane without integration (PR #30 review)
+
+    /// Markers only arrive when a command starts or finishes. A command that was
+    /// already running when typing was switched on — which is when the capture
+    /// begins — sends nothing until it ends, so a few quiet seconds prove
+    /// nothing. `last --wait` waits on it; `send --wait` (whose text went to that
+    /// command) waits for it too.
+    func testWaitsDontGiveUpOnACommandThatWasAlreadyRunning() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+
+        // Started, and its start marker gone by, before the capture exists.
+        let marker = "done-\(UUID().uuidString.prefix(6))"
+        pane.sendText("printf '\\033]133;C\\007'; sleep 9; echo \(marker); printf '\\033]133;D;0\\007'\r")
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        agent.setAllowInput(true)
+        XCTAssertNotNil(pane.terminalView.outputCapture)
+
+        let started = Date()
+        let sent = Task {
+            await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: "x",
+                                                                   enter: true, wait: 30)), from: claude)
+        }
+        let last = await agent.handle(.init(method: "last-command", params: .init(pane: pane.id.uuidString, wait: 30)),
+                                      from: claude)
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 6, "last --wait gave up on a running command")
+        guard case .object(let row)? = last.result, case .array(let cmds)? = row["commands"],
+              case .object(let cmd)? = cmds.first, case .string(let out)? = cmd["output"] else {
+            return XCTFail("\(String(describing: last))")
+        }
+        // The terminal echoed what the agent typed while it ran; that's on screen too.
+        XCTAssertTrue(out.hasSuffix(marker), out)
+        XCTAssertEqual(cmd["exitCode"], JSONValue(0))
+
+        let s = await sent.value
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 6, "send --wait gave up on a running command")
+        guard case .object(let o)? = s.result, case .object(let result)? = o["result"],
+              case .array(let sc)? = result["commands"], case .object(let c)? = sc.first,
+              case .string(let sentOut)? = c["output"] else {
+            return XCTFail("\(String(describing: s.result))")
+        }
+        XCTAssertTrue(sentOut.hasSuffix(marker), sentOut)
+        XCTAssertEqual(o["waitedOut"], .bool(false))
+    }
+
+    /// A container shell that does carry the integration, opened before typing
+    /// was switched on, records its first command like any other: the decision
+    /// waits until after the send, not before it.
+    func testContainerWithIntegrationIsNotRefusedBeforeItsFirstMarker() async throws {
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        _ = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                               from: claude)
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        agent.setAllowInput(true)   // a fresh capture: no marker seen yet
+
+        // The local shell stands in for a container shell with integration.
+        let marker = "inside-\(UUID().uuidString.prefix(6))"
+        let line = "printf '\\033]133;C\\007'; echo \(marker); printf '\\033]133;D;0\\007'"
+        let r = await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: line,
+                                                                       enter: true, wait: 20)), from: claude)
+        guard case .object(let o)? = r.result, case .object(let result)? = o["result"],
+              case .array(let cmds)? = result["commands"], case .object(let cmd)? = cmds.first else {
+            return XCTFail("refused before the first marker could arrive: \(String(describing: r.result))")
+        }
+        XCTAssertEqual(cmd["output"], .string(marker))
+    }
+
+    /// A login shell runs its rc file's external commands as foreground jobs of
+    /// their own — `brew shellenv`, a version manager, here a `sleep`. Taking
+    /// one of those for the exec, and the shell's return for the exec failing,
+    /// answered "returned to the local shell" before the exec had even been
+    /// read (PR #30 review, on a Mac whose zsh takes 8s to start).
+    func testASlowShellStartupIsNotTakenForAFailedExec() async throws {
+        let home = root.appendingPathComponent("slow-home-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        // Two external commands with the shell itself busy in between, as a real
+        // rc file is: each command takes the foreground, then the shell has it
+        // back while it works through builtins before the next.
+        try "sleep 1\ninteger i\nfor ((i = 0; i < 400000; i++)); do :; done\nsleep 2\n"
+            .write(to: home.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+        let saved = ["HOME", "SHELL"].map { ($0, ProcessInfo.processInfo.environment[$0]) }
+        setenv("HOME", home.path, 1)
+        setenv("SHELL", "/bin/zsh", 1)
+        defer { for (k, v) in saved { if let v { setenv(k, v, 1) } else { unsetenv(k) } } }
+
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+
+        let started = Date()
+        let r = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                                   from: claude)
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"],
+              case .object(let pane)? = panes.first, case .string(let id)? = pane["pane"] else {
+            return XCTFail("\(String(describing: r.error)) \(String(describing: r.result))")
+        }
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 3, "answered while the rc file was still running")
+        XCTAssertEqual(pane["state"], .string("returned to the local shell"))
+        let screen = await agent.handle(.init(method: "screen", params: .init(pane: id)), from: claude)
+        guard case .object(let row)? = screen.result, case .string(let text)? = row["text"] else {
+            return XCTFail("\(String(describing: screen))")
+        }
+        XCTAssertTrue(text.contains("not found"), "the exec had run and failed by then: \(text)")
+    }
 }
+

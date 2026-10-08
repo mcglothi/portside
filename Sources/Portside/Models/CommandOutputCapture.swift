@@ -27,22 +27,35 @@ struct CommandOutputCapture {
     static let kept = 5
 
     private var parser = OSC133Parser()
-    private var stripper = ANSIStripper()
+    private var stripper = ANSIStripper(keepsLineEditing: true)
     private var recording = false
     private var raw: [UInt8] = []
     private var dropped = false
     private var pendingCommand = ""
+    /// Printed while no command was open. A finish with no start seen is a
+    /// command that was already running when the capture began (typing was
+    /// switched on mid-command); this is its output since then. Cleared at
+    /// every prompt and command start, so it never holds a prompt and its
+    /// typing as anyone's output.
+    private var unclaimed: [UInt8] = []
+    private var unclaimedDropped = false
+    static let alreadyRunning = "(already running when typing was switched on)"
     private(set) var completed: [Command] = []
     /// Commands finished since the capture began. Only ever grows, unlike
     /// `completed`, which is capped — so "has a command finished since I
     /// asked?" stays answerable after the fifth one.
     private(set) var finishedTotal = 0
+    /// The terminal's width, kept current by the view. A carriage return goes
+    /// back to the start of the *row*, so a line that wrapped can only be
+    /// replayed knowing where it wrapped. 0 means unknown: each line is then
+    /// treated as one row, which is right for anything that never wrapped.
+    var columns = 0
 
     /// The command still running, with what it has printed so far.
     var running: Command? {
         guard recording else { return nil }
         var copy = stripper
-        return Command(command: pendingCommand, exitCode: nil, output: Self.text(copy.strip(raw)),
+        return Command(command: pendingCommand, exitCode: nil, output: Self.text(copy.strip(raw), columns: columns),
                        truncated: dropped, finished: false)
     }
 
@@ -67,6 +80,12 @@ struct CommandOutputCapture {
                     raw.removeFirst(raw.count - Self.maxBytesPerCommand)
                     dropped = true
                 }
+            } else {
+                unclaimed.append(byte)
+                if unclaimed.count > Self.maxBytesPerCommand {
+                    unclaimed.removeFirst(unclaimed.count - Self.maxBytesPerCommand)
+                    unclaimedDropped = true
+                }
             }
             for marker in parser.consume([byte][...]) {
                 switch marker {
@@ -77,22 +96,38 @@ struct CommandOutputCapture {
                     pendingCommand = text
                 case .commandFinished(let code):
                     if recording { finish(exitCode: code) }
+                    else { finishUnclaimed(exitCode: code) }
                 case .promptStart:
-                    break
+                    unclaimed = []
+                    unclaimedDropped = false
                 }
             }
         }
     }
 
+    /// A finish whose start came before the capture did. Only the first such
+    /// one counts: after it the shell is back at a prompt, and from there on
+    /// every command is seen starting.
+    private mutating func finishUnclaimed(exitCode: Int?) {
+        guard finishedTotal == 0, completed.isEmpty else { return }
+        raw = unclaimed
+        dropped = unclaimedDropped
+        stripper = ANSIStripper(keepsLineEditing: true)
+        pendingCommand = Self.alreadyRunning
+        finish(exitCode: exitCode)
+    }
+
     private mutating func begin() {
+        unclaimed = []
+        unclaimedDropped = false
         recording = true
         raw = []
         dropped = false
-        stripper = ANSIStripper()
+        stripper = ANSIStripper(keepsLineEditing: true)
     }
 
     private mutating func finish(exitCode: Int?) {
-        let output = Self.text(stripper.strip(raw))
+        let output = Self.text(stripper.strip(raw), columns: columns)
         completed.append(Command(command: pendingCommand, exitCode: exitCode, output: output,
                                  truncated: dropped, finished: true))
         finishedTotal += 1
@@ -100,16 +135,81 @@ struct CommandOutputCapture {
         recording = false
         raw = []
         pendingCommand = ""
+        unclaimed = []
+        unclaimedDropped = false
     }
 
-    /// Stripped bytes as text: carriage returns resolved to line ends, and
+    /// Stripped bytes as text: line editing replayed (see `render`), then
     /// control characters (already mostly gone) removed.
-    private static func text(_ bytes: [UInt8]) -> String {
-        String(decoding: bytes, as: UTF8.self)
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+    static func text(_ bytes: [UInt8], columns: Int) -> String {
+        render(String(decoding: bytes, as: UTF8.self), columns: columns)
             .unicodeScalars.filter { $0 == "\n" || $0 == "\t" || !CharacterSet.controlCharacters.contains($0) }
             .reduce(into: "") { $0.unicodeScalars.append($1) }
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Replays CR, BS and erase-in-line (the stripper's `Erase` markers) the
+    /// way the terminal did, so the text is what was on screen rather than
+    /// every keystroke of how it got there.
+    ///
+    /// Treating CR as a line break used to turn a progress bar into one line
+    /// per frame. Dropping it doubled a character at every wrap of a long
+    /// command line: once a line has wrapped, readline returns to the start
+    /// of the new row and rewrites the character it just printed there
+    /// (`…MN\rNOPQ…`), which reads as `MNN` with the CR gone.
+    ///
+    /// The cursor is a column within the current logical line, plus whether a
+    /// wrap is pending: a character written in a row's last column leaves the
+    /// cursor *on* that column until the next character, which is when the
+    /// terminal wraps. Kept as a flag because the column alone can't tell
+    /// "end of a full row" from "start of the next" — the same number — and
+    /// guessing sent a second CR on a wrapped row back to the row above.
+    /// Wide characters count as one column; the cost is an occasional
+    /// misplaced overwrite in CJK output.
+    static func render(_ text: String, columns: Int) -> String {
+        let width = columns > 0 ? columns : Int.max
+        var lines: [String] = []
+        var row: [Character] = []
+        var col = 0
+        var wrapPending = false
+        func rowStart() -> Int { width == .max ? 0 : col / width * width }
+        func rowEnd() -> Int { width == .max ? row.count : min(row.count, rowStart() + width) }
+        func blank(_ range: Range<Int>) {
+            let range = range.clamped(to: 0..<row.count)
+            guard !range.isEmpty else { return }
+            if range.upperBound == row.count { row.removeSubrange(range) }
+            else { row.replaceSubrange(range, with: repeatElement(" ", count: range.count)) }
+        }
+        for ch in text {
+            switch ch {
+            case "\n", "\r\n":
+                lines.append(String(row))
+                row = []
+                col = 0
+                wrapPending = false
+            case "\r":
+                col = rowStart()
+                wrapPending = false
+            case "\u{08}":
+                wrapPending = false
+                if col > rowStart() { col -= 1 }
+            case ANSIStripper.Erase.toEnd.character:
+                blank(col..<rowEnd())
+            case ANSIStripper.Erase.toStart.character:
+                blank(rowStart()..<(col + 1))
+            case ANSIStripper.Erase.line.character:
+                blank(rowStart()..<rowEnd())
+            default:
+                if wrapPending { col += 1; wrapPending = false }
+                if col < row.count { row[col] = ch }
+                else {
+                    row.append(contentsOf: repeatElement(" ", count: col - row.count))
+                    row.append(ch)
+                }
+                if width != .max, (col + 1) % width == 0 { wrapPending = true } else { col += 1 }
+            }
+        }
+        lines.append(String(row))
+        return lines.joined(separator: "\n")
     }
 }

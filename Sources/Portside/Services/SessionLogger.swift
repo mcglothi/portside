@@ -124,6 +124,29 @@ struct ANSIStripper {
     /// Bytes consumed since the current sequence began. Reset on every return
     /// to `.normal`.
     private var sequenceLength = 0
+    /// Keep CR and BS, and mark erase-in-line (CSI K) by mode, for a caller
+    /// that replays line editing instead of discarding it — see
+    /// `CommandOutputCapture.render`. Off for the log, which keeps its bytes
+    /// as text and never had a width to replay them against.
+    private let keepsLineEditing: Bool
+    /// The CSI's parameter bytes so far, for telling EL modes apart.
+    private var csiParameters: [UInt8] = []
+
+    /// Erase-in-line, by mode, as stand-in bytes. Control characters this
+    /// stripper otherwise always drops (the C0 information separators), so
+    /// none can be a real one let through: a raw FS..RS in the stream is gone
+    /// before `render` sees anything.
+    enum Erase: UInt8 {
+        case toEnd = 0x1C     // CSI K, CSI 0 K
+        case toStart = 0x1D   // CSI 1 K
+        case line = 0x1E      // CSI 2 K
+
+        var character: Character { Character(Unicode.Scalar(rawValue)) }
+    }
+
+    init(keepsLineEditing: Bool = false) {
+        self.keepsLineEditing = keepsLineEditing
+    }
 
     /// How long a single escape sequence may run before the stripper assumes
     /// the stream is malformed, gives up, and resumes emitting text.
@@ -162,13 +185,16 @@ struct ANSIStripper {
                 switch b {
                 case 0x1B: state = .escape          // ESC
                 case 0x0A, 0x09: out.append(b)      // keep LF, TAB
-                case 0x0D, 0x08: break              // drop CR, BS (overwrite noise)
+                case 0x0D, 0x08:                    // CR, BS: overwrite noise, unless replayed
+                    if keepsLineEditing { out.append(b) }
                 case 0..<0x20, 0x7F: break          // drop other control chars
                 default: out.append(b)              // printable / UTF-8
                 }
             case .escape:
                 switch b {
-                case 0x5B: state = .csi             // '['
+                case 0x5B:                          // '['
+                    state = .csi
+                    csiParameters = []                  // a CSI cut short (CAN/SUB) leaves its own behind
                 case 0x5D: state = .osc             // ']'
                 case 0x50: state = .dcs             // 'P' (DCS)
                 // SOS / PM / APC are string sequences terminated by ST, same
@@ -182,7 +208,19 @@ struct ANSIStripper {
                 }
             case .csi:
                 // Parameters/intermediates until a final byte 0x40–0x7E.
-                if (0x40...0x7E).contains(b) { state = .normal }
+                if (0x40...0x7E).contains(b) {
+                    state = .normal
+                    if keepsLineEditing, b == 0x4B {                  // EL, by its mode
+                        switch csiParameters {
+                        case [], [0x30]: out.append(Erase.toEnd.rawValue)
+                        case [0x31]: out.append(Erase.toStart.rawValue)
+                        case [0x32]: out.append(Erase.line.rawValue)
+                        default: break    // private or malformed: nothing a screen would erase
+                        }
+                    }
+                } else if keepsLineEditing, csiParameters.count < 16 {
+                    csiParameters.append(b)
+                }
             case .osc:
                 // BEL, or ST in either spelling. 0x9C is the C1 form; treating
                 // it as a terminator can in principle cut an OSC short when

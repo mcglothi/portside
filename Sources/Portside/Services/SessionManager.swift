@@ -45,6 +45,28 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// dialling a host that will never answer stays alive but silent, so
     /// "still running" alone can't distinguish connecting from connected.
     private(set) var sawOutput = false
+    /// Whether this session has *ever* sent an OSC 133 marker, since its first
+    /// byte. A shell with the integration marks every prompt, so one that has
+    /// it said so long before anyone asks. The command capture can't answer
+    /// this: it only exists while typing is on, and starts blind each time.
+    private(set) var sawShellIntegration = false
+    private var markerMatched = 0
+    private static let markerIntroducer: [UInt8] = Array("\u{1B}]133;".utf8)
+
+    /// Matched across reads, since an introducer can straddle two; stops
+    /// looking once found.
+    private func noteShellIntegration(_ slice: ArraySlice<UInt8>) {
+        guard !sawShellIntegration else { return }
+        let needle = Self.markerIntroducer
+        for byte in slice {
+            if byte == needle[markerMatched] {
+                markerMatched += 1
+                if markerMatched == needle.count { sawShellIntegration = true; return }
+            } else {
+                markerMatched = byte == needle[0] ? 1 : 0
+            }
+        }
+    }
     /// Fires when the shell reports a completed command via OSC 133. Sits on
     /// the raw byte tap because SwiftTerm doesn't parse OSC 133 -- it sees the
     /// markers, ignores them, and we read them here on the way past.
@@ -240,11 +262,15 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
+        noteShellIntegration(slice)
         // The log and the command timeline get the bytes as they actually
         // arrived, and so does the terminal. Nothing in this path may rewrite
         // them: transcript offsets have to keep matching what is on disk.
         logger?.append(slice)
-        outputCapture?.consume(slice)
+        if outputCapture != nil {
+            outputCapture?.columns = getTerminal().cols
+            outputCapture?.consume(slice)
+        }
         rememberOutput(slice)
         watchKubernetes(slice)
         onOutput?()
@@ -500,6 +526,81 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// Why a Kubernetes exec didn't reach the pod, while the local shell it was
     /// typed into is still running. Cleared by Try Again or Dismiss.
     @Published var kubernetesDiagnosis: KubernetesDiagnosis?
+
+    /// How far a local container or pod exec has got, read from the pty
+    /// rather than from output text: nil for any other session.
+    ///
+    /// `didConnect` is true for these as soon as the *local* shell runs, which
+    /// says nothing about the container. The terminal does: while kubectl
+    /// (or docker) is still starting — resolving the target, or waiting on a
+    /// browser sign-in such as NKP's — it is in the foreground with the tty
+    /// still cooked; once the exec attaches it puts the tty in raw mode; and if
+    /// it fails or the container shell exits, the local shell is in front
+    /// again. Excludes entries that exec on an ssh host, where ssh holds the
+    /// foreground in raw mode from the start and this reading would lie.
+    enum ExecStage { case starting, attached, returned }
+
+    private var execTypedAt: Date?
+    private var execWasInFront = false
+    private var shellIdleSince: Date?
+
+    /// The exec command has just been typed into the local shell, first or
+    /// again (Try Again): its stage starts over.
+    @MainActor func execTyped() {
+        execTypedAt = Date()
+        execWasInFront = false
+        shellIdleSince = nil
+    }
+
+    /// The program the exec runs as: kubectl or oc, or the container engine.
+    private var execCLI: String {
+        switch entry?.kind {
+        case .kubernetes?: return entry?.kubernetes?.binary.rawValue ?? KubernetesTarget.Binary.kubectl.rawValue
+        default: return entry?.container?.engine.rawValue ?? ContainerTarget.Engine.docker.rawValue
+        }
+    }
+
+    /// Whether process group `group`'s leader runs `name` — by its executable's
+    /// file name, so a full path or a versioned copy (`kubectl-1.31`) counts.
+    static func isExecutable(_ group: pid_t, named name: String) -> Bool {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let path = proc_pidpath(group, &buffer, UInt32(buffer.count)) > 0 ? String(cString: buffer) : ""
+        var short = [CChar](repeating: 0, count: 256)
+        let comm = proc_name(group, &short, UInt32(short.count)) > 0 ? String(cString: short) : ""
+        return [(path as NSString).lastPathComponent, comm].contains { $0 == name || $0.hasPrefix(name + "-") }
+    }
+
+    @MainActor func execStage() -> ExecStage? {
+        guard entry?.usesLocalTransport == true, isRunning,
+              let process = terminalView.process, process.running else { return nil }
+        let front = tcgetpgrp(process.childfd)
+        var settings = termios()
+        guard front > 0, tcgetattr(process.childfd, &settings) == 0 else { return .starting }
+        let lineEditor = settings.c_lflag & tcflag_t(ICANON) == 0 && settings.c_lflag & tcflag_t(ECHO) == 0
+        guard front == getpgid(process.shellPid) else {
+            shellIdleSince = nil
+            // Only the exec itself counts. A login shell runs its rc file's
+            // external commands (`brew shellenv`, a version manager) as
+            // foreground jobs of their own; taking one of those for the exec
+            // made the shell's return read as the exec failing, before the
+            // exec had even been read (PR #30 review).
+            guard Self.isExecutable(front, named: execCLI) else { return .starting }
+            execWasInFront = true
+            return lineEditor ? .attached : .starting
+        }
+        if execWasInFront { return .returned }
+        // An exec that fails at once (command not found, an unknown context)
+        // can come and go between two looks. What remains is the local shell
+        // back at its prompt with the exec already typed — waiting in its line
+        // editor, steadily, rather than still starting up with the line queued.
+        guard let typed = execTypedAt, lineEditor, Date().timeIntervalSince(typed) > 1 else {
+            shellIdleSince = nil
+            return .starting
+        }
+        let since = shellIdleSince ?? Date()
+        shellIdleSince = since
+        return Date().timeIntervalSince(since) >= 0.5 ? .returned : .starting
+    }
 
     /// Whether something on the other end is currently reading a secret.
     ///
@@ -1285,7 +1386,9 @@ final class SessionManager: ObservableObject {
         }
         if let command = entry.postConnectCommand {
             if entry.kind == .kubernetes { watchKubernetesExec(session, entry: entry) }
-            sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout)
+            sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout) {
+                [weak session] in if entry.usesLocalTransport { session?.execTyped() }
+            }
         }
         // Logged immediately so a failure leaves a trace, but deliberately not
         // counted: only a confirmed connection updates the totals that drive
@@ -1366,19 +1469,21 @@ final class SessionManager: ObservableObject {
         guard let entry = session.entry, let command = entry.postConnectCommand, session.isRunning else { return }
         watchKubernetesExec(session, entry: entry)
         session.sendText(command + "\r")
+        if entry.usesLocalTransport { session.execTyped() }
     }
 
     private func sendWhenNotPrompting(_ command: String, to session: TerminalSession,
-                                      deadline: DispatchTime) {
+                                      deadline: DispatchTime, sent: (() -> Void)? = nil) {
         guard session.isRunning else { return }   // died during auth; nothing to send to
         guard session.isReadingSecret, DispatchTime.now() < deadline else {
             session.sendText(command + "\r")
+            sent?()
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.postConnectPollInterval) {
             [weak self, weak session] in
             guard let self, let session else { return }
-            self.sendWhenNotPrompting(command, to: session, deadline: deadline)
+            self.sendWhenNotPrompting(command, to: session, deadline: deadline, sent: sent)
         }
     }
 
