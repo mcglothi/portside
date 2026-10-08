@@ -258,6 +258,13 @@ exists to fill that gap without giving up native speed and macOS polish.
   updating from, not just the latest release's own notes, since releases
   ship fast enough that auto-updaters often jump several versions at once.
 
+- ✅ **Agent Access** — Claude Code, Codex or your own scripts can list hosts,
+  open sessions, and (with a second switch) type into and read them, through
+  the `portside` command or as MCP tools (`portside mcp`). Every program is
+  approved by name; protected hosts and multi-line input ask every time;
+  commands are staged for you to run unless the agent is told otherwise; an
+  agent never arms MultiExec or types at a password prompt. Optional, scoped
+  "Don't Ask" mode for trusted setups. See [docs/agent-api.md](docs/agent-api.md).
 - ✅ **Shared inventory** — subscribe to a team's hosts in a git repo, shown
   read-only beside your own, with your own settings layered on top. Plain
   `git`, fast-forward only, manifest sanitized. See

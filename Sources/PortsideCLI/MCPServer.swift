@@ -66,10 +66,14 @@ struct MCPServer {
                 "ids": ["type": "array", "items": ["type": "string"],
                         "description": "Host ids from portside_list_hosts, instead of a query."],
                 "grid": ["type": "boolean", "description": "One tab split into a grid. Default false."],
+                "wait": ["type": "integer", "description": "Seconds to wait until every session has connected "
+                         + "(or failed, or is at a password prompt) before answering, with each one's state. "
+                         + "Max 120."],
              ],
              readOnly: false, method: "connect",
              params: { args in
                  var p: [String: Any] = ["layout": (args["grid"] as? Bool == true) ? "grid" : "tabs"]
+                 if let w = args["wait"] as? Int { p["wait"] = w }
                  if let ids = args["ids"] as? [String], !ids.isEmpty { p["ids"] = ids }
                  else if let q = args["query"] as? String { p["query"] = q }
                  else { return nil }
@@ -108,6 +112,9 @@ struct MCPServer {
                           + "false: the text is left at the prompt for the user."],
                 "key": ["type": "string", "enum": ["enter", "tab", "escape", "ctrl-c", "ctrl-d"],
                         "description": "Press one key instead of typing text."],
+                "wait": ["type": "integer", "description": "With enter=true: seconds to wait for the command to "
+                         + "finish, then return its exit code and output in this same call (needs shell "
+                         + "integration). Max 120."],
              ],
              required: ["pane"], readOnly: false, destructive: true, method: "send",
              params: { args in
@@ -117,6 +124,7 @@ struct MCPServer {
                  else if let text = args["text"] as? String { p["text"] = text }
                  else { return nil }
                  if args["enter"] as? Bool == true { p["enter"] = true }
+                 if let w = args["wait"] as? Int { p["wait"] = w }
                  return p
              }),
         Tool(name: "portside_read_screen",
@@ -148,12 +156,15 @@ struct MCPServer {
                          + "id, or the host name."],
                 "count": ["type": "integer", "description": "How many recent commands, most recent first "
                           + "(default 1, max 5)."],
+                "wait": ["type": "integer", "description": "Seconds to wait for a command that's still running "
+                         + "to finish before answering (one pane only). Max 120."],
              ],
              required: ["pane"], method: "last-command",
              params: { args in
                  guard let pane = args["pane"] as? String else { return nil }
                  var p: [String: Any] = ["pane": pane]
                  if let n = args["count"] as? Int { p["count"] = n }
+                 if let w = args["wait"] as? Int { p["wait"] = w }
                  return p
              }),
     ]

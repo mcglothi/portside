@@ -15,15 +15,17 @@ usage: portside <command> [args] [--json] [--socket PATH]
   hosts [QUERY]                  list hosts, optionally filtered (sidebar syntax)
   groups                         list saved groups
   tabs                           list open tabs and their panes
-  connect QUERY [--grid]         open matching hosts (one tab each, or one grid)
+  connect QUERY [--grid] [--wait S]  open matching hosts; --wait until connected
   connect --ids ID,ID [--grid]   open hosts by id
   open-group NAME                open a saved group
   focus TAB                      bring a tab forward (id or title)
   close TAB                      close a tab (id or title)
-  send PANE TEXT [--enter]       type into one pane (needs typing turned on)
+  send PANE TEXT [--enter]       type into one pane (needs typing turned on);
+                                 with --enter --wait S, run it and print the result
   send PANE --key KEY            press enter, tab, escape, ctrl-c or ctrl-d
   screen PANE [--lines N]        read a pane's screen as plain text
-  last PANE [--count N]          the last command(s) in a pane: text, exit code, output
+  last PANE [--count N] [--wait S]  the last command(s) in a pane: text, exit code,
+                                 output; --wait until one that's running finishes
                                  PANE may be `current` (the pane you're looking at) or,
                                  for screen and last, `tab` (every pane in that tab)
   mcp                            run as an MCP server on stdio (for Claude Code, etc.)
@@ -53,6 +55,7 @@ var enter = false
 var key: String?
 var lineCount: Int?
 var commandCount: Int?
+var waitSeconds: Int?
 var ids: [String]?
 var positional: [String] = []
 
@@ -67,6 +70,10 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("--key needs a key name", .usage) }
         key = args[i]
+    case "--wait":
+        i += 1
+        guard i < args.count, let n = Int(args[i]) else { fail("--wait needs a number of seconds", .usage) }
+        waitSeconds = n
     case "--count":
         i += 1
         guard i < args.count, let n = Int(args[i]) else { fail("--count needs a number", .usage) }
@@ -146,6 +153,7 @@ default:
     fail("unknown command \u{201C}\(command)\u{201D}\n\n\(usage)", .usage)
 }
 
+if let waitSeconds, ["connect", "send", "last-command"].contains(method) { params["wait"] = waitSeconds }
 let response: [String: Any]
 switch AgentSocket.call(method, params, socket: AgentSocket.path(override: socketOverride)) {
 case .success(let reply): response = reply
@@ -233,6 +241,13 @@ case "open-group":
 case "send":
     let r = result as? [String: Any] ?? [:]
     print("Typed into \(str(r["host"]).isEmpty ? str(r["pane"]) : str(r["host"])).")
+    if let row = r["result"] as? [String: Any], let c = (row["commands"] as? [[String: Any]])?.first {
+        let status = (c["finished"] as? Bool == true) ? "exit \(str(c["exitCode"]))" : "still running"
+        print("\u{1B}[1m$ \(str(c["command"]))\u{1B}[0m  (\(status))")
+        print(str(c["output"]))
+    } else if r["waitedOut"] as? Bool == true {
+        print("(gave up waiting; it may still be running)")
+    }
 case "screen":
     let r = result as? [String: Any] ?? [:]
     print(str(r["text"]))

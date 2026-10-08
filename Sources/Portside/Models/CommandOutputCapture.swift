@@ -33,6 +33,10 @@ struct CommandOutputCapture {
     private var dropped = false
     private var pendingCommand = ""
     private(set) var completed: [Command] = []
+    /// Commands finished since the capture began. Only ever grows, unlike
+    /// `completed`, which is capped — so "has a command finished since I
+    /// asked?" stays answerable after the fifth one.
+    private(set) var finishedTotal = 0
 
     /// The command still running, with what it has printed so far.
     var running: Command? {
@@ -81,6 +85,7 @@ struct CommandOutputCapture {
         let output = Self.text(stripper.strip(raw))
         completed.append(Command(command: pendingCommand, exitCode: exitCode, output: output,
                                  truncated: dropped, finished: true))
+        finishedTotal += 1
         if completed.count > Self.kept { completed.removeFirst(completed.count - Self.kept) }
         recording = false
         raw = []

@@ -59,10 +59,14 @@ final class AgentController: ObservableObject {
         /// Off by default: Don't Ask turns itself off when Portside quits, so
         /// a session of trust doesn't become a standing one by accident.
         var dontAskPersists = false
+        /// Hosts Don't Ask covers, in the sidebar filter syntax ("" = all).
+        /// A prompt about any host outside it — or a local shell, which has
+        /// no host to match — still asks.
+        var dontAskScope = ""
 
         enum CodingKeys: String, CodingKey {
             case enabled, connectCap, approvals, allowInput, dontAsk, dontAskAllowed, dontAskIncludesProtected
-            case dontAskPersists
+            case dontAskPersists, dontAskScope
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -76,6 +80,7 @@ final class AgentController: ObservableObject {
             dontAskAllowed = try c.decodeIfPresent(Bool.self, forKey: .dontAskAllowed) ?? dontAsk
             dontAskIncludesProtected = try c.decodeIfPresent(Bool.self, forKey: .dontAskIncludesProtected) ?? false
             dontAskPersists = try c.decodeIfPresent(Bool.self, forKey: .dontAskPersists) ?? false
+            dontAskScope = try c.decodeIfPresent(String.self, forKey: .dontAskScope) ?? ""
         }
     }
 
@@ -198,6 +203,7 @@ final class AgentController: ObservableObject {
         if !on {
             settings.dontAskIncludesProtected = false
             settings.dontAskPersists = false
+            settings.dontAskScope = ""
         }
         saveSettings()
         recordEvent(on ? "Don\u{2019}t Ask allowed and turned on" : "Don\u{2019}t Ask disallowed")
@@ -223,9 +229,43 @@ final class AgentController: ObservableObject {
         saveSettings()
     }
 
+    /// What a scope would cover, for the settings field: matched and total
+    /// hosts, or nil when the pattern doesn't parse.
+    func scopeCoverage(_ scope: String) -> (matched: Int, total: Int)? {
+        let all = store?.allEntries ?? []
+        let text = scope.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return (all.count, all.count) }
+        let query = HostQuery(text)
+        guard query.invalidPatterns.isEmpty else { return nil }
+        let names = Dictionary((store?.credentialProfiles ?? []).map { ($0.id, $0.name) },
+                               uniquingKeysWith: { a, _ in a })
+        return (all.filter { query.matches($0, profileNames: names) }.count, all.count)
+    }
+
+    func setDontAskScope(_ scope: String) {
+        let trimmed = scope.trimmingCharacters(in: .whitespaces)
+        guard trimmed != settings.dontAskScope else { return }
+        settings.dontAskScope = trimmed
+        saveSettings()
+        recordEvent(trimmed.isEmpty ? "Don\u{2019}t Ask scope cleared (all hosts)"
+                                    : "Don\u{2019}t Ask scoped to \u{201C}\(trimmed)\u{201D}")
+    }
+
     /// Whether a prompt would be answered automatically right now.
-    func skipsPrompt(protected: Bool) -> Bool {
-        settings.dontAskAllowed && settings.dontAsk && (!protected || settings.dontAskIncludesProtected)
+    ///
+    /// `hosts` is what the prompt is about: nil for a prompt about no host in
+    /// particular (letting a program in), or the hosts involved — a nil
+    /// element being a local shell. With a scope set, every one must match it.
+    /// An unparsable scope covers nothing rather than everything.
+    func skipsPrompt(protected: Bool, hosts: [SessionEntry?]? = nil) -> Bool {
+        guard settings.dontAskAllowed, settings.dontAsk,
+              !protected || settings.dontAskIncludesProtected else { return false }
+        guard !settings.dontAskScope.isEmpty, let hosts else { return true }
+        let query = HostQuery(settings.dontAskScope)
+        guard query.invalidPatterns.isEmpty, !hosts.isEmpty else { return false }
+        let names = Dictionary((store?.credentialProfiles ?? []).map { ($0.id, $0.name) },
+                               uniquingKeysWith: { a, _ in a })
+        return hosts.allSatisfy { host in host.map { query.matches($0, profileNames: names) } ?? false }
     }
 
     func setConnectCap(_ cap: Int) {
@@ -314,14 +354,15 @@ final class AgentController: ObservableObject {
     /// touches is decided before any prompt: typing at a password prompt,
     /// arming MultiExec, and typing at all while the typing switch is off.
     /// Each skipped prompt is still written to the log.
-    private func ask(_ title: String, _ message: String, choices: [String], protected: Bool = false) async -> Int? {
+    private func ask(_ title: String, _ message: String, choices: [String], protected: Bool = false,
+                     hosts: [SessionEntry?]? = nil) async -> Int? {
         // A prompt that can't show its refusal is never shown. Refusing here
         // fails safe; a debug build stops so the mistake is found at once.
         guard choices.count <= Self.maxChoices else {
             assertionFailure("Agent prompt with \(choices.count) choices; the refusal would be hidden")
             return nil
         }
-        if skipsPrompt(protected: protected) {
+        if skipsPrompt(protected: protected, hosts: hosts) {
             recordEvent("auto-approved: \(title) \u{2192} \(choices[0])")
             return 0
         }
@@ -478,19 +519,38 @@ final class AgentController: ObservableObject {
                     + (hosts.count > 12 ? ", \u{2026}" : "")
                 let ok = await ask("\u{201C}\(client.name)\u{201D} wants to connect to \(hosts.count) host\(hosts.count == 1 ? "" : "s")",
                                    "This needs your OK because it includes \(reason).\n\n\(list)",
-                                   choices: ["Connect", "Cancel"], protected: hosts.contains(where: \.isProtected))
+                                   choices: ["Connect", "Cancel"], protected: hosts.contains(where: \.isProtected),
+                                   hosts: hosts)
                 guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
             }
             let before = Set(sessions.tabs.map(\.id))
             sessions.connectAll(hosts.map(store.resolved), multiExec: grid, armed: false)
             let opened = sessions.tabs.filter { !before.contains($0.id) }
             agentTabs.formUnion(opened.map(\.id))
-            return .success(.object([
+            var result: [String: JSONValue] = [
                 "opened": .array(hosts.map { .string($0.name) }),
                 "tabs": .array(opened.map { .string($0.id.uuidString) }),
                 "layout": .string(grid ? "grid" : "tabs"),
                 "multiExecArmed": .bool(false),
-            ]))
+            ]
+            // Wait until each session has either connected or ended, so an
+            // agent can go straight on to the next step instead of polling.
+            if let seconds = params.wait, seconds > 0 {
+                let panes = opened.flatMap(\.leaves)
+                let finished = await waitUntil(seconds: seconds) {
+                    panes.allSatisfy { $0.didConnect || !$0.isRunning || $0.isReadingSecret }
+                }
+                result["waitedOut"] = .bool(!finished)
+                result["panes"] = .array(panes.map { pane in
+                    .object([
+                        "pane": .string(pane.id.uuidString),
+                        "host": JSONValue(pane.entry?.name),
+                        "state": .string(pane.didConnect ? "connected" : !pane.isRunning ? "ended"
+                                         : pane.isReadingSecret ? "waiting for a password" : "connecting"),
+                    ])
+                })
+            }
+            return .success(.object(result))
 
         case .openGroup:
             guard let group = findGroup(params, in: store) else {
@@ -500,7 +560,8 @@ final class AgentController: ObservableObject {
             if let reason = AgentPolicy.connectConfirmation(for: members, cap: settings.connectCap) {
                 let ok = await ask("\u{201C}\(client.name)\u{201D} wants to open \u{201C}\(group.name)\u{201D}",
                                    "This needs your OK because it includes \(reason).",
-                                   choices: ["Open", "Cancel"], protected: members.contains(where: \.isProtected))
+                                   choices: ["Open", "Cancel"], protected: members.contains(where: \.isProtected),
+                                   hosts: members)
                 guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
             }
             let before = Set(sessions.tabs.map(\.id))
@@ -525,7 +586,7 @@ final class AgentController: ObservableObject {
                 let names = tab.leaves.map(\.title).joined(separator: ", ")
                 let ok = await ask("\u{201C}\(client.name)\u{201D} wants to close a tab it didn\u{2019}t open",
                                    "Closing ends these sessions: \(names)",
-                                   choices: ["Close", "Cancel"])
+                                   choices: ["Close", "Cancel"], hosts: tab.leaves.map(\.entry))
                 guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
             }
             sessions.closeTab(tab)
@@ -570,7 +631,8 @@ final class AgentController: ObservableObject {
                 let choices = allowPane ? ["Allow for This Pane", "Allow Once", "Don\u{2019}t Allow"]
                                         : ["Allow Once", "Don\u{2019}t Allow"]
                 let answer = await ask("\u{201C}\(client.name)\u{201D} wants to type into \(paneName(pane))",
-                                       "\(shown)" + reason, choices: choices, protected: protected)
+                                       "\(shown)" + reason, choices: choices, protected: protected,
+                                       hosts: [pane.entry])
                 guard let answer, answer < choices.count - 1 else {
                     return .failure(answer == nil ? .timedOut : .declined)
                 }
@@ -581,16 +643,32 @@ final class AgentController: ObservableObject {
                     return .failure(.badRequest("\(paneName(pane)) changed while waiting; nothing was typed."))
                 }
             }
+            let baseline = pane.terminalView.outputCapture?.finishedTotal
             pane.sendText(keys)
             agentTypedAt[pane.id] = Date()
-            return .success(.object(["pane": .string(pane.id.uuidString), "host": JSONValue(pane.entry?.name),
-                                     "typed": JSONValue(keys.count)]))
+            var result: [String: JSONValue] = ["pane": .string(pane.id.uuidString),
+                                               "host": JSONValue(pane.entry?.name),
+                                               "typed": JSONValue(keys.count)]
+            // Type, run, wait, read — one round trip. Only for something that
+            // was actually run (ends in Return), and only where shell
+            // integration marks when it finishes.
+            if let seconds = params.wait, seconds > 0, keys.hasSuffix("\r"), let baseline {
+                let finished = await waitUntil(seconds: seconds) {
+                    (pane.terminalView.outputCapture?.finishedTotal ?? baseline) > baseline || !pane.isRunning
+                }
+                result["waitedOut"] = .bool(!finished)
+                result["result"] = commandsRow(pane, count: 1, tailLines: 200)
+            }
+            return .success(.object(result))
 
         case .lastCommand, .screen:
             let panes: [TerminalSession]
             switch readTargets(params, in: sessions, caller: client) {
             case .success(let found): panes = found
             case .failure(let failure): return .failure(failure)
+            }
+            if params.wait != nil, method != .lastCommand || panes.count != 1 {
+                return .failure(.badRequest("wait applies to last-command on one pane."))
             }
             // One question for however many panes, naming each.
             let unread = panes.filter { !typingPanes.contains($0.id) }
@@ -603,9 +681,20 @@ final class AgentController: ObservableObject {
                     (unread.count == 1 ? "" : "\(names)\n\n") + "It will see \(what). Allowing this also lets it "
                         + "type into \(unread.count == 1 ? "this pane" : "these panes"), asking again for protected "
                         + "hosts and multi-line input.",
-                    choices: [unread.count == 1 ? "Allow for This Pane" : "Allow for These Panes", "Don\u{2019}t Allow"])
+                    choices: [unread.count == 1 ? "Allow for This Pane" : "Allow for These Panes", "Don\u{2019}t Allow"],
+                    hosts: unread.map(\.entry))
                 guard answer == 0 else { return .failure(answer == nil ? .timedOut : .declined) }
                 typingPanes.formUnion(unread.map(\.id))
+            }
+            // Run, then wait: answer once a command finishes that hadn't when
+            // asked — the one the agent just started — instead of the agent
+            // polling and paying for every look.
+            var waitedOut = false
+            if let seconds = params.wait, seconds > 0, let pane = panes.first,
+               let baseline = pane.terminalView.outputCapture?.finishedTotal {
+                waitedOut = !(await waitUntil(seconds: seconds) {
+                    (pane.terminalView.outputCapture?.finishedTotal ?? baseline) > baseline || !pane.isRunning
+                })
             }
             // Reading a whole tab keeps each pane short, so six hosts cost
             // what one used to.
@@ -617,6 +706,10 @@ final class AgentController: ObservableObject {
             if !several, case .object(let only)? = rows.first, only["error"] != nil, method == .lastCommand {
                 return .failure(.notFound("No commands recorded for \(paneName(panes[0])) yet. This needs shell "
                     + "integration on that host (Settings \u{25B8} Terminal); use screen instead."))
+            }
+            if params.wait != nil, case .object(var only)? = rows.first {
+                only["waitedOut"] = .bool(waitedOut)
+                return .success(.object(only))
             }
             return .success(several
                 ? .object(["untrusted": .bool(true),
@@ -715,6 +808,17 @@ final class AgentController: ObservableObject {
             ])
         })
         return .object(row)
+    }
+
+    /// Polls `condition` until it holds or `seconds` (capped at 120) pass.
+    /// Returns whether it held.
+    private func waitUntil(seconds: Int, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(TimeInterval(min(max(seconds, 1), 120)))
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return condition()
     }
 
     private func paneName(_ pane: TerminalSession) -> String {

@@ -9,6 +9,7 @@ struct AgentSettingsView: View {
     @State private var showingLog = false
     @State private var confirmingDontAsk = false
     @State private var confirmingProtected = false
+    @State private var scopeDraft: String?
 
     /// The CLI inside this app bundle.
     static var bundledCLI: URL {
@@ -106,6 +107,7 @@ struct AgentSettingsView: View {
                          ? "On now. Disable or enable it any time from the \u{26A1} in the toolbar."
                          : "Allowed, but off right now \u{2014} enable it from the \u{26A1} in the toolbar.")
                         .font(.caption).foregroundStyle(.secondary)
+                    scopeField
                     Toggle("Also for protected hosts", isOn: Binding(
                         get: { agent.settings.dontAskIncludesProtected },
                         set: { on in on ? (confirmingProtected = true) : agent.setDontAskIncludesProtected(false) }))
@@ -183,6 +185,37 @@ struct AgentSettingsView: View {
         } message: {
             Text("You marked these hosts protected so that nothing reaches them by accident. With this on, an "
                  + "agent can connect to them and type into them without asking.")
+        }
+    }
+
+    /// Which hosts Don't Ask covers, in the sidebar filter syntax. Applied on
+    /// Return, so the log records the scope chosen rather than every keystroke.
+    @ViewBuilder private var scopeField: some View {
+        let draft = scopeDraft ?? agent.settings.dontAskScope
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Only for hosts matching")
+                TextField("", text: Binding(get: { draft }, set: { scopeDraft = $0 }),
+                          prompt: Text("all hosts \u{2014} e.g. env:dev folder:lab"))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body.monospaced())
+                    .onSubmit { agent.setDontAskScope(draft); scopeDraft = nil }
+                if scopeDraft != nil && draft != agent.settings.dontAskScope {
+                    Button("Apply") { agent.setDontAskScope(draft); scopeDraft = nil }
+                }
+            }
+            Group {
+                if let coverage = agent.scopeCoverage(draft) {
+                    Text(draft.trimmingCharacters(in: .whitespaces).isEmpty
+                         ? "Covers every host, and local shells."
+                         : "Covers \(coverage.matched) of \(coverage.total) hosts. Anything else, and local "
+                           + "shells, still asks.")
+                } else {
+                    Text("That pattern doesn\u{2019}t parse, so Don\u{2019}t Ask would cover nothing.")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -293,10 +326,11 @@ private struct AgentPopoverContent: View {
                     Spacer()
                     Button(on ? "Disable" : "Enable") { agent.setDontAsk(!on) }
                 }
+                let scope = agent.settings.dontAskScope
                 Text(!on ? "Agents ask for confirmation as usual."
-                     : agent.settings.dontAskIncludesProtected
-                     ? "Agents act without asking, protected hosts included."
-                     : "Agents act without asking, except on protected hosts.")
+                     : (scope.isEmpty ? "Agents act without asking" : "Agents act without asking on \(scope)")
+                       + (agent.settings.dontAskIncludesProtected ? ", protected hosts included."
+                                                                  : ", except on protected hosts."))
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
             }

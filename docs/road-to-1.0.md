@@ -160,6 +160,31 @@ pre-migration copy so going back is possible.
 and the same restore point, and the pattern should be documented rather than
 remembered.
 
+
+### 6. Agent Access has mileage, and its refusals hold
+
+**Where it stands:** built at 0.30.0, with one user, and new.
+
+It's the largest new attack surface Portside has: programs on the Mac that
+type into the user's SSH sessions. Building it turned up exactly the class of
+bug this document worries about, and every one of them was found by watching
+the real app rather than by tests:
+
+- An approval prompt was answered "Allow" with nobody clicking. It never
+  reproduced, but the answer was the default button, so a refusal is now the
+  default and approvals are ignored for the first 0.6 s.
+- A four-choice prompt silently lost its "Don't Allow", because SwiftUI's alert
+  shows three buttons. Prompts are now capped at three.
+- The pre-existing "is this a password prompt?" check read every live session
+  as one.
+
+**What would satisfy it:** the same as MultiExec's gate. That means real use
+by more than one person, with at least one agent that isn't Claude Code, and
+no finding that a refusal didn't hold: a prompt skipped, a protected host
+reached unasked, or text typed somewhere it was refused. The Don't Ask mode
+should have been used in anger too, and found annoying in at least one
+direction.
+
 ---
 
 ## Scope: what goes in before 1.0
@@ -267,8 +292,9 @@ The maintainer's call, not a readiness question.
   is invisible to it. The target list is a proposal; the verify phase is what
   makes it true.
 
-Everything else currently on the table is explicitly **1.x**, not 1.0: CLI and
-URL scheme, tmux control mode, triggers and notifications, connection
+Everything else currently on the table is explicitly **1.x**, not 1.0. The CLI
+and agent access shipped early at 0.30.0, so they now fall under gate 6 above.
+The rest: URL scheme, tmux control mode, triggers and notifications, connection
 diagnostics, Touch ID gating, dynamic inventory providers, Intel support.
 
 1.0 does not mean "has everything". It means what it has, it does properly.
