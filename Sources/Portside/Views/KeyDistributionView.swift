@@ -429,7 +429,7 @@ struct KeyDistributionView: View {
         // It also means the user shown next to each host is the one the key
         // will actually be installed for.
         plan = KeyDistributionPlan(
-            candidates: KeyDistributionPlan.candidates(from: store.entries.map(store.resolved)),
+            candidates: KeyDistributionPlan.candidates(from: store.allEntries.map(store.resolved)),
             selected: preselected
         )
         // Prefilled only when every selected host already resolves to this

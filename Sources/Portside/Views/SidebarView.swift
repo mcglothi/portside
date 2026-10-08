@@ -687,7 +687,7 @@ struct SidebarView: View {
 
     /// Opens every currently selected host (in sidebar order).
     private func openSelected(multiExec: Bool) {
-        let entries = store.entries
+        let entries = store.allEntries
             .filter { selection.contains($0.id) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             .map(store.resolved)

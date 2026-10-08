@@ -793,7 +793,7 @@ struct HostOutlineView: NSViewRepresentable {
             let store = parent.store
             guard CredentialProfileKey.publicKeyPath(for: profile) != nil else { return }
             let affected = KeyDistributionPlan.candidates(
-                from: store.entries.filter { ids.contains($0.id) })
+                from: store.allEntries.filter { ids.contains($0.id) })
             guard !affected.isEmpty else { return }
 
             let alert = NSAlert()

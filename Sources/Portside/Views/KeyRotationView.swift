@@ -493,7 +493,7 @@ struct KeyRotationView: View {
         // Resolved, not raw — the same rule the push path follows, so the
         // account each key lands in is the one ssh will actually log in as.
         plan = KeyDistributionPlan(
-            candidates: KeyDistributionPlan.candidates(from: store.entries.map(store.resolved)),
+            candidates: KeyDistributionPlan.candidates(from: store.allEntries.map(store.resolved)),
             selected: preselected
         )
         keys = await PublicKeyLocator.discover()
