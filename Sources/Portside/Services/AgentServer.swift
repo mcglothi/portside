@@ -210,6 +210,19 @@ final class AgentServer: @unchecked Sendable {
         return fallback
     }
 
+    /// Whether `pid` is `ancestor` or runs somewhere beneath it — how a pane
+    /// that hosts the calling agent itself is recognised.
+    static func isProcess(_ pid: pid_t, descendantOf ancestor: pid_t) -> Bool {
+        guard ancestor > 1 else { return false }
+        var current = pid
+        for _ in 0..<32 {
+            if current == ancestor { return true }
+            guard current > 1, let info = processInfo(current) else { return false }
+            current = info.parent
+        }
+        return false
+    }
+
     private static func processInfo(_ pid: pid_t) -> (name: String, parent: pid_t)? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride

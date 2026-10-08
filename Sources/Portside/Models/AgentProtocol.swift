@@ -42,6 +42,21 @@ enum AgentProtocol {
         var name: String?
         /// `tabs` (one per host, the default) or `grid` (one tab, split).
         var layout: String?
+        /// A pane, by id (from `tabs`), by host name when only one pane shows
+        /// that host, or `current` for the one the user is looking at — for
+        /// `send`, `screen` and `last-command`.
+        var pane: String?
+        /// Text to type, for `send`. Control characters are dropped; a
+        /// newline is Return.
+        var text: String?
+        /// Press Return after the text.
+        var enter: Bool?
+        /// A single key instead of text: enter, tab, escape, ctrl-c, ctrl-d.
+        var key: String?
+        /// How many lines of the pane to return, for `screen`.
+        var lines: Int?
+        /// How many recent commands to return, for `last-command`.
+        var count: Int?
     }
 
     struct Response: Codable, Sendable {
@@ -70,6 +85,9 @@ enum AgentProtocol {
         case read = 1
         /// Open sessions and groups, focus and close tabs.
         case open = 2
+        /// Type into a session and read its screen. Only grantable while
+        /// "Allow agents to type into sessions" is on.
+        case input = 3
 
         static func < (a: Tier, b: Tier) -> Bool { a.rawValue < b.rawValue }
 
@@ -77,6 +95,7 @@ enum AgentProtocol {
             switch self {
             case .read: return "Read only"
             case .open: return "Read and open sessions"
+            case .input: return "Read, open and type"
             }
         }
     }
@@ -84,11 +103,13 @@ enum AgentProtocol {
     enum Method: String, CaseIterable {
         case status, hosts, groups, tabs
         case connect, openGroup = "open-group", focus, close
+        case send, screen, lastCommand = "last-command"
 
         var tier: Tier {
             switch self {
             case .status, .hosts, .groups, .tabs: return .read
             case .connect, .openGroup, .focus, .close: return .open
+            case .send, .screen, .lastCommand: return .input
             }
         }
     }
@@ -181,6 +202,52 @@ enum AgentPolicy {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         guard !matched.isEmpty else { return .failure(.notFound("No hosts match \u{201C}\(text)\u{201D}.")) }
         return .success(matched)
+    }
+
+    /// What `send` will actually type: control characters dropped (an agent
+    /// can't smuggle escape sequences or ^D into a shell through text), a
+    /// newline becomes Return, and a named key stands alone.
+    static func keystrokes(text: String?, enter: Bool, key: String?) -> Result<String, AgentProtocol.Failure> {
+        if let key {
+            let keys: [String: String] = ["enter": "\r", "return": "\r", "tab": "\t", "escape": "\u{1B}",
+                                          "ctrl-c": "\u{3}", "ctrl-d": "\u{4}"]
+            guard let k = keys[key.lowercased()] else {
+                return .failure(.badRequest("Unknown key \u{201C}\(key)\u{201D}. Use enter, tab, escape, ctrl-c or ctrl-d."))
+            }
+            return .success(k)
+        }
+        guard let text, !text.isEmpty else { return .failure(.badRequest("Give text or a key.")) }
+        var out = ""
+        for scalar in text.unicodeScalars {
+            if scalar == "\n" || scalar == "\r" { out += "\r" }
+            else if scalar == "\t" { out += "\t" }
+            else if !CharacterSet.controlCharacters.contains(scalar) { out.unicodeScalars.append(scalar) }
+        }
+        if enter && !out.hasSuffix("\r") { out += "\r" }
+        guard !out.isEmpty else { return .failure(.badRequest("Nothing left to type once control characters were removed.")) }
+        return .success(out)
+    }
+
+    /// Whether the last line on screen is asking for a secret. Used only to
+    /// *refuse* typing, so it leans towards yes.
+    static func looksLikeSecretPrompt(_ lastLine: String) -> Bool {
+        let line = lastLine.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !line.isEmpty, line.count < 200 else { return false }
+        let words = ["password", "passphrase", "passcode", "verification code", "one-time code", "otp",
+                     "pin:", "token:", "secret:", "[sudo]"]
+        return words.contains { line.contains($0) } && (line.hasSuffix(":") || line.hasSuffix("?")
+            || line.hasSuffix(">") || line.contains("[sudo]"))
+    }
+
+    /// Screen text for an agent: plain text, no control characters, at most
+    /// `limit` trailing lines with trailing blank lines dropped.
+    static func screenText(_ raw: String, lines limit: Int) -> String {
+        var rows = raw.components(separatedBy: "\n").map { line in
+            String(line.unicodeScalars.filter { $0 == "\t" || !CharacterSet.controlCharacters.contains($0) })
+                .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        }
+        while rows.last?.isEmpty == true { rows.removeLast() }
+        return rows.suffix(max(1, limit)).joined(separator: "\n")
     }
 
     /// A shared or local host as a listing row. Never carries a password,

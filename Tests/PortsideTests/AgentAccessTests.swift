@@ -256,4 +256,190 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertTrue(log.contains("\"method\":\"hosts\""))
         XCTAssertFalse(log.contains("password"))
     }
+
+    // MARK: - Input tier
+
+    func testKeystrokesDropControlCharactersAndMapReturn() {
+        func keys(_ t: String?, enter: Bool = false, key: String? = nil) -> String? {
+            try? AgentPolicy.keystrokes(text: t, enter: enter, key: key).get()
+        }
+        XCTAssertEqual(keys("uptime", enter: true), "uptime\r")
+        XCTAssertEqual(keys("ls\nwhoami"), "ls\rwhoami")
+        // An escape sequence or ^D can't ride in on text.
+        XCTAssertEqual(keys("a\u{1B}[201~b\u{4}c"), "a[201~bc")
+        XCTAssertEqual(keys(nil, key: "ctrl-c"), "\u{3}")
+        XCTAssertNil(keys(nil, key: "f13"))
+        XCTAssertNil(keys("\u{1B}\u{7}"), "nothing left is an error, not an empty send")
+        XCTAssertNil(keys(nil))
+    }
+
+    func testScreenTextIsPlainAndTrimmed() {
+        let raw = "one\ntwo\u{7}  \nthree\n\n\n"
+        XCTAssertEqual(AgentPolicy.screenText(raw, lines: 10), "one\ntwo\nthree")
+        XCTAssertEqual(AgentPolicy.screenText(raw, lines: 2), "two\nthree")
+    }
+
+    func testTypingIsRefusedUntilItsOwnSwitchIsOn() async {
+        let (agent, _, _) = controller([host("web1")])
+        agent.setEnabled(true)
+        defer { agent.setEnabled(false) }
+        _ = await run(agent, "status", answering: [0]) // read + open
+        let r = await run(agent, "send", .init(pane: "web1", text: "id"))
+        XCTAssertEqual(r.error?.code, "denied")
+        XCTAssertNil(agent.prompt, "with typing off, nobody is even asked")
+    }
+
+    /// The whole path on a real shell: approval to type, the per-pane
+    /// question, the text arriving, the screen read back as untrusted data —
+    /// and protected hosts and multi-line input asking again.
+    func testTypingIntoARealPaneAndReadingItBack() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        // Let the shell come up before typing.
+        for _ in 0..<100 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+
+        let marker = "portside-agent-\(UUID().uuidString.prefix(6))"
+        // First: approve typing for the client, then "Allow for This Pane".
+        let sent = await run(agent, "send", .init(pane: pane.id.uuidString, text: "echo \(marker)", enter: true),
+                             answering: [0, 0])
+        XCTAssertNil(sent.error, "\(String(describing: sent.error))")
+        XCTAssertNotNil(agent.agentTypedAt[pane.id], "the pane shows it is being typed into")
+
+        // The same pane again: no question.
+        let again = await run(agent, "send", .init(pane: pane.id.uuidString, key: "enter"))
+        XCTAssertNil(again.error)
+
+        // Multi-line always asks, and Don't Allow types nothing.
+        let multi = await run(agent, "send", .init(pane: pane.id.uuidString, text: "echo a\necho b"),
+                              answering: [1])
+        XCTAssertEqual(multi.error?.code, "declined")
+
+        var text = ""
+        for _ in 0..<60 {
+            let screen = await run(agent, "screen", .init(pane: pane.id.uuidString, lines: 50))
+            guard case .object(let o)? = screen.result else { return XCTFail("\(String(describing: screen.error))") }
+            XCTAssertEqual(o["untrusted"], .bool(true))
+            if case .string(let t)? = o["text"] { text = t }
+            if text.components(separatedBy: marker).count >= 3 { break } // the command line and its output
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(text.components(separatedBy: marker).count, 3, text)
+        XCTAssertFalse(text.contains("echo b"), "the declined multi-line input never arrived")
+    }
+
+    func testTurningTypingOffTakesItBack() async {
+        let (agent, _, _) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false) }
+        let r = await run(agent, "send", .init(pane: "nothing", text: "x"), answering: [0]) // grants input
+        XCTAssertEqual(r.error?.code, "not_found")
+        XCTAssertEqual(agent.settings.approvals.first?.tier, .input)
+        agent.setAllowInput(false)
+        XCTAssertEqual(agent.settings.approvals.first?.tier, .open)
+    }
+
+    /// "What did that print?" on the pane the user is looking at: the command
+    /// boundaries come from shell integration, emitted here by hand exactly as
+    /// the injected snippet would on a host.
+    func testLastCommandOnTheCurrentPane() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        XCTAssertNotNil(pane.terminalView.outputCapture, "captured while typing is allowed")
+        for _ in 0..<100 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+
+        let marker = "agent-\(UUID().uuidString.prefix(6))"
+        // printf turns \033 into ESC in the *output*; the typed line itself
+        // carries only backslashes, so it isn't mistaken for a mark.
+        let line = "printf '\\033]133;C\\007'; echo \(marker); false; printf '\\033]133;D;1\\007'"
+        let sent = await run(agent, "send", .init(pane: "current", text: line, enter: true), answering: [0, 0])
+        XCTAssertNil(sent.error, "\(String(describing: sent.error))")
+
+        var output = ""
+        for _ in 0..<60 {
+            let r = await run(agent, "last-command", .init(pane: "current"))
+            if case .object(let o)? = r.result, case .array(let cmds)? = o["commands"],
+               case .object(let first)? = cmds.first, first["finished"] == .bool(true) {
+                if case .string(let t)? = first["output"] { output = t }
+                XCTAssertEqual(first["exitCode"], JSONValue(1))
+                XCTAssertEqual(o["untrusted"], .bool(true))
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(output, marker, "just that command's output: no prompt, no typed line")
+    }
+
+    func testTurningTypingOffStopsCapturing() {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        XCTAssertTrue(sessions.capturesCommandOutput)
+        agent.setAllowInput(false)
+        XCTAssertFalse(sessions.capturesCommandOutput)
+        agent.setAllowInput(true)
+        agent.setEnabled(false)
+        XCTAssertFalse(sessions.capturesCommandOutput, "access off means nothing is kept")
+    }
+
+    /// Claude running in a Portside pane must never read or type into its own
+    /// conversation by asking for "current".
+    func testCurrentNeverMeansTheCallersOwnPane() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        let insidePane = AgentClient(pid: pane.terminalView.process.shellPid, name: "claude", path: "")
+        // Grant typing up front (to a pane that doesn't exist), so the only
+        // question left is which pane "current" means.
+        _ = await run(agent, "send", .init(pane: "nothing", text: "x"), answering: [0])
+        XCTAssertEqual(agent.settings.approvals.first?.tier, .input)
+        let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "current")),
+                                             from: insidePane) }
+        // Had "current" resolved to the caller's pane, it would now be asking
+        // to read it. It mustn't get that far.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertNil(agent.prompt, "current resolved to the agent's own pane")
+        agent.answer(nil)
+        let r = await task.value
+        XCTAssertEqual(r.error?.code, "not_found", "\(String(describing: r.error))")
+    }
+
+    /// Every prompt the first typing request can raise has to fit in an alert
+    /// with its refusal still on screen.
+    func testFirstTypingRequestPromptKeepsItsRefusal() async {
+        let (agent, _, _) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false) }
+        let task = Task { await agent.handle(.init(method: "send", params: .init(pane: "x", text: "y")), from: claude) }
+        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        let prompt = agent.prompt!
+        XCTAssertLessThanOrEqual(prompt.choices.count, AgentController.maxChoices, prompt.choices.joined(separator: "|"))
+        XCTAssertTrue(prompt.choices[prompt.refusal].hasPrefix("Don"))
+        agent.answer(prompt.refusal)
+        _ = await task.value
+    }
+
+    /// Remote password prompts are invisible to the tty, so the last line is
+    /// read too — leaning towards refusing.
+    func testSecretPromptTextIsRecognised() {
+        for prompt in ["Password:", "[sudo] password for tim:", "Enter passphrase for key '/x/id_ed25519':",
+                       "Verification code:", "tim@host's password:", "PIN:", "Enter OTP >"] {
+            XCTAssertTrue(AgentPolicy.looksLikeSecretPrompt(prompt), prompt)
+        }
+        for line in ["tim@hopper:~$", "password reset complete", "grep password config.yml", ""] {
+            XCTAssertFalse(AgentPolicy.looksLikeSecretPrompt(line), line)
+        }
+    }
 }

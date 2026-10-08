@@ -142,6 +142,27 @@ Changes from the plan above, made while building it:
 - **Client names drop `.exe`.** Claude Code's real binary is `claude.exe`
   inside its npm package.
 
+## As built (phase 3)
+
+Built sooner than this plan proposed, at the maintainer's call, so it
+arrives with the strictest version of each rule:
+
+- **A separate switch, off by default.** Turning it off revokes typing from
+  every client.
+- **Per-pane consent.** Protected hosts and multi-line input ask every time.
+- **Staged, not run, by default** (`enter` is opt-in). This came from the use
+  case it serves: "write me a one-liner" should end with the human pressing
+  Return.
+- **`last-command`** returns per-command output delimited by OSC 133, so an
+  agent pays for one command's output rather than a screen or a log.
+- **`current`** resolves through a most-recently-selected tab history and
+  skips the caller's own pane, found by walking the caller's process
+  ancestry to each pane's shell.
+
+Two of this phase's own tests were found not to test what they claimed, by
+removing the guard and watching them still pass. Both were rewritten until
+they failed without it.
+
 ## Phases
 
 1. **Read and open (this branch).**

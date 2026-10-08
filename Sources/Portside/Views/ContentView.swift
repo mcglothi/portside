@@ -52,6 +52,7 @@ struct ContentView: View {
         } message: { prompt in
             Text(prompt.message)
         }
+        .sheet(isPresented: $agent.showingLog) { AgentLogView().environmentObject(agent) }
         .toolbar {
             if agent.settings.enabled {
                 ToolbarItem(placement: .primaryAction) { AgentIndicator() }

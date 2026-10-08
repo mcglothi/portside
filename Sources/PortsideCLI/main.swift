@@ -20,6 +20,12 @@ usage: portside <command> [args] [--json] [--socket PATH]
   open-group NAME                open a saved group
   focus TAB                      bring a tab forward (id or title)
   close TAB                      close a tab (id or title)
+  send PANE TEXT [--enter]       type into one pane (needs typing turned on)
+  send PANE --key KEY            press enter, tab, escape, ctrl-c or ctrl-d
+  screen PANE [--lines N]        read a pane's screen as plain text
+  last PANE [--count N]          the last command(s) in a pane: text, exit code, output
+                                 (PANE may be `current`: the pane you're looking at)
+  mcp                            run as an MCP server on stdio (for Claude Code, etc.)
 
 QUERY uses the sidebar filter syntax: words, env:prod, folder:lab, kind:ssh,
 is:protected, -env:prod, /regex/. Quote it in the shell: 'env:prod folder:web'.
@@ -42,6 +48,10 @@ var args = Array(CommandLine.arguments.dropFirst())
 var forceJSON = false
 var socketOverride: String?
 var grid = false
+var enter = false
+var key: String?
+var lineCount: Int?
+var commandCount: Int?
 var ids: [String]?
 var positional: [String] = []
 
@@ -51,6 +61,19 @@ while i < args.count {
     switch a {
     case "--json": forceJSON = true
     case "--grid": grid = true
+    case "--enter": enter = true
+    case "--key":
+        i += 1
+        guard i < args.count else { fail("--key needs a key name", .usage) }
+        key = args[i]
+    case "--count":
+        i += 1
+        guard i < args.count, let n = Int(args[i]) else { fail("--count needs a number", .usage) }
+        commandCount = n
+    case "--lines":
+        i += 1
+        guard i < args.count, let n = Int(args[i]) else { fail("--lines needs a number", .usage) }
+        lineCount = n
     case "--socket":
         i += 1
         guard i < args.count else { fail("--socket needs a path", .usage) }
@@ -69,6 +92,11 @@ while i < args.count {
 }
 
 guard let command = positional.first else { print(usage); exit(Exit.usage.rawValue) }
+
+if command == "mcp" {
+    MCPServer(socket: AgentSocket.path(override: socketOverride)).run()
+    exit(0)
+}
 let rest = positional.dropFirst().joined(separator: " ")
 
 var params: [String: Any] = [:]
@@ -93,70 +121,35 @@ case "focus", "close":
     method = command
     guard !rest.isEmpty else { fail("\(command) needs a tab id or title", .usage) }
     if UUID(uuidString: rest) != nil { params["ids"] = [rest] } else { params["name"] = rest }
+case "send":
+    method = "send"
+    let parts = Array(positional.dropFirst())
+    guard let pane = parts.first else { fail("send needs a pane id or host", .usage) }
+    params["pane"] = pane
+    let text = parts.dropFirst().joined(separator: " ")
+    if let key { params["key"] = key } else if !text.isEmpty { params["text"] = text } else {
+        fail("send needs TEXT or --key", .usage)
+    }
+    if enter { params["enter"] = true }
+case "last":
+    method = "last-command"
+    guard let pane = positional.dropFirst().first else { fail("last needs a pane id, host or current", .usage) }
+    params["pane"] = pane
+    if let commandCount { params["count"] = commandCount }
+case "screen":
+    method = "screen"
+    guard let pane = positional.dropFirst().first else { fail("screen needs a pane id or host", .usage) }
+    params["pane"] = pane
+    if let lineCount { params["lines"] = lineCount }
 default:
     fail("unknown command \u{201C}\(command)\u{201D}\n\n\(usage)", .usage)
 }
 
-// MARK: - Socket
-
-/// Must match `AgentServer.socketPath(libraryDirectory:)` in the app.
-func socketPath(override: String?) -> String {
-    let env = ProcessInfo.processInfo.environment
-    if let explicit = override ?? env["PORTSIDE_SOCKET"] { return explicit }
-    let directory: String
-    if let override = env["PORTSIDE_LIBRARY_DIR"] {
-        directory = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true).path
-    } else {
-        directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Portside").path
-    }
-    let preferred = (directory as NSString).appendingPathComponent("agent.sock")
-    if preferred.utf8.count < 100 { return preferred }
-    var hash: UInt64 = 0xcbf29ce484222325
-    for byte in directory.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
-    return (NSTemporaryDirectory() as NSString).appendingPathComponent("portside-\(String(hash, radix: 16)).sock")
+let response: [String: Any]
+switch AgentSocket.call(method, params, socket: AgentSocket.path(override: socketOverride)) {
+case .success(let reply): response = reply
+case .failure(let failure): fail("portside: \(failure.message)", failure.unavailable ? .unavailable : .error)
 }
-
-func send(_ request: [String: Any], to path: String) -> [String: Any] {
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else { fail("portside: couldn't create a socket", .error) }
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-        let bytes = Array(path.utf8.prefix(raw.count - 1))
-        raw.copyBytes(from: bytes)
-        raw[bytes.count] = 0
-    }
-    let connected = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-        }
-    }
-    guard connected == 0 else {
-        fail("portside: Portside isn't reachable at \(path).\n"
-             + "Is it running, with Agent Access on (Settings \u{25B8} Agents)?", .unavailable)
-    }
-    var data = (try? JSONSerialization.data(withJSONObject: request)) ?? Data()
-    data.append(0x0A)
-    _ = data.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
-
-    // A confirmation in the app can take up to a couple of minutes.
-    var reply = Data()
-    var buffer = [UInt8](repeating: 0, count: 65_536)
-    while true {
-        let n = read(fd, &buffer, buffer.count)
-        if n <= 0 { break }
-        reply.append(contentsOf: buffer[0..<n])
-        if buffer[n - 1] == 0x0A { break }
-    }
-    close(fd)
-    guard let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
-        fail("portside: no reply from Portside", .error)
-    }
-    return object
-}
-
-let response = send(["id": 1, "method": method, "params": params], to: socketPath(override: socketOverride))
 
 // MARK: - Output
 
@@ -235,6 +228,20 @@ case "open-group":
     else {
         let missing = (r["missing"] as? Int ?? 0) > 0 ? " (\(str(r["missing"])) missing from the library)" : ""
         print("Opened \u{201C}\(str(r["group"]))\u{201D}: \(str(r["opened"])) panes\(missing)")
+    }
+case "send":
+    let r = result as? [String: Any] ?? [:]
+    print("Typed into \(str(r["host"]).isEmpty ? str(r["pane"]) : str(r["host"])).")
+case "screen":
+    let r = result as? [String: Any] ?? [:]
+    print(str(r["text"]))
+case "last-command":
+    let r = result as? [String: Any] ?? [:]
+    for c in r["commands"] as? [[String: Any]] ?? [] {
+        let status = (c["finished"] as? Bool == true) ? "exit \(str(c["exitCode"]))" : "still running"
+        print("\u{1B}[1m$ \(str(c["command"]))\u{1B}[0m  (\(status))")
+        print(str(c["output"]))
+        print("")
     }
 case "status":
     let r = result as? [String: Any] ?? [:]
