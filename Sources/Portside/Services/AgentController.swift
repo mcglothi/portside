@@ -932,8 +932,9 @@ final class AgentController: ObservableObject {
                                                 only: several ? nil : waitedFor)
             }
             if !several, case .object(let only)? = rows.first, only["error"] != nil, method == .lastCommand {
-                return .failure(.notFound("No commands recorded for \(paneName(panes[0])) yet. "
-                    + (noCommandRecording(panes[0]) ?? "Use screen, or wait for one to finish.")))
+                return .failure(.notFound(noCommandRecording(panes[0]).map { "No commands recorded for "
+                    + "\(paneName(panes[0])). \($0)" } ?? "No commands recorded for \(paneName(panes[0])) yet. "
+                    + "Use screen, or wait for one to finish."))
             }
             if params.wait != nil, case .object(var only)? = rows.first {
                 only["waitedOut"] = .bool(waitedOut)
@@ -1038,7 +1039,12 @@ final class AgentController: ObservableObject {
     /// its timeout. Installing shell integration fixes a host; it can't fix a
     /// container or pod, whose shell is reached through a local one Portside
     /// deliberately leaves alone (`shouldInjectShellIntegration`).
+    ///
+    /// Markers already seen outrank the kind: a shell inside a container can
+    /// carry the integration (sourced by hand, or once #25 injects it), and
+    /// then commands are recorded like anywhere else.
     private func kindCannotRecord(_ pane: TerminalSession) -> String? {
+        if pane.terminalView.outputCapture?.sawShellIntegration == true { return nil }
         switch pane.entry?.kind {
         case .container?, .kubernetes?:
             return "Container and pod sessions don\u{2019}t record commands yet: shell integration "
