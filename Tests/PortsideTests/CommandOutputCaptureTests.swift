@@ -107,5 +107,52 @@ final class CommandOutputCaptureTests: XCTestCase {
         var plain = ANSIStripper()
         XCTAssertEqual(plain.strip(Array("a\rb\u{8}c\u{1B}[Kd".utf8)), Array("abcd".utf8))
     }
+
+    // MARK: Erase-in-line modes (PR #30 review)
+
+    /// Each EL mode keeps its own meaning. Collapsing them all to "erase to end"
+    /// meant a whole-line erase sent with the cursor at the end of the line
+    /// cleared nothing, and a shorter redraw left the old tail behind.
+    func testWholeLineEraseClearsTheLineInEitherOrder() {
+        XCTAssertEqual(output("downloading 100 files\u{1B}[2K\rdone", columns: 80), "done")
+        XCTAssertEqual(output("downloading 100 files\r\u{1B}[2Kdone", columns: 80), "done")
+    }
+
+    func testEraseToStartBlanksOnlyTheLeftPart() {
+        XCTAssertEqual(output("first\nabcdef\u{8}\u{8}\u{1B}[1K", columns: 80), "first\n     f")
+    }
+
+    func testEraseToEndIsUnchangedSpelledEitherWay() {
+        XCTAssertEqual(output("abcdef\u{8}\u{8}\u{1B}[K", columns: 80), "abcd")
+        XCTAssertEqual(output("abcdef\u{8}\u{8}\u{1B}[0K", columns: 80), "abcd")
+    }
+
+    /// A position one row's width in is either the end of a full row (wrap
+    /// pending) or the start of the next; a CR that lands on a wrapped row's
+    /// start must leave the cursor there, not send the next CR back a row.
+    func testCarriageReturnOnAWrappedRowStaysOnThatRow() {
+        XCTAssertEqual(output("0123456789ABC\r\rX", columns: 10), "0123456789XBC")
+        XCTAssertEqual(output("0123456789ABC\r\u{1B}[2KX", columns: 10), "0123456789X")
+    }
+
+    /// A CSI aborted by CAN leaves no parameter behind for the next one.
+    func testAnAbortedSequenceDoesntChangeTheNextErasesMode() {
+        XCTAssertEqual(output("first\nabcdef\u{8}\u{8}\u{1B}[2\u{18}\u{1B}[K", columns: 80), "first\nabcd")
+    }
+
+    /// Typing switched on mid-command: the capture never saw it start, but its
+    /// finish still counts, with what it printed since — and nothing from the
+    /// prompt that follows.
+    func testACommandAlreadyRunningIsRecordedWhenItFinishes() {
+        var c = CommandOutputCapture()
+        feed(&c, "still going\nall done\n" + osc("D;0") + osc("A") + "prompt$ ")
+        XCTAssertEqual(c.completed.count, 1)
+        XCTAssertEqual(c.completed.first?.command, CommandOutputCapture.alreadyRunning)
+        XCTAssertEqual(c.completed.first?.output, "still going\nall done")
+        XCTAssertEqual(c.firstFinished(after: 0)?.exitCode, 0)
+        // From here every command is seen starting; a stray finish adds nothing.
+        feed(&c, osc("D;1"))
+        XCTAssertEqual(c.completed.count, 1)
+    }
 }
 

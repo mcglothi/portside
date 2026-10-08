@@ -176,10 +176,15 @@ An agent shouldn't have to poll. Three requests can wait, up to 120 seconds:
 
 A wait that runs out says so (`waitedOut`) instead of hanging. Waiting on a
 command needs shell integration on the host, which is the same thing that
-marks where commands start and end. Where there can't be any — a container,
-pod, serial or telnet session, or a host that shows no sign of it within a
-few seconds — the wait answers at once with an `error` saying so, instead of
-running out its timeout.
+marks where commands start and end. If a session has never sent a command
+marker, `send --wait` stops five seconds after typing instead of running out
+its timeout, and its `error` names both possibilities: no shell integration
+there (a container, pod, serial or telnet session, or a host without it), or
+something already running that what was typed went to. `last --wait` has no
+such cut-off: it waits on a running command, which sends nothing until it
+ends. A command that was already running when typing was switched on is
+still recorded when it finishes, labelled
+`(already running when typing was switched on)`.
 
 ### Several panes at once
 
@@ -203,8 +208,9 @@ its last frame rather than every frame. This needs shell integration on the host
 scrollback instead.
 
 Portside injects shell integration into SSH sessions only, so container and
-Kubernetes sessions never have it (issue #25). There, `last` and
-`send --wait` say so at once, and an agent should use `screen`.
+Kubernetes sessions don't have it unless the container's shell carries it
+(issue #25). There, `last` and `send --wait` say so, and an agent should use
+`screen`.
 
 Session logs are deliberately not offered to agents. They're the whole
 history, which is expensive to read and rarely what the question is about.

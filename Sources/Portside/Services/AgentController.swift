@@ -684,7 +684,6 @@ final class AgentController: ObservableObject {
                     return .failure(.badRequest("\(paneName(pane)) changed while waiting; nothing was typed."))
                 }
             }
-            let cannotRecord = kindCannotRecord(pane)
             let baseline = pane.terminalView.outputCapture?.finishedTotal
             pane.sendText(keys)
             agentTypedAt[pane.id] = Date()
@@ -694,17 +693,22 @@ final class AgentController: ObservableObject {
             // Type, run, wait, read — one round trip. Only for something that
             // was actually run (ends in Return), and only where shell
             // integration marks when it finishes.
-            if let seconds = params.wait, seconds > 0, keys.hasSuffix("\r"), let cannotRecord {
-                // Ran, but nothing will ever mark it finished: say so now
-                // rather than after the whole wait.
-                result["waitedOut"] = .bool(false)
-                result["result"] = .object(["pane": .string(pane.id.uuidString), "host": JSONValue(pane.entry?.name),
-                                            "error": .string(cannotRecord)])
-            } else if let seconds = params.wait, seconds > 0, keys.hasSuffix("\r"), let baseline {
-                let finished = await waitForFinish(pane, after: baseline, seconds: seconds)
-                result["waitedOut"] = .bool(!finished)
-                result["result"] = commandsRow(pane, count: 1, tailLines: 200,
-                                               only: pane.terminalView.outputCapture?.firstFinished(after: baseline))
+            if let seconds = params.wait, seconds > 0, keys.hasSuffix("\r"), let baseline {
+                let finished = await waitForFinish(pane, after: baseline, seconds: seconds, graceForMarker: true)
+                let done = pane.terminalView.outputCapture?.firstFinished(after: baseline)
+                if done == nil, capturedNoMarker(pane) {
+                    // Answered early, and saying why rather than "timed out".
+                    result["waitedOut"] = .bool(false)
+                    result["result"] = .object([
+                        "pane": .string(pane.id.uuidString), "host": JSONValue(pane.entry?.name),
+                        "error": .string("No command marker arrived within \(Int(Self.markerGrace)) seconds of "
+                            + "typing. Either \(missingIntegration(pane)), or something already running in this "
+                            + "pane hasn\u{2019}t finished and what was typed went to it. Use screen to see which."),
+                    ])
+                } else {
+                    result["waitedOut"] = .bool(!finished)
+                    result["result"] = commandsRow(pane, count: 1, tailLines: 200, only: done)
+                }
             }
             return .success(.object(result))
 
@@ -918,9 +922,9 @@ final class AgentController: ObservableObject {
             // polling and paying for every look.
             var waitedOut = false
             var waitedFor: CommandOutputCapture.Command?
-            if let seconds = params.wait, seconds > 0, let pane = panes.first, kindCannotRecord(pane) == nil,
+            if let seconds = params.wait, seconds > 0, let pane = panes.first,
                let baseline = pane.terminalView.outputCapture?.finishedTotal {
-                waitedOut = !(await waitForFinish(pane, after: baseline, seconds: seconds))
+                waitedOut = !(await waitForFinish(pane, after: baseline, seconds: seconds, graceForMarker: false))
                 if (params.count ?? 1) == 1 { waitedFor = pane.terminalView.outputCapture?.firstFinished(after: baseline) }
             }
             // Reading a whole tab keeps each pane short, so six hosts cost
@@ -1034,56 +1038,61 @@ final class AgentController: ObservableObject {
         ])
     }
 
-    /// Why this kind of session can't record commands at all — known before
-    /// running anything, so a `--wait` answers at once instead of running out
-    /// its timeout. Installing shell integration fixes a host; it can't fix a
-    /// container or pod, whose shell is reached through a local one Portside
-    /// deliberately leaves alone (`shouldInjectShellIntegration`).
-    ///
-    /// Markers already seen outrank the kind: a shell inside a container can
-    /// carry the integration (sourced by hand, or once #25 injects it), and
-    /// then commands are recorded like anywhere else.
-    private func kindCannotRecord(_ pane: TerminalSession) -> String? {
-        if pane.terminalView.outputCapture?.sawShellIntegration == true { return nil }
+    /// What a pane with no OSC 133 marker yet most likely lacks, as a clause:
+    /// shell integration, said in a way that fits the kind. Installing it fixes
+    /// a host; it can't fix a container or pod, whose shell is reached through
+    /// a local one Portside deliberately leaves alone
+    /// (`shouldInjectShellIntegration`).
+    private func missingIntegration(_ pane: TerminalSession) -> String {
         switch pane.entry?.kind {
         case .container?, .kubernetes?:
-            return "Container and pod sessions don\u{2019}t record commands yet: shell integration "
-                + "isn\u{2019}t set up inside the container. Use screen."
+            return "this session has no shell integration (container and pod sessions don\u{2019}t "
+                + "record commands yet)"
         case .serial?, .telnet?:
-            return "Serial and telnet sessions have no shell integration, so commands aren\u{2019}t "
-                + "recorded. Use screen."
+            return "serial and telnet sessions have no shell integration"
         default:
-            return nil
+            return "this host has no shell integration (install it from the file browser\u{2019}s "
+                + "\u{22EF} menu \u{25B8} Install\u{2026}, or turn on Settings \u{25B8} Terminal \u{25B8} "
+                + "\u{201C}Set up directory tracking on connect\u{201D}, then reconnect)"
         }
     }
 
-    /// A host's shell has never sent an OSC 133 marker to this capture. Not
-    /// conclusive on its own: the capture starts empty whenever typing is
-    /// switched on, so it is only believed after `markerGrace` — a host with
-    /// integration sends one the moment a command starts.
-    private func hostShowsNoIntegration(_ pane: TerminalSession) -> Bool {
-        guard let capture = pane.terminalView.outputCapture else { return false }
-        return !capture.sawShellIntegration
+    /// Whether this session has never sent an OSC 133 marker — judged over the
+    /// whole session, not since the capture began. Markers arrive only when a
+    /// command starts or finishes (and at each prompt), so a command that was
+    /// already running when typing was switched on sends nothing until it ends;
+    /// read from a capture created then, that silence looked like "no
+    /// integration" (PR #30 review). A container shell can carry the
+    /// integration too, so the kind decides nothing on its own.
+    private func capturedNoMarker(_ pane: TerminalSession) -> Bool {
+        guard pane.terminalView.outputCapture != nil else { return false }
+        return !pane.terminalView.sawShellIntegration
+    }
+
+    /// For a read that finds nothing recorded and no marker ever seen.
+    private func noCommandRecording(_ pane: TerminalSession) -> String? {
+        guard capturedNoMarker(pane) else { return nil }
+        return "No command marker has arrived since typing was switched on. Either "
+            + "\(missingIntegration(pane)), or a command started before then is still running. "
+            + "Use screen to see which."
     }
 
     private static let markerGrace: TimeInterval = 5
 
-    private static let noHostIntegration = "No shell integration on this host, so commands aren\u{2019}t recorded. "
-        + "Install it from the file browser\u{2019}s \u{22EF} menu \u{25B8} Install\u{2026}, or turn on Settings "
-        + "\u{25B8} Terminal \u{25B8} \u{201C}Set up directory tracking on connect\u{201D}, then reconnect. "
-        + "Use screen meanwhile."
-
-    private func noCommandRecording(_ pane: TerminalSession) -> String? {
-        kindCannotRecord(pane) ?? (hostShowsNoIntegration(pane) ? Self.noHostIntegration : nil)
-    }
-
-    /// Until a command started after `baseline` finishes, the session ends, or
-    /// it's clear after the grace period that nothing will ever mark one.
-    private func waitForFinish(_ pane: TerminalSession, after baseline: Int, seconds: Int) async -> Bool {
+    /// Until a command started after `baseline` finishes or the session ends.
+    ///
+    /// `graceForMarker`, for `send`: also stop once `markerGrace` has passed
+    /// since the text was typed with no marker at all. A shell with the
+    /// integration sends one the moment the command starts, so that silence
+    /// means the text didn't reach such a shell — none here, or it went to a
+    /// command still running. `last --wait` never takes it: it only ever waits
+    /// on a running command, which is exactly the silence that proves nothing.
+    private func waitForFinish(_ pane: TerminalSession, after baseline: Int, seconds: Int,
+                               graceForMarker: Bool) async -> Bool {
         let graceEnds = Date().addingTimeInterval(Self.markerGrace)
         return await waitUntil(seconds: seconds) {
             (pane.terminalView.outputCapture?.finishedTotal ?? baseline) > baseline || !pane.isRunning
-                || (Date() > graceEnds && self.hostShowsNoIntegration(pane))
+                || (graceForMarker && Date() > graceEnds && self.capturedNoMarker(pane))
         }
     }
 

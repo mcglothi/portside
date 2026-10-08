@@ -750,8 +750,9 @@ final class AgentAccessTests: XCTestCase {
     }
 
     /// A container exec that never reaches the container is not "connected",
-    /// and a wait on a command there answers at once: nothing in a container
-    /// session marks commands, so waiting could only run out.
+    /// and a wait on a command there answers once the marker grace has passed
+    /// rather than running out its timeout — saying why, in terms that fit a
+    /// container.
     func testContainerSessionsSayWhereTheyGotAndDontWaitForNothing() async throws {
         var entry = SessionEntry(name: "box", hostname: "", kind: .container)
         entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
@@ -775,11 +776,88 @@ final class AgentAccessTests: XCTestCase {
         let started = Date()
         let s = await agent.handle(.init(method: "send", params: .init(pane: id, text: "true", enter: true, wait: 20)),
                                    from: claude)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "answered without waiting out the 20s")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "answered without waiting out the 20s")
         guard case .object(let sent)? = s.result, case .object(let result)? = sent["result"],
               case .string(let error)? = result["error"] else { return XCTFail("\(String(describing: s.result))") }
-        XCTAssertTrue(error.contains("Container"), error)
+        XCTAssertTrue(error.contains("container and pod sessions"), error)
         XCTAssertFalse(error.contains("Settings"), "installing integration can't help a container: \(error)")
+    }
+
+    // MARK: A quiet pane isn't a pane without integration (PR #30 review)
+
+    /// Markers only arrive when a command starts or finishes. A command that was
+    /// already running when typing was switched on — which is when the capture
+    /// begins — sends nothing until it ends, so a few quiet seconds prove
+    /// nothing. `last --wait` waits on it; `send --wait` (whose text went to that
+    /// command) waits for it too.
+    func testWaitsDontGiveUpOnACommandThatWasAlreadyRunning() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+
+        // Started, and its start marker gone by, before the capture exists.
+        let marker = "done-\(UUID().uuidString.prefix(6))"
+        pane.sendText("printf '\\033]133;C\\007'; sleep 9; echo \(marker); printf '\\033]133;D;0\\007'\r")
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        agent.setAllowInput(true)
+        XCTAssertNotNil(pane.terminalView.outputCapture)
+
+        let started = Date()
+        let sent = Task {
+            await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: "x",
+                                                                   enter: true, wait: 30)), from: claude)
+        }
+        let last = await agent.handle(.init(method: "last-command", params: .init(pane: pane.id.uuidString, wait: 30)),
+                                      from: claude)
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 6, "last --wait gave up on a running command")
+        guard case .object(let row)? = last.result, case .array(let cmds)? = row["commands"],
+              case .object(let cmd)? = cmds.first, case .string(let out)? = cmd["output"] else {
+            return XCTFail("\(String(describing: last))")
+        }
+        // The terminal echoed what the agent typed while it ran; that's on screen too.
+        XCTAssertTrue(out.hasSuffix(marker), out)
+        XCTAssertEqual(cmd["exitCode"], JSONValue(0))
+
+        let s = await sent.value
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 6, "send --wait gave up on a running command")
+        guard case .object(let o)? = s.result, case .object(let result)? = o["result"],
+              case .array(let sc)? = result["commands"], case .object(let c)? = sc.first,
+              case .string(let sentOut)? = c["output"] else {
+            return XCTFail("\(String(describing: s.result))")
+        }
+        XCTAssertTrue(sentOut.hasSuffix(marker), sentOut)
+        XCTAssertEqual(o["waitedOut"], .bool(false))
+    }
+
+    /// A container shell that does carry the integration, opened before typing
+    /// was switched on, records its first command like any other: the decision
+    /// waits until after the send, not before it.
+    func testContainerWithIntegrationIsNotRefusedBeforeItsFirstMarker() async throws {
+        var entry = SessionEntry(name: "box", hostname: "", kind: .container)
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        _ = await agent.handle(.init(method: "connect", params: .init(ids: [entry.id.uuidString], wait: 90)),
+                               from: claude)
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        agent.setAllowInput(true)   // a fresh capture: no marker seen yet
+
+        // The local shell stands in for a container shell with integration.
+        let marker = "inside-\(UUID().uuidString.prefix(6))"
+        let line = "printf '\\033]133;C\\007'; echo \(marker); printf '\\033]133;D;0\\007'"
+        let r = await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: line,
+                                                                       enter: true, wait: 20)), from: claude)
+        guard case .object(let o)? = r.result, case .object(let result)? = o["result"],
+              case .array(let cmds)? = result["commands"], case .object(let cmd)? = cmds.first else {
+            return XCTFail("refused before the first marker could arrive: \(String(describing: r.result))")
+        }
+        XCTAssertEqual(cmd["output"], .string(marker))
     }
 }
 

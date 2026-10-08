@@ -45,6 +45,28 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// dialling a host that will never answer stays alive but silent, so
     /// "still running" alone can't distinguish connecting from connected.
     private(set) var sawOutput = false
+    /// Whether this session has *ever* sent an OSC 133 marker, since its first
+    /// byte. A shell with the integration marks every prompt, so one that has
+    /// it said so long before anyone asks. The command capture can't answer
+    /// this: it only exists while typing is on, and starts blind each time.
+    private(set) var sawShellIntegration = false
+    private var markerMatched = 0
+    private static let markerIntroducer: [UInt8] = Array("\u{1B}]133;".utf8)
+
+    /// Matched across reads, since an introducer can straddle two; stops
+    /// looking once found.
+    private func noteShellIntegration(_ slice: ArraySlice<UInt8>) {
+        guard !sawShellIntegration else { return }
+        let needle = Self.markerIntroducer
+        for byte in slice {
+            if byte == needle[markerMatched] {
+                markerMatched += 1
+                if markerMatched == needle.count { sawShellIntegration = true; return }
+            } else {
+                markerMatched = byte == needle[0] ? 1 : 0
+            }
+        }
+    }
     /// Fires when the shell reports a completed command via OSC 133. Sits on
     /// the raw byte tap because SwiftTerm doesn't parse OSC 133 -- it sees the
     /// markers, ignores them, and we read them here on the way past.
@@ -240,6 +262,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
+        noteShellIntegration(slice)
         // The log and the command timeline get the bytes as they actually
         // arrived, and so does the terminal. Nothing in this path may rewrite
         // them: transcript offsets have to keep matching what is on disk.
