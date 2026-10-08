@@ -17,6 +17,14 @@ let package = Package(
             ],
             resources: [.process("Resources")]
         ),
+        // The `portside` command an agent (or a person) drives the running app
+        // with. Shares no code with the app on purpose: it only speaks the
+        // socket protocol, so it stays tiny and can't drift into doing work
+        // the app's checks don't see.
+        .executableTarget(
+            name: "portside-cli",
+            path: "Sources/PortsideCLI"
+        ),
         .testTarget(
             name: "PortsideTests",
             dependencies: ["Portside"]

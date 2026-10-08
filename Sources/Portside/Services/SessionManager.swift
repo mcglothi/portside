@@ -1429,10 +1429,13 @@ final class SessionManager: ObservableObject {
     /// into a grid and armed for broadcast — the "launch a group and drive them
     /// together" workflow; otherwise each opens as its own tab. Entries should
     /// already be resolved (defaults applied).
-    func connectAll(_ entries: [SessionEntry], multiExec: Bool) {
+    ///
+    /// `armed: false` opens the grid with every pane a member but broadcast
+    /// off — what the agent API uses, because arming stays a human act.
+    func connectAll(_ entries: [SessionEntry], multiExec: Bool, armed: Bool = true) {
         guard !entries.isEmpty else { return }
         if multiExec {
-            openGroupTab(entries)
+            openGroupTab(entries, armed: armed)
         } else {
             for entry in entries { connect(to: entry) }
         }
@@ -1440,11 +1443,11 @@ final class SessionManager: ObservableObject {
 
     /// Opens a group of hosts as a single tab, arranged in a grid and armed for
     /// broadcast.
-    private func openGroupTab(_ entries: [SessionEntry]) {
+    private func openGroupTab(_ entries: [SessionEntry], armed: Bool = true) {
         let created = entries.map { makeSession(for: $0) }
         created.forEach(prepare)
         let tab = Tab(root: gridTree(of: created), activePaneID: created[0].id)
-        tab.broadcastArmed = true
+        tab.broadcastArmed = armed
         tabs.append(tab)
         selectedTabID = tab.id
         for (session, entry) in zip(created, entries) { postConnect(session, entry: entry) }

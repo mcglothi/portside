@@ -1455,6 +1455,10 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// The directory the library lives in — where its sidecars, the agent
+    /// socket's settings and its audit log go too.
+    var libraryDirectory: URL { fileURL.deletingLastPathComponent() }
+
     /// Where each source's clone lives — beside the library, so a throwaway
     /// `PORTSIDE_LIBRARY_DIR` or a test's temp file gets throwaway clones too.
     var sourcesDirectory: URL {
