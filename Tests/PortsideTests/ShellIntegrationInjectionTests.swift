@@ -48,7 +48,8 @@ final class ShellIntegrationInjectionTests: XCTestCase {
         XCTAssertTrue(bash.contains("__portside_precmd"))
         XCTAssertTrue(bash.contains("PROMPT_COMMAND"))
         XCTAssertTrue(bash.contains("033]7;file://"), "OSC 7 reporting must survive")
-        XCTAssertTrue(bash.contains("trap '__portside_preexec' DEBUG"))
+        XCTAssertTrue(bash.contains("trap __portside_preexec DEBUG"))
+        XCTAssertTrue(bash.contains("; __portside_arm"), "without the arm no command is ever recorded")
 
         let zsh = ShellIntegrationInjection.payload(for: .zsh)
         XCTAssertTrue(zsh.contains("add-zsh-hook precmd __portside_osc7"))

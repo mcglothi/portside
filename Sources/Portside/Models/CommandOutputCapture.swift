@@ -49,6 +49,16 @@ struct CommandOutputCapture {
     /// Most recent first: the running command, if any, then completed ones.
     var recent: [Command] { (running.map { [$0] } ?? []) + completed.reversed() }
 
+    /// The first command to finish after `finishedTotal` read `baseline` —
+    /// the one an agent started then — while it's still kept. Not the head of
+    /// `recent`: by the time a wait notices a finish, the next command can
+    /// already be running, and that one has no exit code yet.
+    func firstFinished(after baseline: Int) -> Command? {
+        let since = finishedTotal - baseline
+        guard since > 0, since <= completed.count else { return nil }
+        return completed[completed.count - since]
+    }
+
     mutating func consume(_ bytes: ArraySlice<UInt8>) {
         for byte in bytes {
             if recording {

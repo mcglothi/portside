@@ -3,6 +3,14 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Commands are labelled with what you typed, on RHEL and anywhere else with a busy prompt.** On hosts whose `PROMPT_COMMAND` runs more than one thing — RHEL and Rocky set a window-title `printf` there — the bash shell integration recorded that `printf` as every command, so the command history and an agent's `last` showed the right output and exit code under the wrong name. Records now start only for a line typed at a prompt, and carry the whole line (`ls / | wc -l; false`, not just `ls /`). Lines from startup files and ^C at a prompt no longer make records. Reinstall shell integration on a host to get it (v4); hosts with v3 are repaired in place, keeping a backup of the rc file. Reported, diagnosed and fix-tested on bash 3.2, 4.4 and 5.3 in #24.
+
+**An agent's `send --wait` and `last --wait` return the command they waited for.** They returned the newest record, which could already be the next command, still running and without an exit code.
+
+**Reading a tab always answers with a list of panes**, even when the tab has one pane, so agents handle one shape.
+
 ## 0.31.0
 
 **Agents can help manage hosts and shared inventories.** With a new switch in Settings ▸ Agents (off by default, warned), an approved program can add, change and remove hosts in your own folders, pull and preview shared inventories, and publish from a linked folder — as `portside host …`, `portside preview`, `portside publish` and matching MCP tools. A team's shared hosts stay read-only (agents edit the linked copies and publish for review), subscribing stays yours, and protection can't be removed. The first edit each session asks; removals, protected hosts and every publish ask each time, and conflicts need an explicit mine/theirs. Don't Ask can send a review branch but never push straight onto the team's branch.

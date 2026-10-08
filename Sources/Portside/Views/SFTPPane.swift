@@ -17,8 +17,8 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
         switch self {
         case .bash:
             return #"""
-            # Portside shell integration v3 (https://github.com/mcglothi/portside)
-            # __portside_integration_v3 -- version marker; the installer greps for this
+            # Portside shell integration v4 (https://github.com/mcglothi/portside)
+            # __portside_integration_v4 -- version marker; the installer greps for this
             # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
             # and command boundaries (OSC 133) so commands can be timestamped.
             #
@@ -29,16 +29,34 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
             # a length that decodes back to the escape's own first four bytes.
             case "$-" in
               *i*)
+                # DEBUG fires before every simple command, PROMPT_COMMAND's own
+                # included. Only a command typed at the prompt may open a record,
+                # so the trap is armed by a hook that runs LAST in PROMPT_COMMAND
+                # and disarmed by the first thing it sees. (v3 matched
+                # BASH_COMMAND against all of PROMPT_COMMAND, which only works
+                # when it is one command; RHEL's title printf made every record
+                # that printf. Startup files and ^C at a prompt are skipped too.)
                 __portside_preexec() {
                   [ -n "$COMP_LINE" ] && return              # tab completion, not a command
-                  [ "$BASH_COMMAND" = "$PROMPT_COMMAND" ] && return
-                  [ -n "$__portside_running" ] && return     # DEBUG fires per simple command
+                  [ -n "$__portside_armed" ] || return       # PROMPT_COMMAND, startup files
+                  [ "$BASH_COMMAND" = __portside_precmd ] && return  # empty Return
+                  unset __portside_armed
                   __portside_running=1
                   printf '\033]133;C\007'
-                  printf '\033]133;E;%s\007' "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')"
+                  # The line as typed -- the whole pipeline or list, not its first
+                  # simple command -- unless history skipped it (ignorespace, a
+                  # duplicate, history off), which leaves the last entry unchanged.
+                  local __portside_cmd=$BASH_COMMAND __portside_h
+                  __portside_h=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
+                  if [ -n "$__portside_h" ] && [ "$__portside_h" != "$__portside_hist" ]; then
+                    __portside_cmd=${__portside_h#*[0-9][* ] }
+                  fi
+                  printf '\033]133;E;%s\007' "$(printf '%s' "$__portside_cmd" | base64 | tr -d '\n')"
                 }
                 __portside_precmd() {
                   local __portside_ret=$?
+                  unset __portside_armed
+                  __portside_hist=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
                   if [ -n "$__portside_running" ]; then
                     printf '\033]133;D;%s\007' "$__portside_ret"
                     unset __portside_running
@@ -46,11 +64,17 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
                   printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-$(hostname)}" "$PWD"
                   printf '\033]133;A\007'
                 }
+                __portside_arm() { __portside_armed=1; }
+                # A v3 block earlier in this file already put __portside_precmd
+                # first (and its definition is now this one); it only lacks the arm.
                 case "$PROMPT_COMMAND" in
-                  *__portside_precmd*) ;;
-                  *) PROMPT_COMMAND="__portside_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+                  *__portside_arm*) ;;
+                  *__portside_precmd*) PROMPT_COMMAND="$PROMPT_COMMAND; __portside_arm" ;;
+                  *) PROMPT_COMMAND="__portside_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}; __portside_arm" ;;
                 esac
-                trap '__portside_preexec' DEBUG
+                # Unquoted on purpose: the installer comments out the quoted form,
+                # which only v2 and v3 wrote.
+                trap __portside_preexec DEBUG
                 ;;
               *)
                 # Repairs a v2 block sitting earlier in this file, which set that
@@ -65,8 +89,8 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
             """#
         case .zsh:
             return #"""
-            # Portside shell integration v3 (https://github.com/mcglothi/portside)
-            # __portside_integration_v3 -- version marker; the installer greps for this
+            # Portside shell integration v4 (https://github.com/mcglothi/portside)
+            # __portside_integration_v4 -- version marker; the installer greps for this
             # Reports the working directory (OSC 7) so the SFTP pane can follow `cd`,
             # and command boundaries (OSC 133) so commands can be timestamped.
             #
@@ -102,7 +126,13 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
 
     var rcFile: String { "~/.\(rawValue)rc" }
 
-    /// Disarms a v2 block already in the file, before the v3 block is appended.
+    /// Disarms a v2 or v3 block already in the file, before the v4 block is
+    /// appended.
+    ///
+    /// v3's trap had the same problem one level down: armed while `.bashrc`
+    /// was still loading, it recorded the first command of the v4 block as
+    /// something the user ran, at every login. v4 writes its own trap
+    /// unquoted, so this pattern can only ever match an older block's.
     ///
     /// Appending alone cannot fix an affected host. v2's `trap ... DEBUG` is
     /// armed the moment its line runs, and the DEBUG trap fires *before* every
@@ -124,9 +154,9 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
             return "# zsh needs no repair: it never set a DEBUG trap."
         case .bash:
             return #"""
-            if grep -q "^trap '__portside_preexec' DEBUG$" "$f" 2>/dev/null; then
+            if grep -q "^ *trap '__portside_preexec' DEBUG$" "$f" 2>/dev/null; then
               cp "$f" "$f.portside-backup" 2>/dev/null
-              sed "s|^trap '__portside_preexec' DEBUG$|# (disabled by Portside v3: this trap also fired in non-interactive shells, corrupting sftp)|" "$f" > "$f.portside-tmp" \
+              sed "s|^ *trap '__portside_preexec' DEBUG$|# (disabled by Portside v4: an older block's trap, replaced by the one below)|" "$f" > "$f.portside-tmp" \
                 && cat "$f.portside-tmp" > "$f" \
                 && rm -f "$f.portside-tmp"
             fi
@@ -159,7 +189,7 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
         let remoteCommand = """
         f=\(rcFile)
         \(repairCommand)
-        grep -qF '__portside_integration_v3' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
+        grep -qF '__portside_integration_v4' "$f" 2>/dev/null || cat >> "$f" <<'PORTSIDE_EOF'
         \(text)
         PORTSIDE_EOF
         """

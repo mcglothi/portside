@@ -37,6 +37,28 @@ final class CommandOutputCaptureTests: XCTestCase {
         XCTAssertEqual(c.recent.first?.finished, true)
     }
 
+    /// Issue #24: a wait ends when a command finishes, and by then the next
+    /// one can already be running. What the agent waited for is the first to
+    /// finish after it asked, not the newest record.
+    func testTheCommandAWaitWasForIsTheFirstToFinishAfterIt() {
+        func e(_ s: String) -> String { osc("E;" + Data(s.utf8).base64EncodedString()) }
+        var c = CommandOutputCapture()
+        feed(&c, osc("C") + e("earlier") + osc("D;0"))
+        let baseline = c.finishedTotal
+        XCTAssertNil(c.firstFinished(after: baseline), "nothing has finished since")
+
+        feed(&c, osc("C") + e("hostname") + "web1\n" + osc("D;0") + osc("C") + e("next") + "busy\n")
+        XCTAssertEqual(c.recent.first?.command, "next", "the head of the list is already the next one")
+        XCTAssertEqual(c.recent.first?.finished, false)
+        XCTAssertEqual(c.firstFinished(after: baseline)?.command, "hostname")
+        XCTAssertEqual(c.firstFinished(after: baseline)?.exitCode, 0)
+        XCTAssertEqual(c.firstFinished(after: baseline)?.output, "web1")
+
+        // Gone from the kept few: nothing, rather than a different command.
+        for i in 0..<CommandOutputCapture.kept { feed(&c, osc("C") + e("n\(i)") + osc("D;0")) }
+        XCTAssertNil(c.firstFinished(after: baseline))
+    }
+
     func testLongOutputKeepsTheTailAndOnlyTheLastFew() {
         var c = CommandOutputCapture()
         let long = (1...6000).map { "line \($0)" }.joined(separator: "\n")

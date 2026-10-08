@@ -586,6 +586,23 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertFalse(ids.contains(leaves[1].id.uuidString), "never the caller's own pane")
     }
 
+    /// A tab with one pane still answers as a list: a client asking for a tab
+    /// handles one shape, not two (issue #24).
+    func testReadingATabOfOnePaneIsStillAList() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        _ = await run(agent, "send", .init(pane: "none", text: "x"), answering: [0]) // grant typing tier
+
+        let r = await run(agent, "screen", .init(pane: "tab"), answering: [0])
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"] else {
+            return XCTFail("expected {panes: [...]}, got \(String(describing: r.result)) \(String(describing: r.error))")
+        }
+        XCTAssertEqual(panes.count, 1)
+    }
+
     /// The popover pauses and resumes; only Settings allows or disallows —
     /// and disallowing resets the opt-ins, so the next enable is the
     /// defaults the warning describes.
