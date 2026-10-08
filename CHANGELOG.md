@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.33.0
 
 **A container or pod session is "connected" when it reaches the container.** Agents were told `connected` as soon as the local shell that runs `kubectl exec` started — while a browser sign-in was still waiting, or after the exec had already failed. Portside now reads the terminal itself: the exec in front with the terminal still cooked is `connecting`, raw mode means it attached, and the local shell back at its prompt means it failed or ended. Only the exec's own program (kubectl, oc or the container engine) counts as the exec, so a login shell still working through its rc file isn't mistaken for one that ran the exec and came back. `connect --wait` waits for that, and `tabs` reports the same `state` with any `problem`.
 
