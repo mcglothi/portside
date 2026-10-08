@@ -199,12 +199,23 @@ enum AskpassInjector {
     /// a crash or force-quit skips both, leaving a password sitting in a
     /// 0600 file until the OS eventually reclaims temp space on its own
     /// schedule. Call at launch, mirroring `RemoteFileEditor.purgeStaleCopies`.
-    nonisolated static func purgeStaleDirectories() {
+    ///
+    /// Only directories older than `staleAfter`. Every running Portside — and
+    /// the test suite — shares this temp directory, so purging everything
+    /// with the prefix deleted *live* ones too: a second Portside launching,
+    /// or a test run, while the first was mid-login took its password file
+    /// out from under ssh, which then asked again. A helper's secret expires
+    /// after 30 seconds, so anything older than this is certainly abandoned.
+    nonisolated static let staleAfter: TimeInterval = 5 * 60
+
+    nonisolated static func purgeStaleDirectories(now: Date = Date()) {
         let fm = FileManager.default
         let temp = fm.temporaryDirectory
-        guard let contents = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)
+        guard let contents = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: [.contentModificationDateKey])
         else { return }
         for url in contents where url.lastPathComponent.hasPrefix(directoryPrefix) {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            guard let modified, now.timeIntervalSince(modified) > staleAfter else { continue }
             try? fm.removeItem(at: url)
         }
     }
