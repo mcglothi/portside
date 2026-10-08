@@ -16,6 +16,7 @@ struct ContainerPickerView: View {
     let onPick: (String) -> Void
 
     @State private var state: LoadState = .loading
+    @State private var slow = false
 
     private enum LoadState {
         case loading
@@ -50,6 +51,7 @@ struct ContainerPickerView: View {
                 Spacer()
                 Button {
                     state = .loading
+                    slow = false
                     Task { await load() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -89,8 +91,21 @@ struct ContainerPickerView: View {
                 Text("Listing \(noun)\u{2026}")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // A browser sign-in (NKP, kubelogin) makes kubectl wait, and
+                // the browser can open behind everything else.
+                if isKubernetes && slow {
+                    Text("Still waiting. If a browser opened to sign in, finish there.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                slow = true
+            }
 
         case .loaded(let items) where items.isEmpty:
             EmptyStateView(
@@ -127,13 +142,28 @@ struct ContainerPickerView: View {
             }
 
         case .failed(let message):
+            let reading = isKubernetes
+                ? KubernetesDiagnosis.diagnose(message, binary: entry.kubernetes?.binary ?? .kubectl) : nil
             VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.title)
                     .foregroundStyle(.orange)
-                Text("Couldn\u{2019}t list \(noun)")
+                Text(reading?.headline ?? "Couldn\u{2019}t list \(noun)")
                     .fontWeight(.medium)
-                Text(message)
+                if let step = reading?.nextStep {
+                    Text(step)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                if reading?.offersSignIn == true {
+                    Text("To sign in, connect to this entry: Portside offers Sign In in the session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                Text(reading?.evidence ?? message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

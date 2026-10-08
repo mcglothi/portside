@@ -59,6 +59,16 @@ enum ContainerLister {
         return try parseContexts(try await run(command: command, entry: entry))
     }
 
+    /// How the entry's context signs in — its credential plugin, API server,
+    /// and whether it holds a token — for choosing the Sign In command.
+    /// `config view` redacts credential data, and only these three facts are
+    /// kept; Portside never reads a token itself.
+    static func signInAuth(for entry: SessionEntry) async -> KubernetesSignIn.Auth? {
+        let command = ShellQuoting.command(kubernetesArguments(entry, ["config", "view", "--minify", "-o", "json"]))
+        guard let output = try? await run(command: command, entry: entry, timeout: 15) else { return nil }
+        return KubernetesSignIn.parse(configView: output)
+    }
+
     /// The containers of the chosen pod or workload, and the one kubectl uses
     /// when none is named (`kubectl.kubernetes.io/default-container`, else
     /// the first).
@@ -102,7 +112,8 @@ enum ContainerLister {
 
     // MARK: - Transport
 
-    private static func run(command: String, entry: SessionEntry) async throws -> String {
+    private static func run(command: String, entry: SessionEntry,
+                            timeout: TimeInterval = ContainerLister.timeout) async throws -> String {
         let executable: String
         let args: [String]
 
@@ -120,7 +131,7 @@ enum ContainerLister {
             args = a
         }
 
-        let result = try await runProcess(executable, args)
+        let result = try await runProcess(executable, args, timeout: timeout)
         guard result.status == 0 else {
             let detail = result.err.trimmingCharacters(in: .whitespacesAndNewlines)
             throw ContainerListerError.failed(detail.isEmpty
@@ -207,44 +218,86 @@ enum ContainerLister {
 
     // MARK: - Process
 
-    private static func runProcess(
-        _ executable: String, _ args: [String]
-    ) async throws -> (status: Int32, out: String, err: String) {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: executable)
-                process.arguments = args
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                process.standardOutput = outPipe
-                process.standardError = errPipe
+    /// Long enough for a browser sign-in: NKP's credential plugin opens one and
+    /// waits for it, and listing is what the user just asked for. Not forever,
+    /// though — before this a plugin waiting on a browser nobody noticed held
+    /// the picker's spinner indefinitely.
+    static let timeout: TimeInterval = 120
 
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
-
-                // Drain stderr concurrently so a chatty pipe can't deadlock us.
-                var errData = Data()
-                let group = DispatchGroup()
-                group.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
-                    errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                    group.leave()
-                }
-                let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                group.wait()
-                process.waitUntilExit()
-
-                continuation.resume(returning: (
-                    process.terminationStatus,
-                    String(data: outData, encoding: .utf8) ?? "",
-                    String(data: errData, encoding: .utf8) ?? ""
-                ))
-            }
+    /// Whether a running listing has been cancelled or timed out, and the pid
+    /// to kill. Shared between the runner and the cancellation handler.
+    private final class Run: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _pid: pid_t = 0
+        private var _stopped = false
+        var stopped: Bool { lock.lock(); defer { lock.unlock() }; return _stopped }
+        func started(_ pid: pid_t) { lock.lock(); _pid = pid; let stop = _stopped; lock.unlock(); if stop { kill(pid) } }
+        func stop() { lock.lock(); _stopped = true; let pid = _pid; lock.unlock(); if pid > 0 { kill(pid) } }
+        /// The whole group: kubectl's credential plugin is its child, and a
+        /// plugin waiting on a browser would outlive kubectl.
+        private func kill(_ pid: pid_t) {
+            Darwin.kill(-pid, SIGTERM)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { Darwin.kill(-pid, SIGKILL) }
         }
+    }
+
+    private static func runProcess(
+        _ executable: String, _ args: [String], timeout: TimeInterval = ContainerLister.timeout
+    ) async throws -> (status: Int32, out: String, err: String) {
+        let run = Run()
+        let result: (status: Int32, out: String, err: String) = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: executable)
+                    process.arguments = args
+                    // Nothing to answer a prompt with: a credential plugin that
+                    // wants to ask on stdin fails rather than waiting.
+                    process.standardInput = FileHandle.nullDevice
+                    let outPipe = Pipe()
+                    let errPipe = Pipe()
+                    process.standardOutput = outPipe
+                    process.standardError = errPipe
+
+                    do {
+                        try process.run()
+                    } catch {
+                        continuation.resume(throwing: error)
+                        return
+                    }
+                    // Foundation starts the child in a process group of its own.
+                    run.started(process.processIdentifier)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                        if process.isRunning { run.stop() }
+                    }
+
+                    // Drain stderr concurrently so a chatty pipe can't deadlock us.
+                    var errData = Data()
+                    let group = DispatchGroup()
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                        group.leave()
+                    }
+                    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.wait()
+                    process.waitUntilExit()
+
+                    continuation.resume(returning: (
+                        process.terminationStatus,
+                        String(data: outData, encoding: .utf8) ?? "",
+                        String(data: errData, encoding: .utf8) ?? ""
+                    ))
+                }
+            }
+        } onCancel: {
+            run.stop()
+        }
+        try Task.checkCancellation()
+        if run.stopped {
+            throw ContainerListerError.failed("Gave up after \(Int(timeout)) seconds. If a browser opened to sign "
+                + "in, finish there and try again.")
+        }
+        return result
     }
 }

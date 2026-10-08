@@ -232,6 +232,12 @@ portside host add 'web (nkp)' --kind kubernetes --target deploy/web \
 portside host add redis --kind container --target redis-1 --engine podman
 ```
 
+If a Kubernetes session can't reach its pod — most often because the
+cluster sign-in has expired — the pane's row in `tabs` carries a `problem`
+(`headline`, `nextStep`, `signInNeeded`). The shell under it is still
+running, so `running` alone reads as fine. Signing in is the user's to do in
+Portside: tell them, don't retry.
+
 Point a Kubernetes entry at a **workload** (`deploy/web`, `sts/db`) rather
 than a pod when you can: kubectl picks a running replica at connect time, and
 the name survives rollouts, where a pod's name doesn't. `--kubeconfig` names a

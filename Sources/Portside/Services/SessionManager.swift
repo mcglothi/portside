@@ -64,6 +64,35 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// Raised by Codex CLI in the 0.17 pre-release review.
     var onTerminalBytes: ((ArraySlice<UInt8>) -> Void)?
 
+    /// Watches kubectl's first words after a Kubernetes exec is typed, for a
+    /// failure worth explaining — see `KubernetesDiagnosis`. Ends at the first
+    /// reading, the user's first keystroke (by then they are in the pod, or
+    /// have read the error), or its deadline, which leaves room for a browser
+    /// sign-in.
+    struct KubernetesWatch {
+        var binary: KubernetesTarget.Binary
+        var until: Date
+        var text = ""
+    }
+    var kubernetesWatch: KubernetesWatch?
+    var onKubernetesDiagnosis: ((KubernetesDiagnosis) -> Void)?
+
+    private func watchKubernetes(_ slice: ArraySlice<UInt8>) {
+        guard var watch = kubernetesWatch else { return }
+        guard Date() < watch.until else { kubernetesWatch = nil; return }
+        guard let text = String(bytes: slice, encoding: .utf8) ?? String(bytes: slice, encoding: .isoLatin1) else { return }
+        watch.text += Self.strippingEscapes(text)
+        if watch.text.count > 16_384 { watch.text = String(watch.text.suffix(16_384)) }
+        // Only whole lines: a message split across reads would match half.
+        let complete = watch.text.components(separatedBy: "\n").dropLast().joined(separator: "\n")
+        if let reading = KubernetesDiagnosis.diagnose(complete, binary: watch.binary) {
+            kubernetesWatch = nil
+            onKubernetesDiagnosis?(reading)
+        } else {
+            kubernetesWatch = watch
+        }
+    }
+
     /// The tail of what this session printed, used to explain why it ended.
     ///
     /// ssh writes its diagnostics to the pty, so the reason a connection
@@ -217,6 +246,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         logger?.append(slice)
         outputCapture?.consume(slice)
         rememberOutput(slice)
+        watchKubernetes(slice)
         onOutput?()
         if onCommand != nil, commandTimeline != nil {
             for var event in commandTimeline!.consume(slice) {
@@ -244,6 +274,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// N× per host) and DA/DSR auto-replies get typed into peers as garbage.
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if !suppressInputMirror {
+            kubernetesWatch = nil
             onUserInput?(data)
         }
         if let transportWriter {
@@ -466,6 +497,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// name that would not resolve, a changed host key — reached the user as
     /// the same three words.
     @Published private(set) var diagnosis: ConnectionDiagnosis?
+    /// Why a Kubernetes exec didn't reach the pod, while the local shell it was
+    /// typed into is still running. Cleared by Try Again or Dismiss.
+    @Published var kubernetesDiagnosis: KubernetesDiagnosis?
 
     /// Whether something on the other end is currently reading a secret.
     ///
@@ -1250,6 +1284,7 @@ final class SessionManager: ObservableObject {
                                  deadline: .now() + Self.postConnectAuthTimeout)
         }
         if let command = entry.postConnectCommand {
+            if entry.kind == .kubernetes { watchKubernetesExec(session, entry: entry) }
             sendWhenNotPrompting(command, to: session, deadline: .now() + Self.postConnectAuthTimeout)
         }
         // Logged immediately so a failure leaves a trace, but deliberately not
@@ -1299,6 +1334,40 @@ final class SessionManager: ObservableObject {
     ///
     /// Transports with no child process (serial, telnet) have no termios to
     /// read and send immediately, exactly as before.
+    /// Three minutes: long enough for a browser sign-in to finish and kubectl
+    /// to report on it.
+    static let kubernetesWatchWindow: TimeInterval = 180
+
+    private func watchKubernetesExec(_ session: TerminalSession, entry: SessionEntry) {
+        session.kubernetesDiagnosis = nil
+        session.terminalView.kubernetesWatch = .init(binary: entry.kubernetes?.binary ?? .kubectl,
+                                                     until: Date().addingTimeInterval(Self.kubernetesWatchWindow))
+        session.terminalView.onKubernetesDiagnosis = { [weak session] reading in
+            DispatchQueue.main.async { session?.kubernetesDiagnosis = reading }
+        }
+    }
+
+    /// Types the provider's own sign-in command into the pane, where the user
+    /// watches it run. Never run on Portside's own initiative: only from the
+    /// button the diagnosis offers.
+    func signInToKubernetes(_ session: TerminalSession) {
+        guard let entry = session.entry, entry.kind == .kubernetes, let target = entry.kubernetes else { return }
+        Task { @MainActor [weak session] in
+            let auth = await ContainerLister.signInAuth(for: entry)
+            guard let session, session.isRunning else { return }
+            session.kubernetesDiagnosis = nil
+            session.sendText(KubernetesSignIn.command(for: target, auth: auth, local: entry.usesLocalTransport) + "\r")
+        }
+    }
+
+    /// Types the exec again into the same pane — its shell is still at the
+    /// prompt — and watches again.
+    func retryKubernetes(_ session: TerminalSession) {
+        guard let entry = session.entry, let command = entry.postConnectCommand, session.isRunning else { return }
+        watchKubernetesExec(session, entry: entry)
+        session.sendText(command + "\r")
+    }
+
     private func sendWhenNotPrompting(_ command: String, to session: TerminalSession,
                                       deadline: DispatchTime) {
         guard session.isRunning else { return }   // died during auth; nothing to send to

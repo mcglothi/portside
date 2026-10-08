@@ -1296,6 +1296,13 @@ final class AgentController: ObservableObject {
                         "hostID": JSONValue(leaf.entry?.id.uuidString),
                         "running": .bool(leaf.isRunning),
                         "connected": .bool(leaf.didConnect),
+                        // A Kubernetes exec that failed leaves its shell running,
+                        // so "running" alone reads as fine. Signing in is the
+                        // user's to do — an agent can only tell them.
+                        "problem": leaf.kubernetesDiagnosis.map { d in
+                            .object(["headline": .string(d.headline), "nextStep": JSONValue(d.nextStep),
+                                     "signInNeeded": .bool(d.offersSignIn)])
+                        } ?? .null,
                     ])
                 }),
             ])
