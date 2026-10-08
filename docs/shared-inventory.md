@@ -13,15 +13,82 @@ uses, such as the SSH agent or a credential helper.
 
 ## Publishing
 
-1. In Portside, select the hosts to share. Then choose **File ▸ Export
-   Sessions…**.
-2. Commit the exported file to a **private** repository. The default name is
-   `portside.json` at the root of the repo.
-3. To publish a change, export again and commit. The export is sorted and
-   pretty-printed, so diffs stay small and show only what changed.
+You publish from **one of your own folders**. You edit hosts there as usual,
+and Portside sends your changes to the team's repository for review.
 
-No secrets go into the file. Passwords stay in each person's Keychain, and
-credential profile assignments are dropped on the way in.
+### Starting a shared inventory
+
+Right-click a folder and choose **New Shared Inventory from Folder…**. Give
+it a name, the git URL of an **empty** repository, a branch and a manifest
+path. Portside publishes the folder's hosts as the first version, and
+subscribes you to it, so the team's view appears as its own root. The folder
+gets an ↑ badge: it now publishes to that inventory.
+
+Portside refuses a repository that already holds an inventory, so nothing of
+the team's is ever overwritten. To contribute to one, link a folder instead.
+
+### Contributing to one that exists
+
+Subscribe to it (File ▸ Shared Inventory…), then right-click its root and
+choose **Link Folder for Publishing…**. Portside copies the team's hosts into a
+folder of your own. That copy is what you edit, and it remembers which team
+host each one is, so an edit publishes as a change rather than a new host.
+
+### Publish Changes
+
+Right-click the linked folder and choose **Publish Changes…**. Portside
+fetches the team's latest version and shows the review before anything is
+sent:
+
+- **From the team since your last publish:** what teammates changed. It comes
+  into your folder when you publish, while your personal settings on those
+  hosts stay as they are.
+- **Changed on both sides:** a host you and a teammate both changed, shown
+  side by side. Choose **Mine** or **Theirs** for each one. Hosts are matched
+  by identity, not by name, so a rename is one change, and two people adding
+  hosts never conflict.
+- **Your changes:** added, removed, and changed hosts, field by field
+  (`environment: prod → staging`).
+- **Left out:** personal settings that never leave your Mac: run-on-connect,
+  agent and X11 forwarding, credential profiles, saved passwords and
+  favourites. What's published is exactly what subscribers would keep.
+- **Looks like a secret:** a token, key, or `user:password@` URL anywhere in a
+  name, folder or key path blocks the publish until you remove it.
+
+By default Portside **pushes a review branch** (`portside/<you>-<date>`) and
+offers **Open Pull Request**, using the link your forge prints on push
+(GitHub, GitLab, Gitea and Bitbucket all print one). Nothing reaches
+subscribers until the PR is merged. For a solo or small trusted repository,
+**Push Directly to main** on the folder's menu fast-forwards the branch
+instead.
+
+Portside **never force-pushes**. A protected branch, or a push someone else
+made first, is reported in git's own words. It uses your git setup (SSH agent
+or credential helper) and never prompts. Commits carry your
+`user.name`/`user.email`; if git doesn't know who you are, nothing is
+committed and Portside tells you how to set it.
+
+### Checking pull requests in CI
+
+`Scripts/portside-inventory-check.py` is a single file with no dependencies.
+Copy it into your inventory repository and it applies the same rules Portside
+does: unreadable manifests, duplicate ids, values ssh would read as options,
+and anything that looks like a secret fail the check. Records subscribers
+would skip produce warnings. For GitHub Actions:
+
+```yaml
+name: inventory
+on: pull_request
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 portside-inventory-check.py portside.json
+```
+
+With branch protection requiring that check and a review, a bad or unsafe
+change can't reach the branch everyone subscribes to.
 
 ## Subscribing
 
@@ -100,5 +167,4 @@ sidebar.
 
 - Verifying signed commits or tags on a source.
 - Merging shared folders and your own into one tree.
-- Publishing from inside Portside. Contributions go through the team's
-  normal review, as a branch and a merge request.
+- Signed commits on publish (your git's own `commit.gpgsign` applies if set).

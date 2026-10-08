@@ -163,6 +163,17 @@ final class InventoryPublisherTests: XCTestCase {
                         .contains("merge_requests/new") == true)
     }
 
+    /// Captured from a real `git push --porcelain` to github.com on
+    /// 2026-10-08 — trailing spaces included, which is how GitHub sends it.
+    func testRealGitHubPushOutput() {
+        let real = "remote: \nremote: Create a pull request for 'zz-format-probe' on GitHub by visiting:        \n"
+            + "remote:      https://github.com/mcglothi/portside-inventory-test/pull/new/zz-format-probe        \n"
+            + "remote: \n"
+        XCTAssertEqual(InventoryPublisher.pullRequestURL(fromPushOutput: real, remote: "x", base: "main",
+                                                         head: "zz-format-probe")?.absoluteString,
+                       "https://github.com/mcglothi/portside-inventory-test/pull/new/zz-format-probe")
+    }
+
     func testGitHubCompareLinkWhenThePushSaysNothing() {
         for remote in ["git@github.com:acme/inventory.git", "https://github.com/acme/inventory",
                        "ssh://git@github.com/acme/inventory.git"] {

@@ -145,6 +145,31 @@ ids that don't depend on their local ids:
 - No editing of shared hosts in place in the source tree.
 - No locking. Branches and review do that job.
 
+## As built
+
+Everything above shipped, tested against local bare repositories and live
+against a private GitHub repository (fake hosts only). What the live run
+found:
+
+- **GitHub prints its PR link even under `git push --porcelain`**, with
+  trailing spaces. That exact output is a test fixture now.
+- **The review sheet's layout failed twice** before it worked. A bare
+  `ScrollView` cut the list to one line. `ViewThatFits` always chose "fits",
+  because a sheet offers unlimited height. Then the real cause turned up: the
+  sheet sizes to its *first* content, the "Fetching…" spinner, and never grew
+  when the review loaded. Now it has a fixed size and scrolls inside.
+- The new-inventory summary counted personal-setting **notes** as **hosts**.
+- In the tests:
+  - The CI validator's agreement test passed with the validator's
+    leading-dash rule removed. Every dash fixture was also refused by the
+    character rule. Hosts like `-oops` were added so the rule is tested on
+    its own.
+  - The base rule is falsified by a test: with the naive "base = what I
+    pushed", a second publish silently drops a change still in review.
+
+The CI validator is Python, not a `portside` subcommand: team CI mostly runs
+on Linux, where a macOS binary is useless.
+
 ## Phasing within this PR
 
 1. Manifest writer (sanitized, sorted, stable) and the three-way merge by id.

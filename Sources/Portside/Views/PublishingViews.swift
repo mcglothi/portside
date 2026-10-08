@@ -170,6 +170,8 @@ struct PublishChangesView: View {
     @State private var loadError: String?
     @State private var resolutions: [UUID: InventoryPublishing.Side] = [:]
     @State private var message = ""
+    /// Once the user types a message, choices no longer rewrite it.
+    @State private var messageEdited = false
     @State private var working = false
     @State private var error: String?
     @State private var done: InventoryPublisher.Result?
@@ -190,8 +192,7 @@ struct PublishChangesView: View {
             }
         }
         .padding(18)
-        .frame(width: 620)
-        .frame(minHeight: 260)
+        .frame(width: 620, height: 540, alignment: .top)
         .task { await load() }
     }
 
@@ -233,8 +234,7 @@ struct PublishChangesView: View {
         let changes = plan.changes(resolutions)
         let incoming = plan.incoming
         let unresolved = merge.conflicts.filter { resolutions[$0.id] == nil }
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        let body = VStack(alignment: .leading, spacing: 14) {
                 if !incoming.isEmpty {
                     section("From the team since your last publish (\(incoming.count))",
                             note: "These come into your folder when you publish.") {
@@ -252,13 +252,16 @@ struct PublishChangesView: View {
                 }
                 section("Your changes (\(changes.count))") {
                     if changes.isEmpty {
-                        Text("Nothing to publish: the team already has exactly this.").foregroundStyle(.secondary)
+                        Text(unresolved.isEmpty ? "Nothing to publish: the team already has exactly this."
+                             : "Choose a version for each host above; keeping yours makes it a change to publish.")
+                            .foregroundStyle(.secondary)
                     }
                     ForEach(changes) { ChangeRow(change: $0) }
                 }
                 if !plan.mine.notes.isEmpty {
                     section("Left out (\(plan.mine.notes.count))", note: "Personal settings never leave your Mac.") {
-                        ForEach(Array(Set(plan.mine.notes)).sorted { $0.host < $1.host }, id: \.self) { n in
+                        ForEach(Array(Set(plan.mine.notes)).sorted { ($0.host, $0.text) < ($1.host, $1.text) },
+                                id: \.self) { n in
                             Text("\(n.host): \(n.text)").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -272,9 +275,19 @@ struct PublishChangesView: View {
                     }
                 }
             }
-        }
-        .frame(maxHeight: 380)
-        TextField("Commit message", text: $message)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        // Fills the sheet and scrolls within it. The sheet itself has a fixed
+        // size: a sheet sizes to its first content — the "Fetching…" spinner —
+        // and didn't grow when the review loaded, so the review overflowed
+        // both ends and hid the buttons. Two dynamic-sizing attempts failed
+        // live before this.
+        ScrollView { body }
+            .frame(maxHeight: .infinity)
+        TextField("Commit message", text: Binding(get: { message },
+                                                  set: { message = $0; messageEdited = true }))
+            .onChange(of: resolutions) { _, now in
+                if !messageEdited { message = Self.defaultMessage(plan.changes(now)) }
+            }
         if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
         HStack {
             if working { ProgressView().controlSize(.small); Text("Publishing\u{2026}").foregroundStyle(.secondary) }
@@ -384,10 +397,14 @@ struct PublishSummary: View {
             if !skipped.isEmpty {
                 Text("\(skipped.count) left out (only SSH hosts can be shared).").font(.caption).foregroundStyle(.secondary)
             }
-            let fields = prepared.notes.count - skipped.count
-            if fields > 0 {
-                Text("Personal settings left out on \(fields) host\(fields == 1 ? "" : "s"): run-on-connect, "
-                     + "forwarding, credential profiles, favourites.")
+            // Notes are per field; say how many *hosts*, and which settings
+            // were actually found rather than a generic list.
+            let personal = prepared.notes.filter { !$0.text.hasPrefix("not published") }
+            let hosts = Set(personal.map(\.host)).count
+            let kinds = Array(Set(personal.map { $0.text.replacingOccurrences(of: " left out", with: "") })).sorted()
+            if hosts > 0 {
+                Text("Personal settings left out on \(hosts) host\(hosts == 1 ? "" : "s"): "
+                     + kinds.joined(separator: ", ") + ".")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
