@@ -279,6 +279,19 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(AgentPolicy.screenText(raw, lines: 2), "two\nthree")
     }
 
+    /// A line longer than the terminal comes back whole. CI's hostname made
+    /// the prompt long enough to wrap an echoed command, and the screen read
+    /// split it in two, so an agent searching for it found nothing.
+    @MainActor
+    func testScreenReadJoinsSoftWrappedRows() {
+        let h = TerminalHarness(cols: 10, rows: 5)
+        h.feed("abcdefghij klmnopq\r\nnext\r\nhard\r\nbreak")
+        XCTAssertEqual(AgentController.screenLines(h.terminal)
+                        .components(separatedBy: "\n").filter { !$0.isEmpty },
+                       ["abcdefghij klmnopq", "next", "hard", "break"],
+                       "the wrapped row joins its line, the space at the edge kept; real newlines stay")
+    }
+
     func testTypingIsRefusedUntilItsOwnSwitchIsOn() async {
         let (agent, _, _) = controller([host("web1")])
         agent.setEnabled(true)
