@@ -496,6 +496,12 @@ struct TerminalPane: View {
                 if !session.isRunning {
                     endedBar
                         .padding(.bottom, 18)
+                } else if let reading = session.kubernetesDiagnosis {
+                    KubernetesProblemBar(reading: reading,
+                                         onSignIn: { sessions.signInToKubernetes(session) },
+                                         onRetry: { sessions.retryKubernetes(session) },
+                                         onDismiss: { session.kubernetesDiagnosis = nil })
+                        .padding(.bottom, 18)
                 }
             }
     }
@@ -561,6 +567,57 @@ struct TerminalPane: View {
 ///
 /// Deliberately contains no secret: `ssh -G` prints paths and policies, and
 /// the credential line names a *source* rather than a value.
+/// kubectl failed and left the local shell it was typed into at its prompt,
+/// so the session is still "running" and the ended-session bar never shows.
+/// Same shape as that bar: what happened, what to do, and kubectl's own line
+/// as the evidence. Sign In types the provider's command into the pane;
+/// nothing signs in unless it's pressed.
+struct KubernetesProblemBar: View {
+    let reading: KubernetesDiagnosis
+    let onSignIn: () -> Void
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(reading.headline)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Spacer(minLength: 8)
+                if reading.offersSignIn {
+                    // No keyboard shortcut: the shell under this bar is live,
+                    // and a Return meant for it must not sign anyone in.
+                    Button("Sign In", action: onSignIn)
+                        .help("Type this cluster\u{2019}s sign-in command into this pane")
+                }
+                Button("Try Again", action: onRetry)
+                    .help("Run the exec again in this pane")
+                Button("Dismiss", action: onDismiss)
+            }
+            if let step = reading.nextStep {
+                Text(step)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(reading.evidence)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 560)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
+    }
+}
+
 struct ConnectionExplanationSheet: View {
     @EnvironmentObject var sessions: SessionManager
     /// An entry, not a session: the same question is worth asking *before*

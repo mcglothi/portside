@@ -66,11 +66,14 @@ exists to fill that gap without giving up native speed and macOS polish.
 - **Session library with folders** — organize hosts under `prod`, `nonprod`,
   `personal`, nested as deep as you like. Everything is editable in place.
 - **Containers & Kubernetes as first-class sessions** — save a docker/podman
-  container or a `kubectl` pod (context-aware for NKP, GKE, and any kubeconfig)
-  the same way you save a host. It runs on this Mac or through an SSH jump host,
-  and shows up in the library, Quick Connect, and recents like everything else.
-  Browse live `docker ps` / `kubectl get pods` from the editor so you never
-  have to remember a churning name.
+  container, or a Kubernetes workload or pod through `kubectl` or `oc` (NKP,
+  GKE, OpenShift, any kubeconfig, including a per-cluster file), the same way
+  you save a host. It runs on this Mac or through an SSH jump host, and shows
+  up in the library, Quick Connect, and recents like everything else. Browse
+  contexts, workloads (`deploy/web` survives rollouts), pods and containers
+  from the editor so you never have to remember a churning name. When a
+  cluster sign-in has expired, the session says so and offers the platform's
+  own Sign In — Portside never holds a token.
 - **`~/.ssh/config` import** — seeds the library on first launch (follows
   `Include` directives); re-import merges new hosts anytime.
 - **Import from MobaXterm** — bring over `.mxtsessions` / `.mxtmacros` files
