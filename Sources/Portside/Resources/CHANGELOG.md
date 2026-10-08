@@ -3,7 +3,11 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.30.0
+
+**Run, then wait.** An agent no longer has to poll: `send … --enter --wait 30` types a command, runs it, and returns its exit code and output in the same call; `last --wait` waits for a running command; `connect --wait` answers once every session has connected, failed, or stopped at a password prompt. A wait that runs out says so instead of hanging.
+
+**Don't Ask, scoped.** Don't Ask can be limited to hosts matching a filter — `env:dev folder:lab` — so lab boxes run uninterrupted while everything else, and local shells, still ask. The field shows how many hosts the scope covers; a pattern that doesn't parse covers nothing.
 
 **Don't Ask, for trusted setups.** Settings ▸ Agents can answer agent confirmations yes on your behalf, so an agent can work alongside you without a prompt per step — new programs are let in, panes are read and typed into, and large selections open without asking. It is opt-in behind a warning with Cancel as the default, shows as an orange ⚡ in the toolbar, and switches off when Portside quits unless you choose to keep it on; once allowed, the ⚡'s popover enables and disables it in one click, and disallowing it in Settings resets every opt-in so the next enable starts from the safest defaults. Some things it never relaxes: nothing is typed at a password prompt, MultiExec is never armed by an agent, typing still needs its own switch, and protected hosts still ask unless you separately include them. Every prompt it skips is in the log as auto-approved.
 

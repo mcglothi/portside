@@ -603,4 +603,89 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertFalse(agent.skipsPrompt(protected: true), "a fresh enable doesn't remember including protected hosts")
         XCTAssertFalse(agent.settings.dontAskPersists, "nor keeping it on across quits")
     }
+
+    // MARK: - Scoped Don't Ask
+
+    func testDontAskScopeCoversOnlyMatchingHosts() async {
+        let lab = host("lab1", env: .dev)
+        var prod = host("web1", env: .prod)
+        prod.folder = "prod"
+        var prod2 = host("web2", env: .prod)
+        prod2.folder = "prod"
+        let (agent, _, sessions) = controller([lab, prod, prod2])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        agent.setDontAskScope("env:dev")
+        defer { agent.setEnabled(false) }
+
+        XCTAssertTrue(agent.skipsPrompt(protected: false, hosts: [lab]))
+        XCTAssertFalse(agent.skipsPrompt(protected: false, hosts: [prod]), "outside the scope asks")
+        XCTAssertFalse(agent.skipsPrompt(protected: false, hosts: [lab, prod]), "every host must match")
+        XCTAssertFalse(agent.skipsPrompt(protected: false, hosts: [nil]), "a local shell has no host to match")
+        XCTAssertTrue(agent.skipsPrompt(protected: false), "letting a program in isn't about a host")
+        agent.setDontAskScope("/[/")
+        XCTAssertFalse(agent.skipsPrompt(protected: false, hosts: [lab]), "a broken scope covers nothing")
+        XCTAssertNil(agent.scopeCoverage("/[/"))
+        agent.setDontAskScope("env:dev")
+        XCTAssertEqual(agent.scopeCoverage("env:dev")?.matched, 1)
+
+        // Two prod hosts over a cap of one needs a confirmation; being
+        // outside the scope, Don't Ask must not answer it.
+        _ = await run(agent, "status")
+        agent.setConnectCap(1)
+        let task = Task { await agent.handle(.init(method: "connect", params: .init(query: "env:prod")), from: claude) }
+        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertNotNil(agent.prompt)
+        agent.answer(agent.prompt?.refusal)
+        _ = await task.value
+        XCTAssertTrue(sessions.tabs.allSatisfy(\.isStartPage))
+
+        agent.setDontAskAllowed(false)
+        XCTAssertEqual(agent.settings.dontAskScope, "", "disallowing resets the scope too")
+    }
+
+    // MARK: - Waiting
+
+    /// Type, run, wait, read in one call — on a real shell, with the command
+    /// boundaries a host's shell integration would print.
+    func testSendWithWaitReturnsTheCommandsResult() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        for _ in 0..<300 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        // Local shells aren't in a host scope; the default (all) covers them.
+
+        let marker = "waited-\(UUID().uuidString.prefix(6))"
+        let line = "printf '\\033]133;C\\007'; sleep 1; echo \(marker); printf '\\033]133;D;0\\007'"
+        let started = Date()
+        let r = await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: line,
+                                                                       enter: true, wait: 20)), from: claude)
+        guard case .object(let o)? = r.result else { return XCTFail("\(String(describing: r.error))") }
+        XCTAssertEqual(o["waitedOut"], .bool(false))
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 0.9, "it waited for the sleep")
+        guard case .object(let row)? = o["result"], case .array(let cmds)? = row["commands"],
+              case .object(let cmd)? = cmds.first else { return XCTFail("no result: \(o)") }
+        XCTAssertEqual(cmd["output"], .string(marker))
+        XCTAssertEqual(cmd["exitCode"], JSONValue(0))
+    }
+
+    func testWaitGivesUpAtItsTimeoutAndSaysSo() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        let started = Date()
+        let r = await agent.handle(.init(method: "last-command", params: .init(pane: pane.id.uuidString, wait: 1)),
+                                   from: claude)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        if case .object(let o)? = r.result { XCTAssertEqual(o["waitedOut"], .bool(true)) }
+        else { XCTAssertNotNil(r.error, "nothing ran: either an empty result or a not-found, never a hang") }
+    }
 }

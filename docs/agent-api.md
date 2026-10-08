@@ -152,6 +152,20 @@ every program and stops the output capture. While it's on:
 - An **"Agent typing" badge** shows on the pane for a few seconds after each
   send.
 
+### Run, then wait
+
+An agent shouldn't have to poll. Three requests can wait, up to 120 seconds:
+
+- **`send … --enter --wait 30`** types the command, runs it, waits for it to
+  finish, and returns its exit code and output, all in one call.
+- **`last PANE --wait 30`** waits for a command that's still running.
+- **`connect QUERY --wait 20`** answers once every session has connected,
+  failed, or stopped at a password prompt, and reports each one's state.
+
+A wait that runs out says so (`waitedOut`) instead of hanging. Waiting on a
+command needs shell integration on the host, which is the same thing that
+marks where commands start and end.
+
 ### Several panes at once
 
 An agent sees only what it asks for. Nothing is streamed to it. `tabs` gives
@@ -207,6 +221,12 @@ interrupting. It's the counterpart of `claude --dangerously-skip-permissions`.
   crossed-out ⚡ while it's allowed but off.
 - **Logged:** every prompt it answered appears in the log as
   `auto-approved: …`.
+
+- **Scoped:** *Only for hosts matching* takes the sidebar filter syntax, for
+  example `env:dev folder:lab`. Inside the scope, nothing asks. Outside it,
+  and for local shells (no host to match), prompts work as usual. A pattern
+  that doesn't parse covers nothing. The field shows how many hosts the
+  scope covers.
 
 Turning it on shows a warning first, and Cancel is the default.
 

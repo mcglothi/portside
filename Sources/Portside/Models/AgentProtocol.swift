@@ -57,6 +57,10 @@ enum AgentProtocol {
         var lines: Int?
         /// How many recent commands to return, for `last-command`.
         var count: Int?
+        /// Seconds to wait before answering: for `last-command`, until a
+        /// command finishes that hadn't when asked; for `connect`, until the
+        /// opened sessions are connected (or have failed). Capped at 120.
+        var wait: Int?
     }
 
     struct Response: Codable, Sendable {
