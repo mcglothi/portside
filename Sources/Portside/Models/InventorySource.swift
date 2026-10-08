@@ -286,3 +286,66 @@ struct SharedInventoryState: Equatable {
     var error: String?
     var isSyncing = false
 }
+
+
+/// A local folder that publishes to a subscribed source — the write half of
+/// shared inventory. The folder is the user's own, edited as usual; the
+/// source's root stays the team's read-only view of what's merged. See
+/// `docs/inventory-publishing-plan.md`.
+struct PublishLink: Codable, Equatable, Identifiable {
+    var id: UUID { sourceID }
+    var sourceID: UUID
+    /// The local folder whose subtree is published, paths made relative to it.
+    var folder: String
+    /// Opt-in: push straight to the source's branch instead of a review branch.
+    var directPush = false
+    /// Local id → manifest id, for hosts that came from the source. Kept as
+    /// strings so the file stays readable JSON rather than a pair array.
+    var manifestIDStrings: [String: String] = [:]
+
+    init(sourceID: UUID, folder: String, directPush: Bool = false) {
+        self.sourceID = sourceID
+        self.folder = folder
+        self.directPush = directPush
+    }
+
+    var manifestIDs: [UUID: UUID] {
+        get {
+            Dictionary(manifestIDStrings.compactMap { k, v in
+                UUID(uuidString: k).flatMap { key in UUID(uuidString: v).map { (key, $0) } }
+            }, uniquingKeysWith: { a, _ in a })
+        }
+        set { manifestIDStrings = Dictionary(newValue.map { ($0.key.uuidString, $0.value.uuidString) },
+                                             uniquingKeysWith: { a, _ in a }) }
+    }
+
+    enum CodingKeys: String, CodingKey { case sourceID, folder, directPush, manifestIDStrings }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try c.decode(UUID.self, forKey: .sourceID)
+        folder = try c.decode(String.self, forKey: .folder)
+        directPush = try c.decodeIfPresent(Bool.self, forKey: .directPush) ?? false
+        manifestIDStrings = try c.decodeIfPresent([String: String].self, forKey: .manifestIDStrings) ?? [:]
+    }
+}
+
+extension SharedManifest {
+    /// A manifest read for *publishing*: sanitized exactly as subscribers read
+    /// it, but keeping the manifest's own ids rather than per-source ones —
+    /// those are what a three-way merge matches on.
+    static func parseKeepingIDs(_ data: Data) throws -> Parsed {
+        let scratch = UUID()
+        var parsed = try parse(data, sourceID: scratch)
+        // `parse` derived each id from (scratch, manifest id); undo that by
+        // pairing in the original order of the surviving records.
+        struct Raw: Decodable { var entries: LenientArray<SessionEntry>? }
+        let raw = (try? JSONDecoder().decode(Raw.self, from: data))?.entries?.elements ?? []
+        let byDerived = Dictionary(raw.map { (entryID(sourceID: scratch, manifestID: $0.id), $0.id) },
+                                   uniquingKeysWith: { a, _ in a })
+        for i in parsed.entries.indices {
+            if let original = byDerived[parsed.entries[i].id] { parsed.entries[i].id = original }
+        }
+        return parsed
+    }
+}

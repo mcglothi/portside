@@ -190,6 +190,42 @@ enum InventoryPublishing {
         return pairs.filter { $0.1 != $0.2 }.map { FieldChange(field: $0.0, before: $0.1, after: $0.2) }
     }
 
+    // MARK: - A publish, planned
+
+    /// Everything Publish Changes shows before anything is sent.
+    struct Plan {
+        var source: InventorySource
+        var link: PublishLink
+        /// The merge base: the team's version as of the last publish or link.
+        var base: [SessionEntry]
+        var baseFolders: [String]
+        /// The linked folder, prepared.
+        var mine: Prepared
+        /// The team's version now.
+        var theirs: [SessionEntry]
+        var theirFolders: [String]
+        /// Whether the source's branch exists yet (false: a brand-new repo).
+        var remoteBranchExists: Bool
+
+        func merged(_ resolutions: [UUID: Side] = [:]) -> Merge {
+            InventoryPublishing.merge(base: base, mine: mine.hosts, theirs: theirs,
+                                      baseFolders: baseFolders, mineFolders: mine.folders,
+                                      theirFolders: theirFolders, resolutions: resolutions)
+        }
+
+        /// What this publish changes on the team's side.
+        func changes(_ resolutions: [UUID: Side] = [:]) -> [Change] {
+            InventoryPublishing.changes(from: theirs, to: merged(resolutions).hosts)
+        }
+
+        /// What the team changed since the base that will come into the
+        /// folder — shown so a publish never surprises anyone in either
+        /// direction.
+        var incoming: [Change] { InventoryPublishing.changes(from: base, to: theirs) }
+
+        var secrets: [Note] { InventoryPublishing.secretFindings(in: mine.hosts, folders: mine.folders) }
+    }
+
     // MARK: - Secrets
 
     /// Values that look like credentials, which must never be committed.
