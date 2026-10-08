@@ -91,9 +91,34 @@ cosmetic: everything after a ZWJ emoji on that line sits in the wrong place,
 and a shell prompt carrying one will corrupt. Upstream in SwiftTerm. The suite
 pins the column accounting so a bump that changes it is noticed.
 
-Still to cover: vttest, tmux, vim/neovim, ncurses, OSC 52, Sixel, Kitty
-graphics, iTerm2 inline images. Those need either a real child process or
-fixture captures, which is a bigger lift than the byte-level cases.
+**Real programs since 0.31.** `LiveTerminalHarness` runs a program in a real
+pty and feeds its output to the same headless parser, with the terminal's
+replies going back to the program and resizes going through the pty as
+SIGWINCH. Assertions are on what the program actually drew:
+
+- **vim** (`TerminalLiveVimTests`): the status line lands on the right row,
+  the shell's screen comes back on exit, a resize larger and smaller is
+  redrawn and reported back by vim itself, a long line wraps onto exactly the
+  rows vim expects, vim and the terminal agree on CJK columns, and typed
+  input reaches the file.
+- **tmux** (`TerminalLiveTmuxTests`): the status bar on the last row, pane
+  borders in UTF-8 *and* in the DEC line-drawing set (what tmux uses without
+  a UTF-8 locale, confirmed from its raw output), a resize reaching both tmux
+  and the shell in its pane, and the screen restored on exit.
+
+vim and tmux run with no config files, tmux on a private socket, so the
+machine's setup can't change the result. CI installs tmux; without it the
+tmux cases skip rather than fail. Eleven cases, about ten seconds.
+
+Building it found one trap worth knowing: a child inherits its parent
+thread's signal mask, and Swift's async test threads block signals, so a
+program spawned from one never received SIGWINCH. The app spawns from the
+main thread and isn't affected, but anything that spawns a pty off a
+background queue would give its program a dead resize.
+
+Still to cover: vttest, neovim, ncurses beyond tmux, OSC 52, Sixel, Kitty
+graphics, iTerm2 inline images, mouse reporting from a real program, and
+large pastes into a real program.
 
 **What would satisfy it:** an executable suite — vttest, tmux, vim/neovim,
 ncurses, Unicode width, combining marks, CJK, emoji/ZWJ, bracketed paste, mouse
