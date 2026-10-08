@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.30.0
 
 **Run, then wait.** An agent no longer has to poll: `send … --enter --wait 30` types a command, runs it, and returns its exit code and output in the same call; `last --wait` waits for a running command; `connect --wait` answers once every session has connected, failed, or stopped at a password prompt. A wait that runs out says so instead of hanging.
 
