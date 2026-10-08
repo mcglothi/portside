@@ -19,6 +19,9 @@ APP=build/Portside.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/Portside "$APP/Contents/MacOS/Portside"
+# The `portside` command for Agent Access. Lives beside the app binary so it
+# is signed, notarized and updated with it; Settings ▸ Agents links it onto PATH.
+cp .build/release/portside-cli "$APP/Contents/MacOS/portside-cli"
 
 # SPM resource bundle (bundled themes etc.); TerminalTheme.resourceBundle
 # looks for it in Contents/Resources. (Not Bundle.module — SwiftPM's generated
@@ -145,10 +148,14 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --options runtime --sign "$SIGN_IDENTITY" \
         "$SPARKLE/Versions/B/Updater.app"
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$SPARKLE"
+    # A second executable in MacOS/ is nested code: notarization rejects the
+    # bundle unless it carries its own signature with the hardened runtime.
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/portside-cli"
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP"
     echo "Built $APP (version ${VERSION}, build ${BUILD}) — Developer ID: $SIGN_IDENTITY"
 else
     codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
+    codesign --force --sign - "$APP/Contents/MacOS/portside-cli"
     codesign --force --sign - "$APP"
     echo "Built $APP (version ${VERSION}, build ${BUILD}) — ad-hoc signed"
 fi

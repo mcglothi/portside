@@ -1140,19 +1140,26 @@ private struct SidebarRowLabel: View {
         HStack(spacing: 8) {
             Image(systemName: entry.icon).foregroundStyle(model.emphasized ? .white : .secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(entry.name).foregroundStyle(primary)
-                Text(entry.subtitle).font(.caption).foregroundStyle(secondary)
+                MarqueeText(text: entry.name, font: .body, color: primary, isActive: hoveringEntry)
+                MarqueeText(text: entry.subtitle, font: .caption, color: secondary, isActive: hoveringEntry)
             }
+            .layoutPriority(1)
+            .help("\(entry.name)\n\(entry.subtitle)")
             Spacer(minLength: 4)
-            if entry.isFavorite || hoveringEntry {
-                favoriteButton(isFavorite: entry.isFavorite)
+            // Fixed at their own size: the text beside them is the thing that
+            // gives way on a narrow sidebar, never the badges.
+            Group {
+                if entry.isFavorite || hoveringEntry {
+                    favoriteButton(isFavorite: entry.isFavorite)
+                }
+                if entry.isProtected {
+                    Image(systemName: "lock.fill").font(.caption2)
+                        .foregroundStyle(model.emphasized ? .white : .secondary).help("Protected host")
+                }
+                TransportBadge(entry: entry)
+                EnvironmentBadge(environment: entry.environment)
             }
-            if entry.isProtected {
-                Image(systemName: "lock.fill").font(.caption2)
-                    .foregroundStyle(model.emphasized ? .white : .secondary).help("Protected host")
-            }
-            TransportBadge(entry: entry)
-            EnvironmentBadge(environment: entry.environment)
+            .fixedSize()
         }
         .onHover { hoveringEntry = $0 }
     }
@@ -1164,10 +1171,12 @@ private struct SidebarRowLabel: View {
             Image(systemName: "square.grid.2x2.fill")
                 .foregroundStyle(model.emphasized ? .white : .secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(group.name).foregroundStyle(primary)
+                MarqueeText(text: group.name, font: .body, color: primary, isActive: hoveringEntry)
                 Text("\(group.paneCount) pane\(group.paneCount == 1 ? "" : "s")")
-                    .font(.caption).foregroundStyle(secondary)
+                    .font(.caption).foregroundStyle(secondary).lineLimit(1)
             }
+            .layoutPriority(1)
+            .help(group.name)
             Spacer(minLength: 4)
             if group.isFavorite || hoveringEntry {
                 favoriteButton(isFavorite: group.isFavorite)
@@ -1196,7 +1205,9 @@ private struct SidebarRowLabel: View {
             Image(systemName: folder.isSourceRoot ? "person.2.fill" : "folder")
                 .foregroundStyle(model.emphasized ? .white : .secondary)
                 .help(folder.isSourceRoot ? "Shared inventory \u{2014} read-only" : "")
-            Text(folder.name).foregroundStyle(primary)
+            MarqueeText(text: folder.name, font: .body, color: primary, isActive: hoveringEntry)
+                .layoutPriority(1)
+                .help(folder.name)
             Spacer(minLength: 4)
             if let status = model.sourceStatus {
                 if status.isSyncing {
@@ -1207,9 +1218,10 @@ private struct SidebarRowLabel: View {
                 }
             }
             if model.itemCount > 0 {
-                Text("\(model.itemCount)").font(.caption).foregroundStyle(secondary)
+                Text("\(model.itemCount)").font(.caption).foregroundStyle(secondary).fixedSize()
             }
         }
+        .onHover { hoveringEntry = $0 }
     }
 }
 
@@ -1279,6 +1291,94 @@ final class KeyableOutlineView: NSOutlineView {
                 context.duration = 0
                 self.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<count))
             }
+        }
+    }
+}
+
+/// One line of sidebar text that never wraps.
+///
+/// Wrapping made a narrow sidebar unreadable — a host name broken across three
+/// lines, its address across three more. Instead the line is clipped with a
+/// soft fade where it runs out of room, and once the pointer has rested on the
+/// row it scrolls to show the rest. Text that fits never moves. The full text
+/// is also the row's tooltip.
+///
+/// The offset is a pure function of how long the row has been hovered, worked
+/// out every frame — deliberately not a SwiftUI animation. An animation in
+/// flight isn't reliably cancelled by setting the value back, so leaving a row
+/// let the scroll run on and *then* snap home. Computed this way, the frame
+/// after the pointer leaves is simply at zero: nothing is left running.
+struct MarqueeText: View {
+    let text: String
+    var font: Font = .body
+    var color: Color = .primary
+    /// The row's hover state, so hovering anywhere on the row reveals its
+    /// text, not just over the words themselves.
+    var isActive = false
+
+    @State private var textWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+    @State private var hoverStart: Date?
+
+    /// Points per second: quick enough not to drag, slow enough to read.
+    private static let speed: CGFloat = 90
+    /// How long the pointer has to rest on a row before it scrolls. Sweeping
+    /// down the list crosses each row for a fraction of this, so rows you only
+    /// pass over never move.
+    private static let hoverDelay: TimeInterval = 0.6
+
+    private var overflow: CGFloat { max(0, textWidth - boxWidth) }
+
+    private func offset(at now: Date) -> CGFloat {
+        guard let hoverStart, overflow > 0.5 else { return 0 }
+        let moving = now.timeIntervalSince(hoverStart) - Self.hoverDelay
+        guard moving > 0 else { return 0 }
+        return -min(overflow, CGFloat(moving) * Self.speed)
+    }
+
+    var body: some View {
+        // Ticks only while this row is hovered and has something to reveal;
+        // every other row is a static view.
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: hoverStart == nil || overflow <= 0.5)) { context in
+            let x = offset(at: context.date)
+            Text(text)
+                .font(font)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { textWidth = g.size.width }
+                        .onChange(of: g.size.width) { _, w in textWidth = w }
+                })
+                .offset(x: x)
+                // minWidth 0 is the point: without it the frame inherits the
+                // fixed-size text's width as its minimum, and the row grows
+                // past the sidebar instead of clipping.
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { boxWidth = g.size.width }
+                        .onChange(of: g.size.width) { _, w in boxWidth = w }
+                })
+                .clipped()
+                .mask(fade(offset: x))
+        }
+        .onChange(of: isActive) { _, active in hoverStart = active ? Date() : nil }
+        .onChange(of: text) { _, _ in hoverStart = isActive ? Date() : nil }
+    }
+
+    /// Fades whichever edge has text running past it.
+    private func fade(offset: CGFloat) -> some View {
+        let edge: CGFloat = 14
+        let hiddenLeft = offset < -0.5
+        let hiddenRight = overflow > 0.5 && offset > -overflow + 0.5
+        return HStack(spacing: 0) {
+            LinearGradient(colors: [hiddenLeft ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: edge)
+            Color.black
+            LinearGradient(colors: [.black, hiddenRight ? .clear : .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: edge)
         }
     }
 }

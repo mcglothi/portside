@@ -52,6 +52,7 @@ struct PortsideApp: App {
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
+    @StateObject private var agent = AgentController()
     @State private var settingsTab = "Appearance"
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -132,6 +133,7 @@ struct PortsideApp: App {
                 .environmentObject(sessions)
                 .environmentObject(tunnels)
                 .environmentObject(library)
+                .environmentObject(agent)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     applyAppAppearance(store.appearance.appAppearance)
@@ -162,6 +164,7 @@ struct PortsideApp: App {
                     // background, and a source that can't be reached just
                     // says so on its row.
                     Task { [store] in await store.refreshInventorySources() }
+                    agent.configure(store: store, sessions: sessions)
                     tunnels.startAutoStartTunnels(forwards: store.forwards) { id in
                         store.entry(id: id).map(store.resolved)
                     }
@@ -461,6 +464,10 @@ struct PortsideApp: App {
                     .environmentObject(store)
                     .tabItem { Label("Shortcuts", systemImage: "keyboard") }
                     .tag("Shortcuts")
+                AgentSettingsView()
+                    .environmentObject(agent)
+                    .tabItem { Label("Agents", systemImage: "terminal.fill") }
+                    .tag("Agents")
                 UpdateSettingsView()
                     .environmentObject(updater)
                     .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
