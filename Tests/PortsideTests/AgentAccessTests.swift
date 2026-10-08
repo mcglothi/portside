@@ -448,7 +448,7 @@ final class AgentAccessTests: XCTestCase {
     func testDontAskLetsAProgramInAndClosesWithoutAPrompt() async throws {
         let (agent, _, sessions) = controller([])
         agent.setEnabled(true)
-        agent.setDontAsk(true)
+        agent.setDontAskAllowed(true)
         defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
         sessions.openLocalShell()
         let tab = try XCTUnwrap(sessions.tabs.last)
@@ -468,7 +468,7 @@ final class AgentAccessTests: XCTestCase {
     func testDontAskStillAsksAboutProtectedHosts() async {
         let (agent, _, sessions) = controller([host("db1", protected: true)])
         agent.setEnabled(true)
-        agent.setDontAsk(true)
+        agent.setDontAskAllowed(true)
         defer { agent.setEnabled(false) }
         let task = Task { await agent.handle(.init(method: "connect", params: .init(query: "db1")), from: claude) }
         for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
@@ -489,7 +489,7 @@ final class AgentAccessTests: XCTestCase {
     func testDontAskNeverTypesWithoutTheSwitchOrIntoASecretPrompt() async throws {
         let (agent, _, sessions) = controller([])
         agent.setEnabled(true)
-        agent.setDontAsk(true)
+        agent.setDontAskAllowed(true)
         defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
         sessions.openLocalShell()
         let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
@@ -514,11 +514,12 @@ final class AgentAccessTests: XCTestCase {
     func testDontAskEndsWithTheSessionUnlessKept() {
         let (agent, store, sessions) = controller([])
         agent.setEnabled(true)
-        agent.setDontAsk(true)
+        agent.setDontAskAllowed(true)
         let next = AgentController()
         next.configure(store: store, sessions: sessions)
         XCTAssertFalse(next.settings.dontAsk, "a relaunch starts with confirmations back on")
 
+        XCTAssertTrue(next.settings.dontAskAllowed, "off, but still allowed: one click to resume")
         next.setDontAsk(true)
         next.setDontAskPersists(true)
         let after = AgentController()
@@ -570,5 +571,36 @@ final class AgentAccessTests: XCTestCase {
         }
         XCTAssertEqual(ids.count, 2)
         XCTAssertFalse(ids.contains(leaves[1].id.uuidString), "never the caller's own pane")
+    }
+
+    /// The popover pauses and resumes; only Settings allows or disallows —
+    /// and disallowing resets the opt-ins, so the next enable is the
+    /// defaults the warning describes.
+    func testDontAskPausesFromThePopoverAndResetsWhenDisallowed() async {
+        let (agent, _, _) = controller([host("web1")])
+        agent.setEnabled(true)
+        defer { agent.setEnabled(false) }
+        XCTAssertFalse(agent.settings.dontAskPersists, "keep-on is opt-in")
+        XCTAssertFalse(agent.settings.dontAskIncludesProtected, "protected is opt-in")
+
+        agent.setDontAsk(true)
+        XCTAssertFalse(agent.skipsPrompt(protected: false), "the popover can't turn on what Settings hasn't allowed")
+
+        agent.setDontAskAllowed(true)
+        agent.setDontAskIncludesProtected(true)
+        agent.setDontAskPersists(true)
+        agent.setDontAsk(false)
+        XCTAssertFalse(agent.skipsPrompt(protected: false))
+        let paused = await run(agent, "hosts", answering: [0])
+        XCTAssertNil(paused.error, "disabled means asked again")
+        agent.setDontAsk(true)
+        XCTAssertTrue(agent.skipsPrompt(protected: false))
+
+        agent.setDontAskAllowed(false)
+        XCTAssertFalse(agent.settings.dontAskPersists)
+        XCTAssertFalse(agent.settings.dontAskIncludesProtected)
+        agent.setDontAskAllowed(true)
+        XCTAssertFalse(agent.skipsPrompt(protected: true), "a fresh enable doesn't remember including protected hosts")
+        XCTAssertFalse(agent.settings.dontAskPersists, "nor keeping it on across quits")
     }
 }

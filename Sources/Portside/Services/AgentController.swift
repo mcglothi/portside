@@ -48,6 +48,10 @@ final class AgentController: ObservableObject {
         /// `claude --dangerously-skip-permissions`. See `ask(_:_:choices:protected:)`
         /// for what it does and doesn't cover.
         var dontAsk = false
+        /// Whether Don't Ask may be used at all — the Settings switch, behind
+        /// its warning. `dontAsk` is whether it's on right now, which the
+        /// toolbar popover can flip while this stays true.
+        var dontAskAllowed = false
         /// Extends Don't Ask to prompts naming a protected host. Separate and
         /// off by default: marking a host protected is the user saying "be
         /// careful here", and one switch shouldn't quietly undo that.
@@ -57,7 +61,8 @@ final class AgentController: ObservableObject {
         var dontAskPersists = false
 
         enum CodingKeys: String, CodingKey {
-            case enabled, connectCap, approvals, allowInput, dontAsk, dontAskIncludesProtected, dontAskPersists
+            case enabled, connectCap, approvals, allowInput, dontAsk, dontAskAllowed, dontAskIncludesProtected
+            case dontAskPersists
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -67,6 +72,8 @@ final class AgentController: ObservableObject {
             approvals = (try? c.decodeIfPresent([Approval].self, forKey: .approvals)) ?? []
             allowInput = try c.decodeIfPresent(Bool.self, forKey: .allowInput) ?? false
             dontAsk = try c.decodeIfPresent(Bool.self, forKey: .dontAsk) ?? false
+            // A file from before the split: having it on meant having allowed it.
+            dontAskAllowed = try c.decodeIfPresent(Bool.self, forKey: .dontAskAllowed) ?? dontAsk
             dontAskIncludesProtected = try c.decodeIfPresent(Bool.self, forKey: .dontAskIncludesProtected) ?? false
             dontAskPersists = try c.decodeIfPresent(Bool.self, forKey: .dontAskPersists) ?? false
         }
@@ -142,6 +149,8 @@ final class AgentController: ObservableObject {
         self.sessions = sessions
         directory = store.libraryDirectory
         settings = loadSettings()
+        // Off at every launch unless kept — but still allowed, so it's one click
+        // in the toolbar to resume rather than a trip back through Settings.
         if settings.dontAsk && !settings.dontAskPersists {
             settings.dontAsk = false
             saveSettings()
@@ -179,10 +188,28 @@ final class AgentController: ObservableObject {
         saveSettings()
     }
 
+    /// The Settings switch. Turning it on also switches Don't Ask on; turning
+    /// it off resets both sub-options, so every later enable starts from the
+    /// safest defaults — the warning describes those, and a choice made once
+    /// mustn't silently outlive the switch it belonged to.
+    func setDontAskAllowed(_ on: Bool) {
+        settings.dontAskAllowed = on
+        settings.dontAsk = on
+        if !on {
+            settings.dontAskIncludesProtected = false
+            settings.dontAskPersists = false
+        }
+        saveSettings()
+        recordEvent(on ? "Don\u{2019}t Ask allowed and turned on" : "Don\u{2019}t Ask disallowed")
+    }
+
+    /// On or off right now — the toolbar popover's Enable/Disable. Only does
+    /// anything once Settings has allowed it.
     func setDontAsk(_ on: Bool) {
+        guard settings.dontAskAllowed || !on else { return }
         settings.dontAsk = on
         saveSettings()
-        recordEvent(on ? "Don\u{2019}t Ask turned on" : "Don\u{2019}t Ask turned off")
+        recordEvent(on ? "Don\u{2019}t Ask enabled" : "Don\u{2019}t Ask disabled")
     }
 
     func setDontAskIncludesProtected(_ on: Bool) {
@@ -198,7 +225,7 @@ final class AgentController: ObservableObject {
 
     /// Whether a prompt would be answered automatically right now.
     func skipsPrompt(protected: Bool) -> Bool {
-        settings.dontAsk && (!protected || settings.dontAskIncludesProtected)
+        settings.dontAskAllowed && settings.dontAsk && (!protected || settings.dontAskIncludesProtected)
     }
 
     func setConnectCap(_ cap: Int) {

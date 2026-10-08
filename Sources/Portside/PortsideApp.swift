@@ -52,7 +52,10 @@ struct PortsideApp: App {
     @StateObject private var tunnels = TunnelManager()
     @StateObject private var updater = UpdaterViewModel()
     @StateObject private var library = LibraryCommands()
-    @StateObject private var agent = AgentController()
+    /// Owned here but not observed here: as a @StateObject every agent change
+    /// — each request logged — re-evaluated the whole App body. The views that
+    /// show agent state observe it themselves through the environment.
+    @State private var agent = AgentController()
     @State private var settingsTab = "Appearance"
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings

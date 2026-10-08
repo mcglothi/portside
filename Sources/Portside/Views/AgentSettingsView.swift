@@ -94,14 +94,18 @@ struct AgentSettingsView: View {
             }
 
             Section {
-                Toggle(isOn: Binding(get: { agent.settings.dontAsk },
-                                     set: { on in on ? (confirmingDontAsk = true) : agent.setDontAsk(false) })) {
+                Toggle(isOn: Binding(get: { agent.settings.dontAskAllowed },
+                                     set: { on in on ? (confirmingDontAsk = true) : agent.setDontAskAllowed(false) })) {
                     Label("Don\u{2019}t ask \u{2014} let agents act without confirmation", systemImage: "bolt.fill")
                 }
                 .disabled(!agent.settings.enabled)
                 .tint(.orange)
                 DontAskWarning()
-                if agent.settings.dontAsk {
+                if agent.settings.dontAskAllowed {
+                    Text(agent.settings.dontAsk
+                         ? "On now. Disable or enable it any time from the \u{26A1} in the toolbar."
+                         : "Allowed, but off right now \u{2014} enable it from the \u{26A1} in the toolbar.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Also for protected hosts", isOn: Binding(
                         get: { agent.settings.dontAskIncludesProtected },
                         set: { on in on ? (confirmingProtected = true) : agent.setDontAskIncludesProtected(false) }))
@@ -162,15 +166,15 @@ struct AgentSettingsView: View {
         // Settings is its own window, so it presents its own copy of the sheet.
         .sheet(isPresented: $showingLog) { AgentLogView().environmentObject(agent) }
         .alert("Let agents act without asking?", isPresented: $confirmingDontAsk) {
-            Button("Turn On") { agent.setDontAsk(true) }
+            Button("Turn On") { agent.setDontAskAllowed(true) }
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
             Text("Any program on this Mac that reaches Portside will be let in without asking, "
                  + "can open as many hosts as it likes, and \u{2014} with typing on \u{2014} can type and run "
                  + "commands in your sessions without you seeing them first. Use it only on a machine and "
-                 + "with hosts you'd trust it with. Everything is still logged, and it turns off when "
-                 + "Portside quits.")
+                 + "with hosts you'd trust it with. Everything is still logged, and it switches off when "
+                 + "Portside quits \u{2014} turn it back on from the \u{26A1} in the toolbar.")
         }
         .alert("Skip confirmation for protected hosts too?", isPresented: $confirmingProtected) {
             Button("Include Protected Hosts", role: .destructive) { agent.setDontAskIncludesProtected(true) }
@@ -229,50 +233,83 @@ struct AgentActivityList: View {
     }
 }
 
-/// Toolbar badge shown while Agent Access is on: lit for a minute after any
-/// request, with the recent activity and an off switch one click away —
-/// the "a human can see it and stop it" half of the design.
+/// Toolbar badge shown while Agent Access is on, with the recent activity and
+/// the Don't Ask and off switches one click away — the "a human can see it and
+/// stop it" half of the design.
+///
+/// This view observes *nothing* and owns only whether the popover is open. The
+/// icon and the popover's contents are their own views that observe the
+/// controller. Any re-render of the button a toolbar popover is anchored to —
+/// and an `@EnvironmentObject` re-renders on every change, read or not —
+/// closed the popover the moment anything happened, including its own Enable.
 struct AgentIndicator: View {
-    @EnvironmentObject var agent: AgentController
     @State private var showing = false
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { context in
-            let active = agent.lastActivity.map { context.date.timeIntervalSince($0) < 60 } ?? false
-            let yolo = agent.settings.dontAsk
-            Button { showing.toggle() } label: {
-                Label("Agent Access", systemImage: yolo ? "bolt.fill" : active ? "sparkles" : "sparkle")
+        Button { showing.toggle() } label: { AgentIndicatorIcon() }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Agent Access")
+            .popover(isPresented: $showing, arrowEdge: .bottom) {
+                AgentPopoverContent(close: { showing = false })
+            }
+    }
+}
+
+/// The icon alone: ⚡ while Don't Ask is on, crossed out while it's allowed
+/// but off, otherwise a sparkle that lights up for a minute after a request.
+/// Draws nothing while Agent Access is off.
+private struct AgentIndicatorIcon: View {
+    @EnvironmentObject var agent: AgentController
+
+    var body: some View {
+        if agent.settings.enabled {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                let active = agent.lastActivity.map { context.date.timeIntervalSince($0) < 60 } ?? false
+                let allowed = agent.settings.dontAskAllowed
+                let yolo = allowed && agent.settings.dontAsk
+                Image(systemName: yolo ? "bolt.fill" : allowed ? "bolt.slash" : active ? "sparkles" : "sparkle")
                     .foregroundStyle(yolo ? Color.orange : active ? Color.accentColor : Color.secondary)
+                    .help(yolo ? "Don\u{2019}t Ask is on: agents act without confirmation"
+                          : allowed ? "Don\u{2019}t Ask is off: agents ask for confirmation"
+                          : active ? "An agent used Portside in the last minute" : "Agent Access is on")
             }
-            .help(yolo ? "Don\u{2019}t Ask is on: agents act without confirmation"
-                  : active ? "An agent used Portside in the last minute" : "Agent Access is on")
         }
-        .popover(isPresented: $showing, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Agent Access").font(.headline)
-                if agent.settings.dontAsk {
-                    HStack {
-                        Label("Don\u{2019}t Ask is on", systemImage: "bolt.fill").foregroundStyle(.orange)
-                        Spacer()
-                        Button("Turn Off") { agent.setDontAsk(false) }
-                    }
-                    Text(agent.settings.dontAskIncludesProtected
-                         ? "Agents act without asking, protected hosts included."
-                         : "Agents act without asking, except on protected hosts.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                }
-                AgentActivityList(limit: 8)
-                Divider()
+    }
+}
+
+private struct AgentPopoverContent: View {
+    @EnvironmentObject var agent: AgentController
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Agent Access").font(.headline)
+            if agent.settings.dontAskAllowed {
+                let on = agent.settings.dontAsk
                 HStack {
-                    Button("View Log\u{2026}") { showing = false; agent.showingLog = true }
+                    Label(on ? "Don\u{2019}t Ask is on" : "Don\u{2019}t Ask is off",
+                          systemImage: on ? "bolt.fill" : "bolt.slash")
+                        .foregroundStyle(on ? Color.orange : Color.secondary)
                     Spacer()
-                    Button("Turn Off Agent Access") { agent.setEnabled(false); showing = false }
+                    Button(on ? "Disable" : "Enable") { agent.setDontAsk(!on) }
                 }
+                Text(!on ? "Agents ask for confirmation as usual."
+                     : agent.settings.dontAskIncludesProtected
+                     ? "Agents act without asking, protected hosts included."
+                     : "Agents act without asking, except on protected hosts.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
             }
-            .padding(14)
-            .frame(width: 360)
+            AgentActivityList(limit: 8)
+            Divider()
+            HStack {
+                Button("View Log\u{2026}") { close(); agent.showingLog = true }
+                Spacer()
+                Button("Turn Off Agent Access") { agent.setEnabled(false); close() }
+            }
         }
+        .padding(14)
+        .frame(width: 360)
     }
 }
 

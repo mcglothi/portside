@@ -194,9 +194,17 @@ interrupting. It's the counterpart of `claude --dangerously-skip-permissions`.
   - Typing needs its own switch.
   - **Protected hosts still ask.** A second, separately confirmed checkbox
     extends Don't Ask to them.
-- **Bounded:** it turns itself off when Portside quits unless you tick **Keep
-  on after Portside quits**.
-- **Visible:** the toolbar icon turns into an orange ⚡ while it's on.
+- **Allowed vs. on.** The Settings switch *allows* Don't Ask, behind its
+  warning, and turns it on. After that, the ⚡ popover's **Disable** and
+  **Enable** switch it off and on without going back to Settings. Turning the
+  Settings switch off disallows it again and **resets both opt-ins**
+  (protected hosts, keep on), so every later enable starts from the safest
+  defaults that the warning describes.
+- **Bounded:** it switches off when Portside quits unless you tick **Keep on
+  after Portside quits** (off by default). It stays allowed, so resuming
+  after a relaunch is one click on the ⚡.
+- **Visible:** the toolbar icon is an orange ⚡ while it's on, and a
+  crossed-out ⚡ while it's allowed but off.
 - **Logged:** every prompt it answered appears in the log as
   `auto-approved: …`.
 
