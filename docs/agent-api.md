@@ -193,6 +193,45 @@ remote machine printed, and it can say anything, including text written to
 look like instructions to the agent. The results say so in the data itself,
 and the tool descriptions tell the agent to treat it only as data.
 
+## Managing hosts and shared inventories
+
+With **Settings ▸ Agents ▸ Allow agents to edit your hosts and publish** on
+(off by default, with a warning first), an agent can help look after your
+library and your team's shared inventories:
+
+| Command | MCP tool | What it does |
+|---|---|---|
+| `portside sources` | `portside_list_sources` | Lists subscribed inventories, last pull, errors, linked folder |
+| `portside pull [SOURCE]` | `portside_pull` | Fetches the latest (fast-forward only) |
+| `portside preview SOURCE` | `portside_preview_publish` | Shows what publishing would send and receive, conflicts, and anything left out or secret |
+| `portside publish SOURCE [--resolve HOST=mine]` | `portside_publish` | Publishes the linked folder |
+| `portside link SOURCE FOLDER` | `portside_link_folder` | Copies a source's hosts into a folder for publishing |
+| `portside host add NAME --host H …` | `portside_add_host` | Adds a host to one of your folders |
+| `portside host update ID\|NAME …` | `portside_update_host` | Changes only the fields you give |
+| `portside host remove ID\|NAME …` | `portside_remove_hosts` | Removes your own hosts (undoable) |
+
+`sources` and `preview` only need read access. `pull` needs open access.
+Everything else needs the editing switch.
+
+**What an agent still can't do:**
+- Change a team's shared hosts. Those are read-only, so it edits the copies
+  in your linked folder and publishes them for review.
+- Subscribe to a new source. Choosing what to trust is yours.
+- Remove protection from a host.
+- Pass a host, alias or user that ssh would read as an option.
+
+**What asks you:**
+- **The first edit each session**, offering "Allow Edits This Session" or
+  "Allow Once".
+- **Any change to a protected host, and every removal**, every time.
+- **Every publish**, with the summary. Hosts changed on both sides need an
+  explicit *mine* or *theirs* from the agent, or nothing is published; the
+  tool description tells the agent to ask you rather than guess.
+
+Under Don't Ask, a publish can go without asking **only as a review branch**,
+because the pull request is still a person's decision. A push straight onto
+the team's branch always asks.
+
 ## Don't Ask (at your own risk)
 
 For trusted machines and lab work, **Settings ▸ Agents ▸ Don't ask** answers

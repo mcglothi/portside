@@ -167,7 +167,120 @@ struct MCPServer {
                  if let w = args["wait"] as? Int { p["wait"] = w }
                  return p
              }),
+        Tool(name: "portside_list_sources",
+             description: "Shared inventories the user subscribes to: name, git remote, branch, host count, when "
+                + "last pulled, any pull error, and which of the user's folders (if any) is linked for publishing.",
+             method: "sources"),
+        Tool(name: "portside_pull",
+             description: "Fetch the latest of one shared inventory (or all). Only fast-forwards; a rewritten history "
+                + "is refused and reported.",
+             properties: ["source": ["type": "string", "description": "Source name or id; omit for all."]],
+             readOnly: false, method: "pull",
+             params: { args in (args["source"] as? String).map { ["source": $0] } ?? [:] }),
+        Tool(name: "portside_preview_publish",
+             description: "What publishing the linked folder to a shared inventory would do, without doing it: "
+                + "incoming changes from the team, outgoing changes field by field, hosts changed on both sides "
+                + "(conflicts), personal settings left out, and anything that looks like a secret (which blocks "
+                + "publishing). Always call this before portside_publish and show the user the result.",
+             properties: [
+                "source": ["type": "string", "description": "Source name or id."],
+                "resolutions": ["type": "object", "additionalProperties": ["type": "string", "enum": ["mine", "theirs"]],
+                                "description": "Optional host → mine|theirs, to preview a resolution."],
+             ],
+             required: ["source"], method: "publish-preview",
+             params: { args in
+                 guard let src = args["source"] as? String else { return nil }
+                 var p: [String: Any] = ["source": src]
+                 if let r = args["resolutions"] as? [String: String] { p["resolutions"] = r }
+                 return p
+             }),
+        Tool(name: "portside_publish",
+             description: "Publish the folder linked to a shared inventory. Portside shows the user the summary and "
+                + "asks before anything is sent; by default it pushes a review branch and returns the pull-request "
+                + "link — nothing reaches teammates until a person merges it. Every host changed on both sides "
+                + "needs an explicit resolution (mine or theirs) — ASK THE USER which, never guess. Requires the user "
+                + "to have turned on agent editing." + approvalNote,
+             properties: [
+                "source": ["type": "string", "description": "Source name or id."],
+                "message": ["type": "string", "description": "Commit message; a summary is used if omitted."],
+                "resolutions": ["type": "object", "additionalProperties": ["type": "string", "enum": ["mine", "theirs"]],
+                                "description": "Host name → mine|theirs for every conflict from the preview."],
+             ],
+             required: ["source"], readOnly: false, destructive: true, method: "publish",
+             params: { args in
+                 guard let src = args["source"] as? String else { return nil }
+                 var p: [String: Any] = ["source": src]
+                 if let r = args["resolutions"] as? [String: String] { p["resolutions"] = r }
+                 if let m = args["message"] as? String { p["message"] = m }
+                 return p
+             }),
+        Tool(name: "portside_link_folder",
+             description: "Link a new folder to a shared inventory for publishing: the team's hosts are copied into it "
+                + "as the user's own, so edits there can be published back for review." + approvalNote,
+             properties: ["source": ["type": "string", "description": "Source name or id."],
+                          "folder": ["type": "string", "description": "A new or empty folder name."]],
+             required: ["source", "folder"], readOnly: false, method: "link",
+             params: { args in
+                 guard let src = args["source"] as? String, let f = args["folder"] as? String else { return nil }
+                 return ["source": src, "folder": f]
+             }),
+        Tool(name: "portside_add_host",
+             description: "Add an SSH host to one of the user's own folders (to share it, add it to the folder linked "
+                + "to a shared inventory, then preview and publish). Values that could be read by ssh as options "
+                + "are refused. Requires agent editing to be on; the first edit each session asks the user."
+                + approvalNote,
+             properties: MCPServer.hostFieldSchema(includeName: true),
+             required: ["name"], readOnly: false, method: "host-add",
+             params: { args in MCPServer.hostParams(args) }),
+        Tool(name: "portside_update_host",
+             description: "Change fields of one of the user's own hosts (shared hosts are read-only — change them in "
+                + "the linked folder). Only the fields given change. Protection can be added, never removed; protected "
+                + "hosts ask the user every time." + approvalNote,
+             properties: MCPServer.hostFieldSchema(includeName: false).merging([
+                "id": ["type": "string", "description": "Host id from portside_list_hosts (needed to rename)."],
+                "host": ["type": "string", "description": "Or the host's current name, if unique."],
+                "rename": ["type": "string", "description": "New name (requires id)."],
+             ]) { a, _ in a },
+             readOnly: false, method: "host-update",
+             params: { args in
+                 var p = MCPServer.hostParams(args) ?? [:]
+                 p["name"] = nil
+                 if let id = args["id"] as? String {
+                     p["ids"] = [id]
+                     if let r = args["rename"] as? String { p["name"] = r }
+                 } else if let h = args["host"] as? String { p["name"] = h } else { return nil }
+                 return p
+             }),
+        Tool(name: "portside_remove_hosts",
+             description: "Remove some of the user's own hosts. Always asks the user; removals can be undone in "
+                + "Portside." + approvalNote,
+             properties: ["hosts": ["type": "array", "items": ["type": "string"], "description": "Host ids or names."]],
+             required: ["hosts"], readOnly: false, destructive: true, method: "host-remove",
+             params: { args in (args["hosts"] as? [String]).map { ["ids": $0] } }),
     ]
+
+    static func hostFieldSchema(includeName: Bool) -> [String: Any] {
+        var schema: [String: Any] = [
+            "hostname": ["type": "string"], "user": ["type": "string"], "port": ["type": "integer"],
+            "folder": ["type": "string", "description": "One of the user's own folders, e.g. platform/web."],
+            "alias": ["type": "string", "description": "An ~/.ssh/config Host alias, instead of hostname."],
+            "identityFile": ["type": "string", "description": "Path to a private key, e.g. ~/.ssh/id_ed25519."],
+            "environment": ["type": "string", "enum": ["none", "prod", "staging", "dev", "personal"]],
+            "protected": ["type": "boolean", "description": "Mark protected (asks before MultiExec etc.)."],
+        ]
+        if includeName { schema["name"] = ["type": "string"] }
+        return schema
+    }
+
+    static func hostParams(_ args: [String: Any]) -> [String: Any]? {
+        var p: [String: Any] = [:]
+        for key in ["name", "hostname", "user", "folder", "alias", "identityFile", "environment"] {
+            if let v = args[key] as? String { p[key] = v }
+        }
+        if let port = args["port"] as? Int { p["port"] = port }
+        if let prot = args["protected"] as? Bool { p["protected"] = prot }
+        return p
+    }
 
     private static func tabParams(_ value: Any?) -> [String: Any]? {
         guard let tab = value as? String, !tab.isEmpty else { return nil }

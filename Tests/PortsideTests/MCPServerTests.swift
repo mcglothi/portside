@@ -114,4 +114,27 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix("declined"), text)
         XCTAssertEqual((replies[4]?["result"] as? [String: Any])?["isError"] as? Bool, true)
     }
+
+    func testInventoryAndHostToolsMapTheirArguments() throws {
+        let id = UUID().uuidString
+        _ = try session([
+            call(1, "portside_publish", ["source": "Team", "resolutions": ["web1": "mine"], "message": "m"]),
+            call(2, "portside_update_host", ["id": id, "rename": "web9", "port": 2222]),
+            call(3, "portside_update_host", ["host": "db1", "environment": "prod"]),
+            call(4, "portside_add_host", ["name": "new", "hostname": "new.example.com", "protected": true]),
+            call(5, "portside_remove_hosts", ["hosts": ["a", "b"]]),
+            call(6, "portside_update_host", ["port": 1]),   // no host named: nothing sent
+        ])
+        let sent = received.all
+        XCTAssertEqual(sent.map(\.method), ["publish", "host-update", "host-update", "host-add", "host-remove"])
+        XCTAssertEqual(sent[0].params.resolutions, ["web1": "mine"])
+        XCTAssertEqual(sent[0].params.message, "m")
+        XCTAssertEqual(sent[1].params.ids, [id])
+        XCTAssertEqual(sent[1].params.name, "web9", "rename travels as name alongside the id")
+        XCTAssertEqual(sent[1].params.port, 2222)
+        XCTAssertEqual(sent[2].params.name, "db1")
+        XCTAssertNil(sent[2].params.ids)
+        XCTAssertEqual(sent[3].params.protected, true)
+        XCTAssertEqual(sent[4].params.ids, ["a", "b"])
+    }
 }
