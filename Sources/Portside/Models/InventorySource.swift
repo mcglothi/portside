@@ -150,8 +150,12 @@ struct SharedOverlay: Codable, Equatable {
 /// inventory is for: *where* hosts are. Anything that would act on this Mac or
 /// on the user's behalf is dropped:
 ///
-/// - **SSH hosts only.** Container and Kubernetes sessions build commands that
-///   run locally, and a serial session opens a device on this Mac.
+/// - **SSH hosts, and containers on them.** A container reached over SSH is
+///   a host plus which container: its exec is rebuilt from fields held to
+///   what they can legitimately be (`sharedContainer`), never taken as a
+///   command. A container on this Mac would run its engine here, Kubernetes
+///   brings a local kubeconfig and credential plugins, and a serial session
+///   opens a device on this Mac — none of those are shared.
 /// - **No run-on-connect.** It types a command into the session as the user.
 /// - **No agent or X11 forwarding.** Either one hands the remote host a way
 ///   back into this machine; that's the user's call, made in their overlay.
@@ -163,8 +167,9 @@ enum SharedManifest {
     struct Parsed: Equatable {
         var entries: [SessionEntry]
         var folders: [String]
-        /// Records present in the file but not shown: unreadable, not an SSH
-        /// host, or carrying a value that isn't safe to hand to ssh.
+        /// Records present in the file but not shown: unreadable, not
+        /// something that can be shared, or carrying a value that isn't safe
+        /// to hand to ssh.
         var skipped: Int
     }
 
@@ -229,7 +234,14 @@ enum SharedManifest {
     }
 
     static func sanitized(_ raw: SessionEntry, sourceID: UUID) -> SessionEntry? {
-        guard raw.kind == .host else { return nil }
+        var container: ContainerTarget?
+        switch raw.kind {
+        case .host: break
+        case .container:
+            guard let target = sharedContainer(raw.container) else { return nil }
+            container = target
+        default: return nil
+        }
         func clean(_ s: String?) -> String? {
             let t = s?.trimmingCharacters(in: .whitespaces) ?? ""
             return t.isEmpty ? nil : t
@@ -242,6 +254,9 @@ enum SharedManifest {
         if let alias, !ConnectionLink.isSafeHost(alias) { return nil }
         if let user, !ConnectionLink.isSafeUser(user) { return nil }
         if let key = clean(raw.identityFile), InventorySource.hasControlCharacters(key) { return nil }
+        // A container without a host would exec on this Mac. The check above
+        // already demands a host or alias; this says why it matters here.
+        if container != nil, hostname == nil, alias == nil { return nil }
 
         let name = String(raw.name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
             .trimmingCharacters(in: .whitespaces)
@@ -257,7 +272,61 @@ enum SharedManifest {
         entry.isProtected = raw.isProtected
         entry.preferMosh = raw.preferMosh
         entry.keepAliveSeconds = raw.keepAliveSeconds.flatMap { (1...3600).contains($0) ? $0 : nil }
+        if let container {
+            entry.kind = .container
+            entry.container = container
+        }
         return entry
+    }
+
+    /// Why `entry` can't be shared, for the publish review.
+    static func unshareableReason(_ entry: SessionEntry) -> String {
+        switch entry.kind {
+        case .host:
+            return "its host, alias or user can\u{2019}t be passed to ssh safely"
+        case .container where entry.usesLocalTransport:
+            return "this container runs on this Mac; only a container on an SSH host can be shared"
+        case .container:
+            return "its container, shell or user isn\u{2019}t a plain name, or its host can\u{2019}t be "
+                + "passed to ssh safely"
+        default:
+            return "only SSH hosts and containers on them can be shared (this is "
+                + "\(entry.kind.label.lowercased()))"
+        }
+    }
+
+    /// A shared container's target, or nil if any field is more than a name.
+    ///
+    /// Subscribers' Portside types `<engine> exec -it [-u user] <name> <shell>`
+    /// into the remote shell as them, so each field is held to the shape it
+    /// has in practice: a container name as docker allows one, a user or
+    /// `uid:gid`, and a shell from a short list (optionally with its usual
+    /// path). Quoting already keeps a value from becoming a second command;
+    /// this also keeps the *one* command from being anything but a shell —
+    /// `shell: "/tmp/payload"` would otherwise be a fine-looking exec.
+    static func sharedContainer(_ target: ContainerTarget?) -> ContainerTarget? {
+        guard let target else { return nil }
+        let name = target.name.trimmingCharacters(in: .whitespaces)
+        let shell = target.shell.trimmingCharacters(in: .whitespaces)
+        let user = target.user.trimmingCharacters(in: .whitespaces)
+        guard matches(name, #"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$"#),
+              shell.isEmpty || isPlainShell(shell),
+              user.isEmpty || matches(user, #"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})?$"#)
+        else { return nil }
+        return ContainerTarget(engine: target.engine, name: name, shell: shell.isEmpty ? "sh" : shell, user: user)
+    }
+
+    static let plainShells: Set<String> = ["sh", "bash", "ash", "dash", "zsh", "ksh", "mksh", "fish"]
+
+    static func isPlainShell(_ shell: String) -> Bool {
+        for dir in ["", "/bin/", "/usr/bin/", "/usr/local/bin/"] where shell.hasPrefix(dir) {
+            if plainShells.contains(String(shell.dropFirst(dir.count))) { return true }
+        }
+        return false
+    }
+
+    private static func matches(_ value: String, _ pattern: String) -> Bool {
+        value.range(of: pattern, options: .regularExpression) != nil
     }
 
     /// A folder path with empty, `.`, `..` and control-character segments

@@ -268,8 +268,9 @@ exists to fill that gap without giving up native speed and macOS polish.
   commands are staged for you to run unless the agent is told otherwise; an
   agent never arms MultiExec or types at a password prompt. Optional, scoped
   "Don't Ask" mode for trusted setups. See [docs/agent-api.md](docs/agent-api.md).
-- ✅ **Shared inventory** — subscribe to a team's hosts in a git repo, shown
-  read-only beside your own, with your own settings layered on top. Plain
+- ✅ **Shared inventory** — subscribe to a team's hosts, and the containers
+  on them, in a git repo, shown read-only beside your own, with your own
+  settings layered on top. Plain
   `git`, fast-forward only, manifest sanitized. See
   [docs/shared-inventory.md](docs/shared-inventory.md).
 

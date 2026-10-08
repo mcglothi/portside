@@ -51,9 +51,8 @@ enum InventoryPublishing {
             var raw = entry
             raw.folder = folder
             guard var clean = SharedManifest.sanitized(raw, sourceID: scratch) else {
-                notes.append(Note(host: entry.name, text: entry.kind == .host
-                    ? "not published: its host, alias or user can't be passed to ssh safely"
-                    : "not published: only SSH hosts can be shared (this is \(entry.kind.label.lowercased()))"))
+                notes.append(Note(host: entry.name,
+                                  text: "not published: " + SharedManifest.unshareableReason(entry)))
                 continue
             }
             clean.id = manifestIDs[entry.id] ?? entry.id
@@ -186,6 +185,11 @@ enum InventoryPublishing {
             ("protected", a.isProtected ? "yes" : "no", b.isProtected ? "yes" : "no"),
             ("mosh", a.preferMosh ? "yes" : "no", b.preferMosh ? "yes" : "no"),
             ("keepalive", a.keepAliveSeconds.map(String.init) ?? "", b.keepAliveSeconds.map(String.init) ?? ""),
+            ("kind", a.kind.label.lowercased(), b.kind.label.lowercased()),
+            ("engine", a.container?.engine.rawValue ?? "", b.container?.engine.rawValue ?? ""),
+            ("container", a.container?.name ?? "", b.container?.name ?? ""),
+            ("shell", a.container?.shell ?? "", b.container?.shell ?? ""),
+            ("container user", a.container?.user ?? "", b.container?.user ?? ""),
         ]
         return pairs.filter { $0.1 != $0.2 }.map { FieldChange(field: $0.0, before: $0.1, after: $0.2) }
     }

@@ -77,13 +77,51 @@ def clean(v):
     return v or None
 
 
+# Mirrors SharedManifest.sharedContainer: a shared container's exec is typed
+# into the remote shell, so each field must be a plain name.
+CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
+CONTAINER_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})?")
+PLAIN_SHELLS = {"sh", "bash", "ash", "dash", "zsh", "ksh", "mksh", "fish"}
+ENGINES = {"docker", "podman", "nerdctl"}
+
+
+def plain_shell(s):
+    return any(s.startswith(d) and s[len(d):] in PLAIN_SHELLS
+               for d in ("", "/bin/", "/usr/bin/", "/usr/local/bin/"))
+
+
+def container_problem(target):
+    """Why a shared container target can't be kept, or None."""
+    if not isinstance(target, dict):
+        return "has no container"
+    name = (target.get("name") or "").strip()
+    shell = (target.get("shell") or "").strip()
+    user = (target.get("user") or "").strip()
+    if target.get("engine", "docker") not in ENGINES:
+        return "engine %r isn't docker, podman or nerdctl" % target.get("engine")
+    if not CONTAINER_NAME.fullmatch(name):
+        return "container name %r isn't a plain container name" % name
+    if shell and not plain_shell(shell):
+        return "shell %r isn't a plain shell (sh, bash, ...)" % shell
+    if user and not CONTAINER_USER.fullmatch(user):
+        return "container user %r isn't a plain user or uid:gid" % user
+    return None
+
+
 def verdict(entry):
     """Whether subscribers keep this record, and why not if they don't."""
     if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
         return "skip", "unreadable record"
-    if entry.get("kind", "host") != "host":
-        return "skip", "only SSH hosts are shared (this is %s)" % entry.get("kind")
+    kind = entry.get("kind", "host")
+    if kind not in ("host", "container"):
+        return "skip", "only SSH hosts and containers on them are shared (this is %s)" % kind
     host, alias, user = clean(entry.get("hostname")), clean(entry.get("sshAlias")), clean(entry.get("user"))
+    if kind == "container":
+        if host is None and alias is None:
+            return "skip", "a container on the publisher's Mac isn't shared, only one on an SSH host"
+        problem = container_problem(entry.get("container"))
+        if problem:
+            return "error", problem
     if host is None and alias is None:
         return "error", "has neither a host nor an ssh alias"
     if host is not None and not safe_host(host):

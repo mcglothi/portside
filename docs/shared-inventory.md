@@ -108,9 +108,22 @@ reads it strictly and keeps only **where the hosts are**:
 
 - **Kept:** name, folder, host, user, port, `~/.ssh/config` alias, identity
   file path, mosh preference, keepalive, environment, and the protected flag.
-- **Dropped:** anything that isn't a plain SSH host. That covers containers
-  and Kubernetes pods (their commands run on your Mac), serial ports, and
-  telnet.
+- **Kept: containers on an SSH host.** For these the source also sets the
+  engine (docker, podman or nerdctl), the container, the shell and the
+  container user. Portside connects to the host and types
+  `<engine> exec -it [-u user] <container> <shell>` there. That command is
+  rebuilt from those fields, never read as text. Each field must be a plain
+  name:
+  - **container:** what docker allows
+  - **user:** a user or `uid:gid`
+  - **shell:** one of `sh`, `bash`, `ash`, `dash`, `zsh`, `ksh`, `mksh` or
+    `fish`, optionally in `/bin`, `/usr/bin` or `/usr/local/bin`
+
+  Anything else skips the record.
+- **Dropped:** containers with no host, Kubernetes pods, serial ports and
+  telnet. A container with no host and a Kubernetes pod both run their
+  commands on your Mac (Kubernetes with your kubeconfig and credential
+  plugins). A serial port is a device on your Mac.
 - **Dropped:** run-on-connect commands, agent forwarding and X11 forwarding.
   Each of those either acts as you, or gives the remote host a way back into
   your Mac. You can turn them on for yourself, per host.

@@ -123,6 +123,35 @@ final class InventoryPublishingTests: XCTestCase {
         XCTAssertEqual(m.folders, ["a", "mine", "theirs"])
     }
 
+    /// A container on an SSH host publishes; one on this Mac is named in the
+    /// review as staying behind, with the reason that fits it.
+    func testPreparePublishesContainersOnSSHHostsOnly() throws {
+        var remote = host("plex")
+        remote.kind = .container
+        remote.container = ContainerTarget(engine: .docker, name: "ix-plex-plex-1", shell: "bash")
+        var local = host("redis")
+        local.kind = .container
+        local.hostname = ""
+        local.container = ContainerTarget(engine: .docker, name: "redis-1")
+        let p = InventoryPublishing.prepare(entries: [remote, local], folders: [], root: "team")
+        XCTAssertEqual(p.hosts.map(\.name), ["plex"])
+        XCTAssertEqual(p.hosts.first?.container, remote.container)
+        let note = try XCTUnwrap(p.notes.first { $0.host == "redis" })
+        XCTAssertTrue(note.text.contains("runs on this Mac"), note.text)
+    }
+
+    func testContainerChangesAreDescribedForReview() {
+        let id = UUID()
+        var before = host("plex", id: id)
+        before.kind = .container
+        before.container = ContainerTarget(engine: .docker, name: "plex-1", shell: "sh")
+        var after = before
+        after.container = ContainerTarget(engine: .podman, name: "plex-2", shell: "bash", user: "plex")
+        let c = InventoryPublishing.changes(from: [before], to: [after])
+        XCTAssertEqual(c.first?.fields.map(\.field), ["engine", "container", "shell", "container user"])
+        XCTAssertEqual(c.first?.fields.first { $0.field == "container" }?.after, "plex-2")
+    }
+
     func testChangesDescribeFieldsForReview() {
         let id = UUID()
         let before = [host("web01", id: id, user: "deploy")]
@@ -187,6 +216,26 @@ final class InventoryPublishingTests: XCTestCase {
         add("ipv6") { $0.hostname = "fe80::1" }
         add("no-target") { $0.hostname = ""; $0.sshAlias = nil }
         add("container") { $0.kind = .container }
+        add("ssh-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web-1", shell: "/bin/bash", user: "app:1000")
+        }
+        add("local-container") {
+            $0.kind = .container; $0.hostname = ""
+            $0.container = ContainerTarget(engine: .docker, name: "web-1")
+        }
+        add("chained-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web;id")
+        }
+        add("command-shell") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web", shell: "sh -c id")
+        }
+        add("option-container-user") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web", user: "-uroot")
+        }
         add("serial") { $0.kind = .serial }
         add("db ghp_0123456789abcdefghijABCDEFGHIJ")
         add("folder-secret") { $0.folder = "https://admin:pw@host" }
