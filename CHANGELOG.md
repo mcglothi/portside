@@ -3,11 +3,15 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.31.0
 
 **Agents can help manage hosts and shared inventories.** With a new switch in Settings ▸ Agents (off by default, warned), an approved program can add, change and remove hosts in your own folders, pull and preview shared inventories, and publish from a linked folder — as `portside host …`, `portside preview`, `portside publish` and matching MCP tools. A team's shared hosts stay read-only (agents edit the linked copies and publish for review), subscribing stays yours, and protection can't be removed. The first edit each session asks; removals, protected hosts and every publish ask each time, and conflicts need an explicit mine/theirs. Don't Ask can send a review branch but never push straight onto the team's branch.
 
 **Publish shared inventories from Portside.** Right-click a folder and choose New Shared Inventory from Folder… to publish it to an empty git repository your team can subscribe to; or link a folder to an existing inventory to contribute to it. Edit hosts in that folder as usual, then Publish Changes: Portside fetches the team's latest and shows a review — what teammates changed, what you're sending field by field, hosts both of you changed (choose mine or theirs), the personal settings that stay on your Mac, and anything that looks like a secret, which blocks the publish. By default it pushes a review branch and opens the forge's own pull-request link; a per-folder option pushes straight to the branch. Hosts merge by identity, so renames are changes and two people adding hosts never conflict. Never force-pushes; uses your own git setup and identity. `Scripts/portside-inventory-check.py` validates a manifest in any CI with the same rules, so a bad change can't be merged.
+
+**Agents read long lines whole.** A command or output line wider than the terminal came back to an agent split across two lines, so searching the screen for it found nothing. Rows the terminal wrapped are now joined back into the line they belong to.
+
+**Starting Portside could break a login already in progress.** While ssh is logging in with a saved password, Portside keeps the password in a private temporary file for a few seconds. At launch Portside cleans up files left by a crash — but it removed every such file, including one a Portside already running was using, so that ssh asked for the password again. Launch now only removes files older than five minutes.
 
 ## 0.30.0
 
