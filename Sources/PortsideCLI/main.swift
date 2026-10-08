@@ -28,6 +28,20 @@ usage: portside <command> [args] [--json] [--socket PATH]
                                  output; --wait until one that's running finishes
                                  PANE may be `current` (the pane you're looking at) or,
                                  for screen and last, `tab` (every pane in that tab)
+
+shared inventories and your own hosts (editing needs its switch on in Settings):
+  sources                        subscribed inventories, their pull status, linked folders
+  pull [SOURCE]                  fetch the latest of one source, or all
+  preview SOURCE [--resolve HOST=mine|theirs ...]
+                                 what publishing would send, what's incoming, conflicts
+  publish SOURCE [--message M] [--resolve HOST=mine|theirs ...]
+                                 publish the linked folder (asks you in Portside first)
+  link SOURCE FOLDER             copy a source's hosts into FOLDER for publishing
+  host add NAME --host H [--user U] [--port P] [--folder F] [--alias A]
+                                 [--identity PATH] [--env prod|staging|dev|personal] [--protected]
+  host update ID|NAME [same fields] [--rename NEW]   (rename needs the id)
+  host remove ID|NAME ...        remove your own hosts (asks; undoable)
+
   mcp                            run as an MCP server on stdio (for Claude Code, etc.)
 
 QUERY uses the sidebar filter syntax: words, env:prod, folder:lab, kind:ssh,
@@ -57,6 +71,9 @@ var lineCount: Int?
 var commandCount: Int?
 var waitSeconds: Int?
 var ids: [String]?
+/// Host fields and publishing options, passed through as given.
+var hostFields: [String: Any] = [:]
+var resolutions: [String: String] = [:]
 var positional: [String] = []
 
 var i = 0
@@ -86,6 +103,24 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("--socket needs a path", .usage) }
         socketOverride = args[i]
+    case "--host", "--user", "--folder", "--alias", "--identity", "--env", "--message", "--rename", "--port":
+        i += 1
+        guard i < args.count else { fail("\(a) needs a value", .usage) }
+        let keyName = ["--host": "hostname", "--identity": "identityFile", "--env": "environment",
+                       "--rename": "name"][a] ?? String(a.dropFirst(2))
+        if a == "--port" {
+            guard let n = Int(args[i]) else { fail("--port needs a number", .usage) }
+            hostFields[keyName] = n
+        } else {
+            hostFields[keyName] = args[i]
+        }
+    case "--protected":
+        hostFields["protected"] = true
+    case "--resolve":
+        i += 1
+        let pair = i < args.count ? args[i].split(separator: "=", maxSplits: 1).map(String.init) : []
+        guard pair.count == 2 else { fail("--resolve needs HOST=mine or HOST=theirs", .usage) }
+        resolutions[pair[0]] = pair[1]
     case "--ids":
         i += 1
         guard i < args.count else { fail("--ids needs a comma-separated list", .usage) }
@@ -139,6 +174,48 @@ case "send":
         fail("send needs TEXT or --key", .usage)
     }
     if enter { params["enter"] = true }
+case "sources":
+    method = "sources"
+case "pull":
+    method = "pull"
+    if !rest.isEmpty { params["source"] = rest }
+case "preview", "publish":
+    method = command == "preview" ? "publish-preview" : "publish"
+    guard !rest.isEmpty else { fail("\(command) needs a source name or id", .usage) }
+    params["source"] = rest
+    if !resolutions.isEmpty { params["resolutions"] = resolutions }
+    if let m = hostFields["message"] { params["message"] = m }
+case "link":
+    method = "link"
+    let parts = Array(positional.dropFirst())
+    guard parts.count >= 2 else { fail("link needs SOURCE and FOLDER", .usage) }
+    params["source"] = parts[0]
+    params["folder"] = parts.dropFirst().joined(separator: " ")
+case "host":
+    let parts = Array(positional.dropFirst())
+    guard let verb = parts.first else { fail("host needs add, update or remove", .usage) }
+    let target = parts.dropFirst().joined(separator: " ")
+    for (k, v) in hostFields where k != "message" { params[k] = v }
+    switch verb {
+    case "add":
+        method = "host-add"
+        guard !target.isEmpty else { fail("host add needs a NAME", .usage) }
+        params["name"] = target
+    case "update":
+        method = "host-update"
+        guard !target.isEmpty else { fail("host update needs an id or name", .usage) }
+        if UUID(uuidString: target) != nil { params["ids"] = [target] } else {
+            if hostFields["name"] != nil { fail("renaming needs the host's id (see `portside hosts --json`)", .usage) }
+            params["name"] = target
+        }
+    case "remove":
+        method = "host-remove"
+        let keys = Array(parts.dropFirst())
+        guard !keys.isEmpty else { fail("host remove needs ids or names", .usage) }
+        params["ids"] = keys
+    default:
+        fail("host needs add, update or remove", .usage)
+    }
 case "last":
     method = "last-command"
     guard let pane = positional.dropFirst().first else { fail("last needs a pane id, host or current", .usage) }

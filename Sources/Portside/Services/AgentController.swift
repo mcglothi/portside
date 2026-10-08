@@ -43,6 +43,9 @@ final class AgentController: ObservableObject {
         /// Separate from `enabled`, off by default, and required before any
         /// client can even be offered it.
         var allowInput = false
+        /// The edit tier: changing your own hosts and publishing shared
+        /// inventories. Its own switch, off by default.
+        var allowEdit = false
         /// "Don't Ask": confirmations are answered yes on the user's behalf.
         /// For power users in environments they trust — the counterpart of
         /// `claude --dangerously-skip-permissions`. See `ask(_:_:choices:protected:)`
@@ -66,7 +69,7 @@ final class AgentController: ObservableObject {
 
         enum CodingKeys: String, CodingKey {
             case enabled, connectCap, approvals, allowInput, dontAsk, dontAskAllowed, dontAskIncludesProtected
-            case dontAskPersists, dontAskScope
+            case dontAskPersists, dontAskScope, allowEdit
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -75,6 +78,7 @@ final class AgentController: ObservableObject {
             connectCap = try c.decodeIfPresent(Int.self, forKey: .connectCap) ?? AgentPolicy.defaultConnectCap
             approvals = (try? c.decodeIfPresent([Approval].self, forKey: .approvals)) ?? []
             allowInput = try c.decodeIfPresent(Bool.self, forKey: .allowInput) ?? false
+            allowEdit = try c.decodeIfPresent(Bool.self, forKey: .allowEdit) ?? false
             dontAsk = try c.decodeIfPresent(Bool.self, forKey: .dontAsk) ?? false
             // A file from before the split: having it on meant having allowed it.
             dontAskAllowed = try c.decodeIfPresent(Bool.self, forKey: .dontAskAllowed) ?? dontAsk
@@ -131,6 +135,8 @@ final class AgentController: ObservableObject {
     private var queuedPrompts: [Prompt] = []
     /// Tabs an agent opened in this run — the ones it may close without asking.
     private var agentTabs: Set<UUID> = []
+    /// Programs the user has let edit hosts for the rest of this run.
+    private var editingClients: Set<String> = []
     /// Panes the user has let an agent type into and read, this run.
     private var typingPanes: Set<UUID> = []
     /// When an agent last typed into each pane — drives the pane's badge.
@@ -181,6 +187,20 @@ final class AgentController: ObservableObject {
 
     /// Turning input off also takes it back from every client that had it,
     /// so switching it on again later asks again.
+    /// Turning editing off takes it back from every program, the same way
+    /// turning typing off does.
+    func setAllowEdit(_ on: Bool) {
+        settings.allowEdit = on
+        if !on {
+            for i in settings.approvals.indices where settings.approvals[i].tier == .edit {
+                settings.approvals[i].tier = .input
+            }
+            editingClients = []
+        }
+        saveSettings()
+        recordEvent(on ? "Agent editing turned on" : "Agent editing turned off")
+    }
+
     func setAllowInput(_ on: Bool) {
         settings.allowInput = on
         sessions?.capturesCommandOutput = settings.enabled && on
@@ -355,14 +375,14 @@ final class AgentController: ObservableObject {
     /// arming MultiExec, and typing at all while the typing switch is off.
     /// Each skipped prompt is still written to the log.
     private func ask(_ title: String, _ message: String, choices: [String], protected: Bool = false,
-                     hosts: [SessionEntry?]? = nil) async -> Int? {
+                     hosts: [SessionEntry?]? = nil, neverSkip: Bool = false) async -> Int? {
         // A prompt that can't show its refusal is never shown. Refusing here
         // fails safe; a debug build stops so the mistake is found at once.
         guard choices.count <= Self.maxChoices else {
             assertionFailure("Agent prompt with \(choices.count) choices; the refusal would be hidden")
             return nil
         }
-        if skipsPrompt(protected: protected, hosts: hosts) {
+        if !neverSkip && skipsPrompt(protected: protected, hosts: hosts) {
             recordEvent("auto-approved: \(title) \u{2192} \(choices[0])")
             return 0
         }
@@ -413,6 +433,9 @@ final class AgentController: ObservableObject {
         if needed == .input && !settings.allowInput {
             return .failure(.denied("Typing into sessions is off in Portside (Settings \u{25B8} Agents)."))
         }
+        if needed == .edit && !settings.allowEdit {
+            return .failure(.denied("Editing hosts and publishing is off in Portside (Settings \u{25B8} Agents)."))
+        }
         if let granted = settings.approvals.first(where: { $0.name == client.name }), granted.tier >= needed {
             return .success(())
         }
@@ -425,7 +448,10 @@ final class AgentController: ObservableObject {
         let grants: [AgentProtocol.Tier]
         if existing != nil {
             // An upgrade asks for exactly what this request needs.
-            let what = needed == .input
+            let what = needed == .edit
+                ? "add, change and remove your own hosts, and publish shared inventories. Removing hosts, "
+                  + "touching protected hosts and publishing still ask you"
+                : needed == .input
                 ? "type into your sessions and read their screens. Each pane still asks the first time, "
                   + "and protected hosts ask every time"
                 : "open sessions: connect you to hosts and open groups. It still can\u{2019}t type into "
@@ -436,7 +462,9 @@ final class AgentController: ObservableObject {
             grants = [needed]
         } else {
             // At most two grants plus the refusal: see `maxChoices`.
-            let offered: [(String, AgentProtocol.Tier)] = needed == .input
+            let offered: [(String, AgentProtocol.Tier)] = needed == .edit
+                ? [("Allow Editing Too", .edit), ("Allow Read and Open", .open)]
+                : needed == .input
                 ? [("Allow Read, Open and Typing", .input), ("Allow Read and Open", .open)]
                 : [("Allow Read and Open", .open), ("Allow Read Only", .read)]
             choice = await ask("Allow \u{201C}\(client.name)\u{201D} to use Portside?",
@@ -445,6 +473,8 @@ final class AgentController: ObservableObject {
                                + "to hosts \u{2014} protected hosts and large selections still ask you first."
                                + (needed == .input ? " Typing lets it type into sessions and read their "
                                   + "screens, asking first for each pane." : "")
+                               + (needed == .edit ? " Editing lets it change your own hosts and publish "
+                                  + "shared inventories; removals, protected hosts and publishing ask you." : "")
                                + where_,
                                choices: offered.map(\.0) + ["Don\u{2019}t Allow"])
             grants = offered.map(\.1)
@@ -661,6 +691,162 @@ final class AgentController: ObservableObject {
             }
             return .success(.object(result))
 
+        case .sources:
+            return .success(.array(store.inventorySources.map { sourceRow($0, store) }))
+
+        case .pull:
+            if let key = params.source {
+                guard let source = findSource(key, store) else { return .failure(.notFound("No source \u{201C}\(key)\u{201D}.")) }
+                await store.refreshInventorySource(id: source.id)
+                return .success(sourceRow(source, store))
+            }
+            await store.refreshInventorySources()
+            return .success(.array(store.inventorySources.map { sourceRow($0, store) }))
+
+        case .publishPreview:
+            guard let key = params.source, let source = findSource(key, store) else {
+                return .failure(.notFound("Name a shared inventory (source) to preview."))
+            }
+            switch await store.planPublish(sourceID: source.id) {
+            case .failure(let f): return .failure(.badRequest(f.message))
+            case .success(let plan):
+                switch resolutionMap(params.resolutions, plan) {
+                case .failure(let f): return .failure(f)
+                case .success(let chosen): return .success(planJSON(plan, chosen))
+                }
+            }
+
+        case .hostAdd:
+            let name = params.name?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard !name.isEmpty else { return .failure(.badRequest("A host needs a name.")) }
+            let folder = SharedManifest.normalizedFolder(params.folder ?? "") ?? ""
+            var entry = SessionEntry(name: name, folder: folder, hostname: "")
+            if let problem = applyHostFields(params, to: &entry) { return .failure(.badRequest(problem)) }
+            guard !entry.hostname.isEmpty || !(entry.sshAlias ?? "").isEmpty else {
+                return .failure(.badRequest("A host needs a hostname or an ssh alias."))
+            }
+            if let failure = await ensureEdit(client, "add \u{201C}\(name)\u{201D}\(folder.isEmpty ? "" : " to \(folder)")",
+                                              hosts: [entry]) { return .failure(failure) }
+            store.upsert(entry)
+            return .success(AgentPolicy.hostRow(entry, source: nil))
+
+        case .hostUpdate:
+            let found: SessionEntry
+            switch ownHost(params, store) {
+            case .success(let e): found = e
+            case .failure(let f): return .failure(f)
+            }
+            var updated = found
+            if let name = params.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
+               params.ids?.isEmpty == false { updated.name = name }
+            if let folder = params.folder { updated.folder = SharedManifest.normalizedFolder(folder) ?? "" }
+            if let problem = applyHostFields(params, to: &updated) { return .failure(.badRequest(problem)) }
+            // Protection is the user's "be careful here"; an agent can add it,
+            // never take it away.
+            if found.isProtected && !updated.isProtected {
+                return .failure(.denied("\u{201C}\(found.name)\u{201D} is protected; an agent can\u{2019}t remove that."))
+            }
+            guard updated != found else { return .success(AgentPolicy.hostRow(found, source: nil)) }
+            let changes = InventoryPublishing.fieldChanges(found, updated)
+                .map { "\($0.field): \($0.before.isEmpty ? "\u{2014}" : $0.before) \u{2192} \($0.after.isEmpty ? "\u{2014}" : $0.after)" }
+            if let failure = await ensureEdit(client, "change \u{201C}\(found.name)\u{201D}: " + changes.joined(separator: ", "),
+                                              hosts: [found], protected: found.isProtected) {
+                return .failure(failure)
+            }
+            store.upsert(updated)
+            return .success(AgentPolicy.hostRow(updated, source: nil))
+
+        case .hostRemove:
+            let keys = (params.ids ?? []) + (params.name.map { [$0] } ?? [])
+            guard !keys.isEmpty else { return .failure(.badRequest("Name the hosts to remove, by id or name.")) }
+            var targets: [SessionEntry] = []
+            for key in keys {
+                switch ownHost(AgentProtocol.Params(ids: UUID(uuidString: key) != nil ? [key] : nil,
+                                                    name: UUID(uuidString: key) == nil ? key : nil), store) {
+                case .success(let e): targets.append(e)
+                case .failure(let f): return .failure(f)
+                }
+            }
+            // Removal always asks — it's the one edit that loses something —
+            // and Don't Ask can only answer it within its scope.
+            let names = targets.map(\.name).joined(separator: ", ")
+            let ok = await ask("\u{201C}\(client.name)\u{201D} wants to remove \(targets.count) host\(targets.count == 1 ? "" : "s")",
+                               "\(names)\n\nRemoved hosts can be brought back with Edit \u{25B8} Undo.",
+                               choices: ["Remove", "Cancel"], protected: targets.contains(where: \.isProtected),
+                               hosts: targets)
+            guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
+            store.delete(ids: Set(targets.map(\.id)))
+            return .success(.object(["removed": .array(targets.map { .string($0.name) })]))
+
+        case .link:
+            guard let key = params.source, let source = findSource(key, store) else {
+                return .failure(.notFound("Name the shared inventory to link."))
+            }
+            let folder = SharedManifest.normalizedFolder(params.folder ?? "") ?? ""
+            guard !folder.isEmpty else { return .failure(.badRequest("Name a new or empty folder to link.")) }
+            let ok = await ask("\u{201C}\(client.name)\u{201D} wants to link \u{201C}\(folder)\u{201D} to \(source.name)",
+                               "The team\u{2019}s hosts are copied into \u{201C}\(folder)\u{201D} as your own, so changes to them "
+                               + "can be published back for review.",
+                               choices: ["Link", "Cancel"])
+            guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
+            if let failure = await store.linkFolderForPublishing(sourceID: source.id, folder: folder) {
+                return .failure(.badRequest(failure.message))
+            }
+            return .success(sourceRow(source, store))
+
+        case .publish:
+            guard let key = params.source, let source = findSource(key, store) else {
+                return .failure(.notFound("Name the shared inventory to publish to."))
+            }
+            let plan: InventoryPublishing.Plan
+            switch await store.planPublish(sourceID: source.id) {
+            case .failure(let f): return .failure(.badRequest(f.message))
+            case .success(let p): plan = p
+            }
+            let chosen: [UUID: InventoryPublishing.Side]
+            switch resolutionMap(params.resolutions, plan) {
+            case .failure(let f): return .failure(f)
+            case .success(let c): chosen = c
+            }
+            // Conflicts are never settled by default; the agent says which
+            // version each host keeps, or nothing is published.
+            let open = plan.merged(chosen).conflicts.filter { chosen[$0.id] == nil }
+            if !open.isEmpty {
+                return .failure(.badRequest("Changed on both sides: \(open.map(\.name).joined(separator: ", ")). "
+                    + "Preview with publish-preview, then pass resolutions {name: \"mine\"|\"theirs\"} for each."))
+            }
+            if let secret = plan.secrets.first {
+                return .failure(.denied("\(secret.host): \(secret.text). Remove it before publishing."))
+            }
+            let changes = plan.changes(chosen)
+            guard !changes.isEmpty else { return .failure(.badRequest("Nothing to publish: the team already has exactly this.")) }
+            let review = !plan.link.directPush && plan.remoteBranchExists
+            let summary = changes.prefix(10).map { c -> String in
+                let sign = c.kind == .added ? "+" : c.kind == .removed ? "\u{2212}" : "\u{2022}"
+                return "\(sign) \(c.name)" + (c.fields.isEmpty ? "" : ": " + c.fields.map(\.field).joined(separator: ", "))
+            }.joined(separator: "\n") + (changes.count > 10 ? "\n\u{2026} and \(changes.count - 10) more" : "")
+            // Publishing lands on teammates, not just the user. Don't Ask may
+            // send a review branch — the pull request is still a person's
+            // decision — but never a push straight onto the shared branch.
+            let ok = await ask("\u{201C}\(client.name)\u{201D} wants to publish \(changes.count) change\(changes.count == 1 ? "" : "s") to \(source.name)",
+                               summary + "\n\n" + (review ? "As a review branch off \(source.ref); nothing reaches the team until it\u{2019}s merged."
+                                                         : "Straight onto \(source.ref) \u{2014} subscribers get it on their next pull."),
+                               choices: ["Publish", "Cancel"], neverSkip: !review)
+            guard ok == 0 else { return .failure(ok == nil ? .timedOut : .declined) }
+            let message = params.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch await store.publish(plan, resolutions: chosen,
+                                       message: (message?.isEmpty ?? true) ? PublishChangesView.defaultMessage(changes) : message!) {
+            case .failure(let f): return .failure(.badRequest(f.message))
+            case .success(let r):
+                return .success(.object([
+                    "branch": .string(r.branch),
+                    "commit": .string(r.commit),
+                    "review": .bool(r.branch != source.ref),
+                    "pullRequestURL": JSONValue(r.pullRequestURL?.absoluteString),
+                    "changes": JSONValue(changes.count),
+                ]))
+            }
+
         case .lastCommand, .screen:
             let panes: [TerminalSession]
             switch readTargets(params, in: sessions, caller: client) {
@@ -821,6 +1007,153 @@ final class AgentController: ObservableObject {
         return condition()
     }
 
+    // MARK: - Inventory helpers
+
+    private func findSource(_ key: String, _ store: SessionStore) -> InventorySource? {
+        if let id = UUID(uuidString: key) { return store.inventorySource(id: id) }
+        return store.inventorySources.first { $0.name.caseInsensitiveCompare(key) == .orderedSame }
+    }
+
+    private func sourceRow(_ source: InventorySource, _ store: SessionStore) -> JSONValue {
+        let state = store.sharedState[source.id]
+        let link = store.publishLink(forSource: source.id)
+        return .object([
+            "id": .string(source.id.uuidString),
+            "name": .string(source.name),
+            "remote": .string(source.remote),
+            "branch": .string(source.ref),
+            "manifest": .string(source.path),
+            "hosts": JSONValue(store.sharedEntries(inSource: source.id).count),
+            "skipped": JSONValue(state?.skipped ?? 0),
+            "commit": JSONValue(state?.commit),
+            "lastPulled": JSONValue(state?.lastSynced.map { ISO8601DateFormatter().string(from: $0) }),
+            "error": JSONValue(state?.error),
+            "pulling": .bool(state?.isSyncing ?? false),
+            "linkedFolder": JSONValue(link?.folder),
+            "publishes": .string(link == nil ? "not linked" : link!.directPush ? "direct to \(source.ref)" : "review branch"),
+        ])
+    }
+
+    /// The agent's mine/theirs choices, by host name or id, as the merge
+    /// wants them.
+    private func resolutionMap(_ given: [String: String]?, _ plan: InventoryPublishing.Plan)
+        -> Result<[UUID: InventoryPublishing.Side], AgentProtocol.Failure> {
+        guard let given, !given.isEmpty else { return .success([:]) }
+        let conflicts = plan.merged().conflicts
+        var out: [UUID: InventoryPublishing.Side] = [:]
+        for (key, value) in given {
+            guard let side = InventoryPublishing.Side(rawValue: value.lowercased()) else {
+                return .failure(.badRequest("Resolution for \u{201C}\(key)\u{201D} must be mine or theirs."))
+            }
+            let matches = conflicts.filter { $0.id.uuidString == key || $0.name.caseInsensitiveCompare(key) == .orderedSame }
+            guard matches.count == 1 else {
+                return .failure(.badRequest("\u{201C}\(key)\u{201D} isn\u{2019}t one host changed on both sides."))
+            }
+            out[matches[0].id] = side
+        }
+        return .success(out)
+    }
+
+    private func planJSON(_ plan: InventoryPublishing.Plan, _ chosen: [UUID: InventoryPublishing.Side]) -> JSONValue {
+        func change(_ c: InventoryPublishing.Change) -> JSONValue {
+            .object([
+                "host": .string(c.name),
+                "kind": .string(c.kind == .added ? "added" : c.kind == .removed ? "removed" : "changed"),
+                "fields": .array(c.fields.map { .object(["field": .string($0.field), "before": .string($0.before),
+                                                         "after": .string($0.after)]) }),
+            ])
+        }
+        let merge = plan.merged(chosen)
+        return .object([
+            "source": .string(plan.source.name),
+            "linkedFolder": .string(plan.link.folder),
+            "target": .string(!plan.remoteBranchExists ? "creates \(plan.source.ref)"
+                              : plan.link.directPush ? "direct to \(plan.source.ref)" : "review branch off \(plan.source.ref)"),
+            "incoming": .array(plan.incoming.map(change)),
+            "outgoing": .array(plan.changes(chosen).map(change)),
+            "conflicts": .array(merge.conflicts.map { c in
+                .object(["host": .string(c.name),
+                         "mine": .string(c.mine.map { "\($0.subtitle) \u{00B7} \($0.environment.rawValue)" } ?? "removed"),
+                         "theirs": .string(c.theirs.map { "\($0.subtitle) \u{00B7} \($0.environment.rawValue)" } ?? "removed"),
+                         "chosen": JSONValue(chosen[c.id]?.rawValue)])
+            }),
+            "leftOut": .array(plan.mine.notes.map { .string("\($0.host): \($0.text)") }),
+            "secrets": .array(plan.secrets.map { .string("\($0.host): \($0.text)") }),
+        ])
+    }
+
+    /// One of the user's own hosts, by id or unique name — never a shared one.
+    private func ownHost(_ params: AgentProtocol.Params, _ store: SessionStore) -> Result<SessionEntry, AgentProtocol.Failure> {
+        if let id = params.ids?.first.flatMap(UUID.init(uuidString:)) {
+            if let source = store.inventorySource(forEntry: id) {
+                return .failure(.denied("That host belongs to \(source.name) and is read-only; change it in the "
+                                        + "folder linked for publishing, then publish."))
+            }
+            return store.entries.first { $0.id == id }.map(Result.success) ?? .failure(.notFound("No host with that id."))
+        }
+        guard let name = params.name else { return .failure(.badRequest("Name the host, by id or name.")) }
+        let own = store.entries.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        switch own.count {
+        case 1: return .success(own[0])
+        case 0:
+            return .failure(store.sharedEntries.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                ? .denied("\u{201C}\(name)\u{201D} is a shared host and read-only; change it in the folder linked for publishing.")
+                : .notFound("No host named \u{201C}\(name)\u{201D}."))
+        default: return .failure(.badRequest("\(own.count) hosts are named \u{201C}\(name)\u{201D}; use an id from hosts."))
+        }
+    }
+
+    /// Applies the given fields, refusing values that could reach ssh as an
+    /// option — the same rule as ssh:// links and shared manifests, because
+    /// an agent's input is no more trusted than either.
+    private func applyHostFields(_ p: AgentProtocol.Params, to e: inout SessionEntry) -> String? {
+        if let h = p.hostname?.trimmingCharacters(in: .whitespaces) {
+            if !h.isEmpty && !ConnectionLink.isSafeHost(h) { return "That hostname can\u{2019}t be passed to ssh safely." }
+            e.hostname = h
+        }
+        if let a = p.alias?.trimmingCharacters(in: .whitespaces) {
+            if !a.isEmpty && !ConnectionLink.isSafeHost(a) { return "That ssh alias can\u{2019}t be passed to ssh safely." }
+            e.sshAlias = a.isEmpty ? nil : a
+        }
+        if let u = p.user?.trimmingCharacters(in: .whitespaces) {
+            if !u.isEmpty && !ConnectionLink.isSafeUser(u) { return "That user name can\u{2019}t be passed to ssh safely." }
+            e.user = u.isEmpty ? nil : u
+        }
+        if let port = p.port {
+            guard (1...65535).contains(port) else { return "Ports run from 1 to 65535." }
+            e.port = port
+        }
+        if let key = p.identityFile?.trimmingCharacters(in: .whitespaces) {
+            if InventorySource.hasControlCharacters(key) { return "That key path has control characters in it." }
+            e.identityFile = key.isEmpty ? nil : key
+        }
+        if let env = p.environment {
+            guard let parsed = HostEnvironment(rawValue: env.lowercased()) else {
+                return "Environment must be one of: " + HostEnvironment.allCases.map(\.rawValue).joined(separator: ", ") + "."
+            }
+            e.environment = parsed
+        }
+        if let prot = p.protected { e.isProtected = prot }
+        return nil
+    }
+
+    /// Consent to edit: once per program per run, except for protected hosts,
+    /// which ask every time.
+    private func ensureEdit(_ client: AgentClient, _ what: String, hosts: [SessionEntry],
+                            protected: Bool = false) async -> AgentProtocol.Failure? {
+        if !protected && editingClients.contains(client.name) { return nil }
+        let choices = protected ? ["Allow", "Don\u{2019}t Allow"]
+                                : ["Allow Edits This Session", "Allow Once", "Don\u{2019}t Allow"]
+        let answer = await ask("\u{201C}\(client.name)\u{201D} wants to \(what)",
+                               protected ? "This is a protected host, so it asks every time."
+                                         : "Allowing edits for this session lets it change your own hosts without "
+                                           + "asking again until Portside quits. Removing hosts and publishing still ask.",
+                               choices: choices, protected: protected, hosts: hosts)
+        guard let answer, answer < choices.count - 1 else { return answer == nil ? .timedOut : .declined }
+        if !protected && answer == 0 { editingClients.insert(client.name) }
+        return nil
+    }
+
     private func paneName(_ pane: TerminalSession) -> String {
         "\u{201C}\(pane.entry?.name ?? pane.title)\u{201D}"
     }
@@ -914,8 +1247,15 @@ final class AgentController: ObservableObject {
             let flat = text.replacingOccurrences(of: "\n", with: "\u{23CE}")
             return flat.count > 200 ? String(flat.prefix(200)) + "\u{2026}" : flat
         }
-        let detail = [request.params.query, request.params.name, request.params.ids?.joined(separator: ","),
-                      request.params.layout, request.params.pane, typed, request.params.key]
+        let p = request.params
+        let fields: [String?] = [
+            p.source.map { "source=\($0)" }, p.folder.map { "folder=\($0)" }, p.hostname.map { "host=\($0)" },
+            p.user.map { "user=\($0)" }, p.port.map { "port=\($0)" }, p.alias.map { "alias=\($0)" },
+            p.identityFile.map { "key=\($0)" }, p.environment.map { "env=\($0)" },
+            p.protected.map { "protected=\($0)" }, p.message.map { "message=\($0)" },
+            p.resolutions.map { "resolve=" + $0.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",") },
+        ]
+        let detail = ([p.query, p.name, p.ids?.joined(separator: ","), p.layout, p.pane, typed, p.key] + fields)
             .compactMap { $0 }.joined(separator: " ")
         let result: String
         switch outcome {

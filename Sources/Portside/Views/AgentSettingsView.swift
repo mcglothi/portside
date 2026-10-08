@@ -10,6 +10,7 @@ struct AgentSettingsView: View {
     @State private var confirmingDontAsk = false
     @State private var confirmingProtected = false
     @State private var scopeDraft: String?
+    @State private var confirmingEdit = false
 
     /// The CLI inside this app bundle.
     static var bundledCLI: URL {
@@ -34,8 +35,8 @@ struct AgentSettingsView: View {
                 Text("Lets programs on this Mac — Claude Code, Codex, your own scripts — list your hosts "
                      + "and open sessions through the `portside` command. Each program asks for your "
                      + "approval the first time. Protected hosts and large selections ask every time. "
-                     + "An agent can never arm MultiExec, and can only type into a session if you turn on "
-                     + "typing below.")
+                     + "An agent can never arm MultiExec, and can only type into a session or edit your "
+                     + "hosts if you turn those on below.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -90,6 +91,21 @@ struct AgentSettingsView: View {
                      + "the first time; protected hosts and multi-line input ask every time; nothing is ever "
                      + "typed at a password prompt or broadcast to MultiExec. A pane being typed into shows "
                      + "\u{201C}Agent typing\u{201D}. Turning this off takes typing back from every program.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Editing and Publishing") {
+                Toggle("Allow agents to edit your hosts and publish", isOn: Binding(
+                    get: { agent.settings.allowEdit },
+                    set: { on in on ? (confirmingEdit = true) : agent.setAllowEdit(false) }))
+                    .disabled(!agent.settings.enabled)
+                Text("Lets an approved program add, change and remove hosts in your own folders, pull shared "
+                     + "inventories, and publish changes from a linked folder. It can\u{2019}t touch a team\u{2019}s "
+                     + "shared hosts, subscribe to new sources, or remove protection from a host. The first edit each "
+                     + "session asks; removing hosts, protected hosts and publishing ask every time. Publishing always "
+                     + "shows you the summary \u{2014} Don\u{2019}t Ask can only send a review branch, never push "
+                     + "straight to the team\u{2019}s branch.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -177,6 +193,17 @@ struct AgentSettingsView: View {
                  + "commands in your sessions without you seeing them first. Use it only on a machine and "
                  + "with hosts you'd trust it with. Everything is still logged, and it switches off when "
                  + "Portside quits \u{2014} turn it back on from the \u{26A1} in the toolbar.")
+        }
+        .alert("Let agents edit your hosts and publish?", isPresented: $confirmingEdit) {
+            Button("Allow Editing") { agent.setAllowEdit(true) }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("An approved program will be able to change your library \u{2014} add, edit and remove your own "
+                 + "hosts \u{2014} and publish changes to shared inventories your team relies on. Removals go "
+                 + "through Undo, everything is logged, and publishing always shows you what will be sent. A "
+                 + "program acting on a mistaken idea, or on instructions it read on a server, can still make "
+                 + "changes you'll have to put right.")
         }
         .alert("Skip confirmation for protected hosts too?", isPresented: $confirmingProtected) {
             Button("Include Protected Hosts", role: .destructive) { agent.setDontAskIncludesProtected(true) }

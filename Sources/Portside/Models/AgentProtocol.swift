@@ -57,6 +57,24 @@ enum AgentProtocol {
         var lines: Int?
         /// How many recent commands to return, for `last-command`.
         var count: Int?
+        /// A shared inventory, by id or name — for publish-preview, pull,
+        /// publish and link.
+        var source: String?
+        /// A folder: where host-add puts a host, what link adopts into.
+        var folder: String?
+        /// Host fields for host-add / host-update. Only what's given changes.
+        var hostname: String?
+        var user: String?
+        var port: Int?
+        var alias: String?
+        var identityFile: String?
+        var environment: String?
+        var `protected`: Bool?
+        /// The commit message for publish.
+        var message: String?
+        /// For publish: host name or id → "mine" or "theirs", for every host
+        /// changed on both sides. Never assumed.
+        var resolutions: [String: String]?
         /// Seconds to wait before answering: for `last-command`, until a
         /// command finishes that hadn't when asked; for `connect`, until the
         /// opened sessions are connected (or have failed). Capped at 120.
@@ -92,6 +110,11 @@ enum AgentProtocol {
         /// Type into a session and read its screen. Only grantable while
         /// "Allow agents to type into sessions" is on.
         case input = 3
+        /// Add, change and remove your own hosts, pull and publish shared
+        /// inventories. Only grantable while "Allow agents to edit your hosts
+        /// and publish" is on. Being above `input` doesn't let a program
+        /// type: each switch is checked on its own.
+        case edit = 4
 
         static func < (a: Tier, b: Tier) -> Bool { a.rawValue < b.rawValue }
 
@@ -100,6 +123,7 @@ enum AgentProtocol {
             case .read: return "Read only"
             case .open: return "Read and open sessions"
             case .input: return "Read, open and type"
+            case .edit: return "Read, open, type and edit"
             }
         }
     }
@@ -108,12 +132,20 @@ enum AgentProtocol {
         case status, hosts, groups, tabs
         case connect, openGroup = "open-group", focus, close
         case send, screen, lastCommand = "last-command"
+        case sources, publishPreview = "publish-preview", pull
+        case hostAdd = "host-add", hostUpdate = "host-update", hostRemove = "host-remove"
+        case publish, link
 
         var tier: Tier {
             switch self {
             case .status, .hosts, .groups, .tabs: return .read
             case .connect, .openGroup, .focus, .close: return .open
             case .send, .screen, .lastCommand: return .input
+            // Reading sources and previewing a publish change nothing anyone
+            // else sees; pulling only fast-forwards a read-only copy.
+            case .sources, .publishPreview: return .read
+            case .pull: return .open
+            case .hostAdd, .hostUpdate, .hostRemove, .publish, .link: return .edit
             }
         }
     }
