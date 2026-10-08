@@ -91,8 +91,10 @@ final class ProcessEscalationTests: XCTestCase {
         // The child was in the same group, so it went too. If it hadn't, it
         // would still be reachable by group signal. Polled, because the child
         // lingers as a zombie for a moment until launchd reaps it, and a
-        // zombie still answers a group signal.
-        let deadline = Date().addingTimeInterval(2)
+        // zombie still answers a group signal. Reaping took over 2 s during a
+        // full parallel run; the loop leaves as soon as the group is empty, so
+        // a generous deadline costs nothing when things are healthy.
+        let deadline = Date().addingTimeInterval(10)
         while kill(-pid, 0) == 0, Date() < deadline { usleep(20_000) }
         XCTAssertEqual(kill(-pid, 0), -1, "nothing should remain in the group")
     }
