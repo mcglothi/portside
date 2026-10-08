@@ -207,6 +207,8 @@ struct SidebarView: View {
             let state = store.sharedState[source.id]
             return "\(source.id):\(state?.isSyncing ?? false):\(state?.error ?? "")"
         }.joined(separator: ",")
+            // Linking or unlinking a folder changes its badge, not its contents.
+            + "|" + store.publishLinks.map { "\($0.folder)>\($0.sourceID)" }.sorted().joined(separator: ",")
         return tree
     }
 
@@ -531,6 +533,7 @@ struct SidebarView: View {
                 explain: { sessions.explainingEntry = $0 },
                 refreshSource: { id in Task { await store.refreshInventorySource(id: id) } },
                 manageSources: { library.requestSharedInventory() },
+                publish: { library.publishRequest = $0 },
                 newSubfolder: { newFolderName = ""; newFolderParent = $0 },
                 renameFolder: { renameFolderName = $1; renamingFolder = $0 }
             )
@@ -992,6 +995,9 @@ private struct LibrarySheets: ViewModifier {
             }
             .sheet(isPresented: $sharedInventory) {
                 SharedInventoryView().environmentObject(store)
+            }
+            .sheet(item: $library.publishRequest) { request in
+                PublishRequestSheet(request: request).environmentObject(store)
             }
             .onChange(of: library.sharedInventory) { sharedInventory = true }
     }

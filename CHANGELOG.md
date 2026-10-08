@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Publish shared inventories from Portside.** Right-click a folder and choose New Shared Inventory from Folder… to publish it to an empty git repository your team can subscribe to; or link a folder to an existing inventory to contribute to it. Edit hosts in that folder as usual, then Publish Changes: Portside fetches the team's latest and shows a review — what teammates changed, what you're sending field by field, hosts both of you changed (choose mine or theirs), the personal settings that stay on your Mac, and anything that looks like a secret, which blocks the publish. By default it pushes a review branch and opens the forge's own pull-request link; a per-folder option pushes straight to the branch. Hosts merge by identity, so renames are changes and two people adding hosts never conflict. Never force-pushes; uses your own git setup and identity. `Scripts/portside-inventory-check.py` validates a manifest in any CI with the same rules, so a bad change can't be merged.
+
 ## 0.30.0
 
 **Run, then wait.** An agent no longer has to poll: `send … --enter --wait 30` types a command, runs it, and returns its exit code and output in the same call; `last --wait` waits for a running command; `connect --wait` answers once every session has connected, failed, or stopped at a password prompt. A wait that runs out says so instead of hanging.

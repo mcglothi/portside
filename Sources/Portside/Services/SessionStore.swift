@@ -50,6 +50,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var sharedEntries: [SessionEntry] = []
     /// Which source each shared host came from.
     private(set) var sharedSourceByEntry: [UUID: UUID] = [:]
+    /// Local folders that publish to a source — see `PublishLink`.
+    @Published private(set) var publishLinks: [PublishLink] = []
 
     private struct Document: Codable {
         var entries: [SessionEntry]
@@ -75,6 +77,7 @@ final class SessionStore: ObservableObject {
         var commandHistory: [CommandEvent]?
         var inventorySources: LenientArray<InventorySource>?
         var sharedOverlays: LenientArray<SharedOverlay>?
+        var publishLinks: LenientArray<PublishLink>?
     }
 
     /// Built-in presets plus imported themes, for the settings picker.
@@ -1513,7 +1516,10 @@ final class SessionStore: ObservableObject {
         sharedOverlays = sharedOverlays.filter { !hosts.contains($0.key) }
         inventorySources.removeAll { $0.id == id }
         sharedState[id] = nil
+        publishLinks.removeAll { $0.sourceID == id }
         try? FileManager.default.removeItem(at: cloneDirectory(for: id))
+        try? FileManager.default.removeItem(at: InventoryPublisher.directory(for: id, in: sourcesDirectory))
+        try? FileManager.default.removeItem(at: baseURL(for: id))
         rebuildShared()
         save()
     }
@@ -1637,6 +1643,257 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    // MARK: - Publishing
+
+    func publishLink(forSource id: UUID) -> PublishLink? { publishLinks.first { $0.sourceID == id } }
+
+    func publishLink(forFolder path: String) -> PublishLink? { publishLinks.first { $0.folder == path } }
+
+    /// The merge base for a source: the team's manifest as of the last
+    /// publish or link. Beside the clone rather than in the library — it is
+    /// as large as the inventory and changes on every publish.
+    private func baseURL(for sourceID: UUID) -> URL {
+        sourcesDirectory.appendingPathComponent("\(sourceID.uuidString).base.json")
+    }
+
+    private func storedBase(for sourceID: UUID) -> SharedManifest.Parsed? {
+        guard let data = try? Data(contentsOf: baseURL(for: sourceID)) else { return nil }
+        return try? SharedManifest.parseKeepingIDs(data)
+    }
+
+    private func storeBase(_ hosts: [SessionEntry], folders: [String], for sourceID: UUID) {
+        guard let data = try? LibraryTransfer.encodeSessions(entries: hosts, folders: folders,
+                                                             credentialProfiles: []) else { return }
+        try? FileManager.default.createDirectory(at: sourcesDirectory, withIntermediateDirectories: true)
+        try? data.write(to: baseURL(for: sourceID), options: .atomic)
+    }
+
+    func setDirectPush(_ on: Bool, forSource id: UUID) {
+        guard let i = publishLinks.firstIndex(where: { $0.sourceID == id }) else { return }
+        publishLinks[i].directPush = on
+        save()
+    }
+
+    /// Stops publishing from a folder. The folder and its hosts stay.
+    func unlinkPublishing(sourceID: UUID) {
+        publishLinks.removeAll { $0.sourceID == sourceID }
+        try? FileManager.default.removeItem(at: baseURL(for: sourceID))
+        save()
+    }
+
+    /// A new shared inventory made from one of your folders: subscribes to the
+    /// repository, links the folder, and publishes its first version. The
+    /// repository may be empty; one that already holds an inventory is
+    /// refused — link a folder to it instead, so nothing of the team's is
+    /// overwritten.
+    @MainActor
+    func createSharedInventory(_ source: InventorySource, fromFolder folder: String)
+        async -> Result<InventoryPublisher.Result, InventoryGit.Failure> {
+        if let problem = source.validationProblem { return .failure(.init(message: problem)) }
+        guard !folder.isEmpty else {
+            return .failure(.init(message: "Choose a folder to publish; the top level can't be linked."))
+        }
+        if publishLink(forFolder: folder) != nil {
+            return .failure(.init(message: "That folder already publishes to a shared inventory."))
+        }
+        let dir = InventoryPublisher.directory(for: source.id, in: sourcesDirectory)
+        let existing = await Task.detached { () -> Result<Data?, InventoryGit.Failure> in
+            do {
+                try InventoryPublisher.fetch(source, into: dir)
+                return .success(InventoryPublisher.remoteManifest(source, in: dir))
+            } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
+        }.value
+        switch existing {
+        case .failure(let failure): return .failure(failure)
+        case .success(.some): return .failure(.init(message: "That repository already has an inventory at "
+            + "\(source.path). Subscribe to it and use Link Folder for Publishing instead."))
+        case .success(.none): break
+        }
+        guard addInventorySource(source) == nil else { return .failure(.init(message: "Couldn't add the source.")) }
+        publishLinks.append(PublishLink(sourceID: source.id, folder: folder))
+        save()
+        let result: Result<InventoryPublisher.Result, InventoryGit.Failure>
+        switch await planPublish(sourceID: source.id) {
+        case .failure(let failure): result = .failure(failure)
+        case .success(let plan): result = await publish(plan, message: "Create \(source.name) inventory")
+        }
+        if case .failure = result {
+            // Don't leave a half-made source behind.
+            removeInventorySource(id: source.id)
+        }
+        return result
+    }
+
+    /// Links a folder to an inventory someone else already publishes, so you
+    /// can propose changes to it. The team's hosts are copied into the folder
+    /// as your own editable hosts — that's what you edit — and their
+    /// manifest ids are remembered so edits publish as changes, not new hosts.
+    @MainActor
+    func linkFolderForPublishing(sourceID: UUID, folder: String) async -> InventoryGit.Failure? {
+        guard let source = inventorySource(id: sourceID) else { return .init(message: "No such source.") }
+        if publishLink(forSource: sourceID) != nil { return .init(message: "That source already has a linked folder.") }
+        let path = normalize(folder)
+        guard !path.isEmpty else { return .init(message: "Choose a folder name.") }
+        if itemCount(inFolder: path) > 0 {
+            return .init(message: "Choose a new or empty folder; its contents would be published as additions.")
+        }
+        let dir = InventoryPublisher.directory(for: sourceID, in: sourcesDirectory)
+        let fetched = await Task.detached { () -> Result<Data?, InventoryGit.Failure> in
+            do {
+                try InventoryPublisher.fetch(source, into: dir)
+                return .success(InventoryPublisher.remoteManifest(source, in: dir))
+            } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
+        }.value
+        let team: SharedManifest.Parsed
+        switch fetched {
+        case .failure(let failure): return failure
+        case .success(let data):
+            team = (try? data.map(SharedManifest.parseKeepingIDs)) ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
+        }
+        var link = PublishLink(sourceID: sourceID, folder: path)
+        link.manifestIDs = adopt(team.entries, folders: team.folders, into: path, mapping: [:])
+        publishLinks.append(link)
+        storeBase(team.entries, folders: team.folders, for: sourceID)
+        if !explicitFolders.contains(path) { explicitFolders.append(path) }
+        save()
+        return nil
+    }
+
+    /// Fetches the team's latest and lines it up against the folder.
+    @MainActor
+    func planPublish(sourceID: UUID) async -> Result<InventoryPublishing.Plan, InventoryGit.Failure> {
+        guard let source = inventorySource(id: sourceID), let link = publishLink(forSource: sourceID) else {
+            return .failure(.init(message: "That source has no linked folder."))
+        }
+        let dir = InventoryPublisher.directory(for: sourceID, in: sourcesDirectory)
+        let fetched = await Task.detached { () -> Result<(Bool, Data?), InventoryGit.Failure> in
+            do {
+                let exists = try InventoryPublisher.fetch(source, into: dir)
+                return .success((exists, InventoryPublisher.remoteManifest(source, in: dir)))
+            } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
+        }.value
+        guard case .success(let (exists, data)) = fetched else {
+            if case .failure(let f) = fetched { return .failure(f) }
+            return .failure(.init(message: "Couldn't read the repository."))
+        }
+        let theirs = (try? data.map(SharedManifest.parseKeepingIDs))
+            ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
+        let base = storedBase(for: sourceID) ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
+        let mine = InventoryPublishing.prepare(entries: entries, folders: folders, root: link.folder,
+                                               manifestIDs: link.manifestIDs)
+        return .success(InventoryPublishing.Plan(source: source, link: link,
+                                                 base: base.entries, baseFolders: base.folders,
+                                                 mine: mine, theirs: theirs.entries, theirFolders: theirs.folders,
+                                                 remoteBranchExists: exists))
+    }
+
+    /// Sends a planned publish.
+    ///
+    /// Refuses with conflicts still unanswered or anything secret-looking in
+    /// the folder. Afterwards the folder takes in the team's changes, and the
+    /// base moves on: to what was pushed after a direct push; to the team's
+    /// version it branched from after a review branch — so a change still
+    /// waiting in review is never read, next time, as the team removing it.
+    @MainActor
+    func publish(_ plan: InventoryPublishing.Plan, resolutions: [UUID: InventoryPublishing.Side] = [:],
+                 message: String) async -> Result<InventoryPublisher.Result, InventoryGit.Failure> {
+        let merge = plan.merged(resolutions)
+        let open = merge.conflicts.filter { resolutions[$0.id] == nil }
+        guard open.isEmpty else {
+            return .failure(.init(message: "Choose mine or theirs for \(open.map(\.name).joined(separator: ", ")) first."))
+        }
+        if let secret = plan.secrets.first {
+            return .failure(.init(message: "Not published: \(secret.host) \u{2014} \(secret.text). Remove it and try again."))
+        }
+        guard let data = try? LibraryTransfer.encodeSessions(entries: merge.hosts, folders: merge.folders,
+                                                             credentialProfiles: []) else {
+            return .failure(.init(message: "Couldn't write the manifest."))
+        }
+        let source = plan.source
+        let mode: InventoryPublisher.Mode = plan.link.directPush ? .direct : .branch
+        let dir = InventoryPublisher.directory(for: source.id, in: sourcesDirectory)
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = InventoryPublisher.branchName()
+        let outcome = await Task.detached { () -> Result<InventoryPublisher.Result, InventoryGit.Failure> in
+            do {
+                return .success(try InventoryPublisher.publish(source, manifest: data,
+                                                               message: text.isEmpty ? "Update hosts" : text,
+                                                               mode: mode, branchName: branch, in: dir))
+            } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
+        }.value
+        guard case .success(let result) = outcome else { return outcome }
+
+        let landedOnSourceBranch = result.branch == source.ref
+        if landedOnSourceBranch {
+            storeBase(merge.hosts, folders: merge.folders, for: source.id)
+        } else {
+            storeBase(plan.theirs, folders: plan.theirFolders, for: source.id)
+        }
+        if var link = publishLink(forSource: source.id) {
+            link.manifestIDs = adopt(merge.hosts, folders: merge.folders, into: link.folder, mapping: link.manifestIDs)
+            if let i = publishLinks.firstIndex(where: { $0.sourceID == source.id }) { publishLinks[i] = link }
+        }
+        save()
+        await refreshInventorySource(id: source.id)
+        return .success(result)
+    }
+
+    /// Makes the linked folder match `hosts` (manifest form): updates the
+    /// published fields of hosts already there — leaving your personal
+    /// settings on them alone — adds the team's new ones as your own hosts,
+    /// and removes hosts the merge dropped. Removal goes through the undoable
+    /// delete. Hosts the folder holds that can't be published (a serial port,
+    /// say) aren't touched. Returns the updated local → manifest id map.
+    private func adopt(_ hosts: [SessionEntry], folders newFolders: [String], into root: String,
+                       mapping: [UUID: UUID]) -> [UUID: UUID] {
+        var map = mapping
+        func join(_ sub: String) -> String { sub.isEmpty ? root : root + "/" + sub }
+        let published = InventoryPublishing.prepare(entries: entries, folders: [], root: root, manifestIDs: map)
+        // Local id for each manifest id, from this folder's publishable hosts.
+        var localFor: [UUID: UUID] = [:]
+        let localByManifest = Dictionary(published.hosts.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for e in entries where e.folder == root || e.folder.hasPrefix(root + "/") {
+            let manifestID = map[e.id] ?? e.id
+            if localByManifest[manifestID] != nil { localFor[manifestID] = e.id }
+        }
+        let keep = Set(hosts.map(\.id))
+        var removed: Set<UUID> = []
+        for manifestID in localByManifest.keys where !keep.contains(manifestID) {
+            if let local = localFor[manifestID] { removed.insert(local) }
+        }
+        for host in hosts {
+            if let local = localFor[host.id], let i = entries.firstIndex(where: { $0.id == local }) {
+                var e = entries[i]
+                e.name = host.name
+                e.folder = join(host.folder)
+                e.hostname = host.hostname
+                e.user = host.user
+                e.port = host.port
+                e.sshAlias = host.sshAlias
+                e.identityFile = host.identityFile
+                e.environment = host.environment
+                e.isProtected = host.isProtected
+                e.preferMosh = host.preferMosh
+                e.keepAliveSeconds = host.keepAliveSeconds
+                if e != entries[i] { entries[i] = e }
+            } else {
+                var e = host
+                e.id = UUID()
+                e.folder = join(host.folder)
+                entries.append(e)
+                map[e.id] = host.id
+            }
+        }
+        if !removed.isEmpty {
+            let gone = entries.filter { removed.contains($0.id) }
+            entries.removeAll { removed.contains($0.id) }
+            recordDeletion(DeletedItems(hosts: gone))
+            for id in removed { map[id] = nil }
+        }
+        for f in newFolders.map(join) where !explicitFolders.contains(f) { explicitFolders.append(f) }
+        return map
+    }
+
     // MARK: - Persistence
 
     /// Set when the library existed but could not be decoded. Saving is
@@ -1716,6 +1973,7 @@ final class SessionStore: ObservableObject {
             inventorySources = doc.inventorySources?.elements ?? []
             sharedOverlays = Dictionary((doc.sharedOverlays?.elements ?? []).map { ($0.entryID, $0) },
                                         uniquingKeysWith: { first, _ in first })
+            publishLinks = doc.publishLinks?.elements ?? []
             loadSharedFromDisk()
             // Both cleanups rewrite the library, and only after everything
             // above has been read out of the document — rewriting mid-load
@@ -1792,7 +2050,8 @@ final class SessionStore: ObservableObject {
                                         history: history,
                                         inventorySources: LenientArray(inventorySources),
                                         sharedOverlays: LenientArray(sharedOverlays.values
-                                            .sorted { $0.entryID.uuidString < $1.entryID.uuidString })))
+                                            .sorted { $0.entryID.uuidString < $1.entryID.uuidString }),
+                                        publishLinks: LenientArray(publishLinks)))
                 .write(to: fileURL, options: .atomic)
             // Our own write moved the date on; adopt it so the next save
             // compares against this one rather than refusing.

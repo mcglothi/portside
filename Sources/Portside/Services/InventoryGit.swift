@@ -86,6 +86,12 @@ enum InventoryGit {
     /// Runs git and returns trimmed stdout, or throws with git's own stderr.
     @discardableResult
     static func run(_ args: [String], in directory: URL?) throws -> String {
+        try runFull(args, in: directory).out
+    }
+
+    /// `run`, keeping stderr too: a push reports the forge's "create a pull
+    /// request" link there, on success.
+    static func runFull(_ args: [String], in directory: URL?) throws -> (out: String, err: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         // Belt and braces on top of git's defaults: no ext:: transport, and
@@ -138,7 +144,8 @@ enum InventoryGit {
                 .joined(separator: " ")
             throw Failure(message: message.isEmpty ? "git exited with status \(process.terminationStatus)." : message)
         }
-        return String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+                String(decoding: errBox.data, as: UTF8.self))
     }
 
     private final class DataBox: @unchecked Sendable {
