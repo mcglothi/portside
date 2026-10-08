@@ -442,4 +442,133 @@ final class AgentAccessTests: XCTestCase {
             XCTAssertFalse(AgentPolicy.looksLikeSecretPrompt(line), line)
         }
     }
+
+    // MARK: - Don't Ask
+
+    func testDontAskLetsAProgramInAndClosesWithoutAPrompt() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAsk(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let tab = try XCTUnwrap(sessions.tabs.last)
+
+        // A first-time program, closing a tab it didn't open: normally two prompts.
+        let r = await agent.handle(.init(method: "close", params: .init(ids: [tab.id.uuidString])), from: claude)
+        XCTAssertNil(r.error, "\(String(describing: r.error))")
+        XCTAssertNil(agent.prompt)
+        XCTAssertEqual(agent.settings.approvals.first?.tier, .open, "granted the most on offer")
+        XCTAssertFalse(sessions.tabs.contains { $0.id == tab.id })
+        let log = try String(contentsOf: XCTUnwrap(agent.logURL), encoding: .utf8)
+        XCTAssertTrue(log.contains("auto-approved"), "every skipped prompt is on record")
+    }
+
+    /// Protected hosts are the user's "be careful here"; Don't Ask alone
+    /// doesn't override it.
+    func testDontAskStillAsksAboutProtectedHosts() async {
+        let (agent, _, sessions) = controller([host("db1", protected: true)])
+        agent.setEnabled(true)
+        agent.setDontAsk(true)
+        defer { agent.setEnabled(false) }
+        let task = Task { await agent.handle(.init(method: "connect", params: .init(query: "db1")), from: claude) }
+        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertNotNil(agent.prompt, "a protected host still asks")
+        agent.answer(agent.prompt?.refusal)
+        let r = await task.value
+        XCTAssertEqual(r.error?.code, "declined")
+        XCTAssertTrue(sessions.tabs.allSatisfy(\.isStartPage))
+
+        XCTAssertTrue(agent.skipsPrompt(protected: false))
+        XCTAssertFalse(agent.skipsPrompt(protected: true))
+        agent.setDontAskIncludesProtected(true)
+        XCTAssertTrue(agent.skipsPrompt(protected: true), "only when explicitly included")
+    }
+
+    /// The floors Don't Ask can't lower: typing needs its own switch, and
+    /// nothing is typed at a password prompt.
+    func testDontAskNeverTypesWithoutTheSwitchOrIntoASecretPrompt() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAsk(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+
+        let off = await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString, text: "id")),
+                                     from: claude)
+        XCTAssertEqual(off.error?.code, "denied", "typing off means off, whatever Don't Ask says")
+
+        agent.setAllowInput(true)
+        for _ in 0..<300 where !pane.terminalView.sawOutput { try await Task.sleep(nanoseconds: 50_000_000) }
+        pane.sendText("read -s portside_secret\r")
+        for _ in 0..<200 where !pane.isReadingSecret { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertTrue(pane.isReadingSecret)
+        let secret = await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString,
+                                                                            text: "hunter2", enter: true)),
+                                        from: claude)
+        XCTAssertEqual(secret.error?.code, "denied", "never typed at a password prompt")
+        XCTAssertNil(agent.prompt)
+        pane.sendText("\r")
+    }
+
+    func testDontAskEndsWithTheSessionUnlessKept() {
+        let (agent, store, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAsk(true)
+        let next = AgentController()
+        next.configure(store: store, sessions: sessions)
+        XCTAssertFalse(next.settings.dontAsk, "a relaunch starts with confirmations back on")
+
+        next.setDontAsk(true)
+        next.setDontAskPersists(true)
+        let after = AgentController()
+        after.configure(store: store, sessions: sessions)
+        XCTAssertTrue(after.settings.dontAsk)
+        after.setEnabled(false)
+        next.setEnabled(false)
+        agent.setEnabled(false)
+    }
+
+    // MARK: - Reading a whole tab
+
+    /// "What's going on across these?" — every pane of the tab in one call,
+    /// behind one question, and never the caller's own pane.
+    func testReadingTheWholeTabAsksOnceAndSkipsTheCallersPane() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        sessions.splitActivePane(.horizontal)
+        sessions.splitActivePane(.vertical)
+        let leaves = try XCTUnwrap(sessions.selectedTab?.leaves)
+        XCTAssertEqual(leaves.count, 3)
+        _ = await run(agent, "send", .init(pane: "none", text: "x"), answering: [0]) // grant typing tier
+
+        let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "tab")), from: claude) }
+        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        let prompt = try XCTUnwrap(agent.prompt)
+        XCTAssertTrue(prompt.title.contains("3 panes"), prompt.title)
+        agent.answer(0)
+        let r = await task.value
+        guard case .object(let o)? = r.result, case .array(let panes)? = o["panes"] else {
+            return XCTFail("\(String(describing: r.error))")
+        }
+        XCTAssertEqual(panes.count, 3)
+        XCTAssertEqual(o["untrusted"], .bool(true))
+        XCTAssertNil(agent.prompt, "one question covered all three")
+
+        // The same read from inside the second pane leaves that pane out.
+        let inside = AgentClient(pid: leaves[1].terminalView.process.shellPid, name: "claude", path: "")
+        let mine = await agent.handle(.init(method: "screen", params: .init(pane: "tab")), from: inside)
+        guard case .object(let m)? = mine.result, case .array(let others)? = m["panes"] else {
+            return XCTFail("\(String(describing: mine.error))")
+        }
+        let ids = others.compactMap { row -> String? in
+            if case .object(let p) = row, case .string(let id)? = p["pane"] { return id }
+            return nil
+        }
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertFalse(ids.contains(leaves[1].id.uuidString), "never the caller's own pane")
+    }
 }

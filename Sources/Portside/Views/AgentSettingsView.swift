@@ -7,6 +7,8 @@ struct AgentSettingsView: View {
     @EnvironmentObject var agent: AgentController
     @State private var installMessage: String?
     @State private var showingLog = false
+    @State private var confirmingDontAsk = false
+    @State private var confirmingProtected = false
 
     /// The CLI inside this app bundle.
     static var bundledCLI: URL {
@@ -30,8 +32,9 @@ struct AgentSettingsView: View {
                     get: { agent.settings.enabled }, set: { agent.setEnabled($0) }))
                 Text("Lets programs on this Mac — Claude Code, Codex, your own scripts — list your hosts "
                      + "and open sessions through the `portside` command. Each program asks for your "
-                     + "approval the first time. Protected hosts and large selections ask every time, "
-                     + "and an agent can never arm MultiExec or type into a session.")
+                     + "approval the first time. Protected hosts and large selections ask every time. "
+                     + "An agent can never arm MultiExec, and can only type into a session if you turn on "
+                     + "typing below.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -90,6 +93,25 @@ struct AgentSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section {
+                Toggle(isOn: Binding(get: { agent.settings.dontAsk },
+                                     set: { on in on ? (confirmingDontAsk = true) : agent.setDontAsk(false) })) {
+                    Label("Don\u{2019}t ask \u{2014} let agents act without confirmation", systemImage: "bolt.fill")
+                }
+                .disabled(!agent.settings.enabled)
+                .tint(.orange)
+                DontAskWarning()
+                if agent.settings.dontAsk {
+                    Toggle("Also for protected hosts", isOn: Binding(
+                        get: { agent.settings.dontAskIncludesProtected },
+                        set: { on in on ? (confirmingProtected = true) : agent.setDontAskIncludesProtected(false) }))
+                    Toggle("Keep on after Portside quits", isOn: Binding(
+                        get: { agent.settings.dontAskPersists }, set: { agent.setDontAskPersists($0) }))
+                }
+            } header: {
+                Text("Don\u{2019}t Ask (at your own risk)")
+            }
+
             Section("Confirmation") {
                 Stepper(value: Binding(get: { agent.settings.connectCap }, set: { agent.setConnectCap($0) }),
                         in: 1...500) {
@@ -139,6 +161,25 @@ struct AgentSettingsView: View {
         .settingsPageSizing()
         // Settings is its own window, so it presents its own copy of the sheet.
         .sheet(isPresented: $showingLog) { AgentLogView().environmentObject(agent) }
+        .alert("Let agents act without asking?", isPresented: $confirmingDontAsk) {
+            Button("Turn On") { agent.setDontAsk(true) }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("Any program on this Mac that reaches Portside will be let in without asking, "
+                 + "can open as many hosts as it likes, and \u{2014} with typing on \u{2014} can type and run "
+                 + "commands in your sessions without you seeing them first. Use it only on a machine and "
+                 + "with hosts you'd trust it with. Everything is still logged, and it turns off when "
+                 + "Portside quits.")
+        }
+        .alert("Skip confirmation for protected hosts too?", isPresented: $confirmingProtected) {
+            Button("Include Protected Hosts", role: .destructive) { agent.setDontAskIncludesProtected(true) }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("You marked these hosts protected so that nothing reaches them by accident. With this on, an "
+                 + "agent can connect to them and type into them without asking.")
+        }
     }
 
     private func installCLI() {
@@ -198,15 +239,29 @@ struct AgentIndicator: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             let active = agent.lastActivity.map { context.date.timeIntervalSince($0) < 60 } ?? false
+            let yolo = agent.settings.dontAsk
             Button { showing.toggle() } label: {
-                Label("Agent Access", systemImage: active ? "sparkles" : "sparkle")
-                    .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                Label("Agent Access", systemImage: yolo ? "bolt.fill" : active ? "sparkles" : "sparkle")
+                    .foregroundStyle(yolo ? Color.orange : active ? Color.accentColor : Color.secondary)
             }
-            .help(active ? "An agent used Portside in the last minute" : "Agent Access is on")
+            .help(yolo ? "Don\u{2019}t Ask is on: agents act without confirmation"
+                  : active ? "An agent used Portside in the last minute" : "Agent Access is on")
         }
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Agent Access").font(.headline)
+                if agent.settings.dontAsk {
+                    HStack {
+                        Label("Don\u{2019}t Ask is on", systemImage: "bolt.fill").foregroundStyle(.orange)
+                        Spacer()
+                        Button("Turn Off") { agent.setDontAsk(false) }
+                    }
+                    Text(agent.settings.dontAskIncludesProtected
+                         ? "Agents act without asking, protected hosts included."
+                         : "Agents act without asking, except on protected hosts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                }
                 AgentActivityList(limit: 8)
                 Divider()
                 HStack {
@@ -218,5 +273,29 @@ struct AgentIndicator: View {
             .padding(14)
             .frame(width: 360)
         }
+    }
+}
+
+/// The plain-language warning under the Don't Ask switch. Always visible,
+/// not only after turning it on: the time to read it is before.
+struct DontAskWarning: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("For trusted machines and lab environments. Portside stops asking: new programs are let in, "
+                     + "large selections open, and \u{2014} if typing is on \u{2014} agents type into and read "
+                     + "your sessions without a prompt. A program that is wrong, confused, or following "
+                     + "instructions it read on a server can do real damage before you notice.")
+                Text("Still enforced: nothing is typed at a password prompt, MultiExec is never armed by an agent, "
+                     + "typing needs its own switch, protected hosts still ask (unless included below), and every "
+                     + "action is logged.")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.1)))
     }
 }
