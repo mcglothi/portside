@@ -241,7 +241,9 @@ enum InventoryPublishing {
     static func secretFindings(in hosts: [SessionEntry], folders: [String] = []) -> [Note] {
         var out: [Note] = []
         for h in hosts {
-            for (field, value) in [("name", h.name), ("folder", h.folder), ("identity file", h.identityFile ?? "")] {
+            let fields = [("name", h.name), ("folder", h.folder), ("identity file", h.identityFile ?? ""),
+                          ("container", h.container?.name ?? ""), ("container user", h.container?.user ?? "")]
+            for (field, value) in fields {
                 if let why = secretReason(value) { out.append(Note(host: h.name, text: "\(field) \(why)")) }
             }
         }

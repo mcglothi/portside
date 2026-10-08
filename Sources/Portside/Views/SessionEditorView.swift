@@ -403,7 +403,9 @@ struct SessionEditorView: View {
             Text(sharedSource != nil ? "Your Settings for \(draft.name)" : isNew ? "New Session" : "Edit Session")
                 .font(.headline)
             if let sharedSource {
-                Text("From \u{201C}\(sharedSource.name)\u{201D}. The address, user and key come from the shared inventory "
+                Text("From \u{201C}\(sharedSource.name)\u{201D}. The address, user and key"
+                     + (draft.kind == .container ? ", and which container," : "")
+                     + " come from the shared inventory "
                      + "and change when it's pulled. Everything else here is yours and stays on this Mac.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -433,11 +435,18 @@ struct SessionEditorView: View {
                     runOnConnectField
                     connectionOptions
                 case .container:
-                    transportHeader
-                    sshFields
+                    // A shared container's host and target come from its
+                    // source, the same as a shared host's address; the
+                    // overlay keeps none of them, so they're locked.
+                    Group {
+                        transportHeader
+                        sshFields
+                    }
+                    .disabled(sharedSource != nil)
                     credentialProfilePicker
                     passwordFields
                     containerFields
+                        .disabled(sharedSource != nil)
                 case .kubernetes:
                     transportHeader
                     sshFields

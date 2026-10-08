@@ -94,9 +94,13 @@ def container_problem(target):
     """Why a shared container target can't be kept, or None."""
     if not isinstance(target, dict):
         return "has no container"
-    name = (target.get("name") or "").strip()
-    shell = (target.get("shell") or "").strip()
-    user = (target.get("user") or "").strip()
+    fields = {}
+    for key in ("engine", "name", "shell", "user"):
+        value = target.get(key)
+        if value is not None and not isinstance(value, str):
+            return "container %s isn't text" % key
+        fields[key] = (value or "").strip()
+    name, shell, user = fields["name"], fields["shell"], fields["user"]
     if target.get("engine", "docker") not in ENGINES:
         return "engine %r isn't docker, podman or nerdctl" % target.get("engine")
     if not CONTAINER_NAME.fullmatch(name):
@@ -156,8 +160,12 @@ def check(doc):
             if ident in seen:
                 errors.append("%s: duplicate id %s" % (name, ident))
             seen.add(ident)
-            for field, label in (("name", "name"), ("folder", "folder"), ("identityFile", "identity file")):
-                why_secret = secret_reason(str(e.get(field) or ""))
+            target = e.get("container") if isinstance(e.get("container"), dict) else {}
+            values = [("name", e.get("name")), ("folder", e.get("folder")),
+                      ("identity file", e.get("identityFile")),
+                      ("container", target.get("name")), ("container user", target.get("user"))]
+            for label, value in values:
+                why_secret = secret_reason(str(value or ""))
                 if why_secret:
                     secrets.append("%s %s" % (label, why_secret))
             for key, label in PERSONAL:

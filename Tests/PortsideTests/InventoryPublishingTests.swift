@@ -182,6 +182,50 @@ final class InventoryPublishingTests: XCTestCase {
         for value in fine { XCTAssertNil(InventoryPublishing.secretReason(value), value) }
     }
 
+    /// A container name or user is a plain name, and a token is one too —
+    /// so they're screened like the other free-text fields.
+    func testSecretsInContainerFieldsAreRefused() {
+        var box = host("plex")
+        box.kind = .container
+        box.container = ContainerTarget(engine: .docker, name: "ghp_0123456789abcdefghijABCDEFGHIJ")
+        var user = host("vault")
+        user.kind = .container
+        user.container = ContainerTarget(engine: .docker, name: "vault", user: "AKIAABCDEFGHIJKLMNOP")
+        let findings = InventoryPublishing.secretFindings(in: [box, user])
+        XCTAssertTrue(findings.contains { $0.host == "plex" && $0.text.hasPrefix("container ") }, "\(findings)")
+        XCTAssertTrue(findings.contains { $0.host == "vault" && $0.text.hasPrefix("container user ") }, "\(findings)")
+    }
+
+    /// A hand-edited manifest can put a number where a container name goes.
+    /// The app's decoder skips that record; the CI checker must report it,
+    /// not crash, and still print valid JSON.
+    func testCIValidatorReportsWronglyTypedContainerFields() throws {
+        let manifest = #"""
+        {"entries": [{"id": "6E0C4C1E-9B3A-4F7E-9E2B-1A2B3C4D5E6F", "name": "odd", "folder": "",
+                      "hostname": "odd.example.com", "kind": "container",
+                      "container": {"engine": "docker", "name": 123, "shell": ["sh"], "user": null}}]}
+        """#
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("odd-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try manifest.write(to: file, atomically: true, encoding: .utf8)
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Scripts/portside-inventory-check.py")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", script.path, "--json", file.path]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let report = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   String(decoding: data, as: UTF8.self))
+        let rows = try XCTUnwrap(report["hosts"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["verdict"] as? String, "error")
+        XCTAssertEqual(process.terminationStatus, 1)
+    }
+
     func testFindingsNameTheHostAndField() {
         var e = host("db ghp_0123456789abcdefghijABCDEFGHIJ")
         e.identityFile = "~/.ssh/id_ed25519"
@@ -231,6 +275,10 @@ final class InventoryPublishingTests: XCTestCase {
         add("command-shell") {
             $0.kind = .container
             $0.container = ContainerTarget(engine: .docker, name: "web", shell: "sh -c id")
+        }
+        add("token-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "ghp_0123456789abcdefghijABCDEFGHIJ")
         }
         add("option-container-user") {
             $0.kind = .container
