@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.32.0
 
 **Kubernetes sessions say why they didn't reach the pod, and offer to sign in.** When kubectl fails, the shell it was typed into stays open, so the pane used to just sit at your local prompt with kubectl's error above it. Portside now reads that error and puts a bar under the pane: not signed in or expired, sign-in plugin not installed (for example NKP's `konvoy-async-plugin` missing from the login shell's PATH), signed in but not allowed, cluster unreachable, unknown context, kubeconfig unreadable, pod or namespace not found, container not in the pod, or no such shell in the image. Each comes with what to do and kubectl's own line as evidence. **Sign In** types the platform's own command into the pane where you can watch it: `gcloud auth login` for GKE, `oc login --web` for OpenShift, and for browser-based plugins such as NKP's, a kubectl call that starts that plugin's sign-in. **Try Again** runs the exec again. Portside never signs in by itself and never reads a token. Browse… now gives up after two minutes instead of waiting forever on a browser sign-in nobody saw, and says what to do. Agents see the same problem on the pane in `tabs`.
 
