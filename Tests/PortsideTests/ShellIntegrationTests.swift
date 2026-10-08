@@ -38,7 +38,7 @@ final class ShellIntegrationTests: XCTestCase {
     /// is the v2 shape that broke sftp.
     func testBashTrapIsNotAtColumnZero() {
         let lines = ShellIntegrationSnippet.bash.text.split(separator: "\n", omittingEmptySubsequences: false)
-        let trapLines = lines.filter { $0.contains("trap '__portside_preexec' DEBUG") }
+        let trapLines = lines.filter { $0.contains("trap __portside_preexec DEBUG") }
 
         XCTAssertEqual(trapLines.count, 1)
         XCTAssertTrue(
@@ -50,11 +50,11 @@ final class ShellIntegrationTests: XCTestCase {
     func testVersionMarkerMatchesWhatTheInstallerGrepsFor() {
         for snippet in ShellIntegrationSnippet.allCases {
             XCTAssertTrue(
-                snippet.text.contains("__portside_integration_v3"),
+                snippet.text.contains("__portside_integration_v4"),
                 "\(snippet.label) marker must be the version the installer looks for"
             )
             XCTAssertFalse(
-                snippet.text.contains("__portside_integration_v2"),
+                snippet.text.contains("__portside_integration_v3"),
                 "a stale marker would make an affected host look already-installed"
             )
         }
@@ -66,8 +66,10 @@ final class ShellIntegrationTests: XCTestCase {
     func testBashInstallRepairsAnOlderBlock() {
         let repair = ShellIntegrationSnippet.bash.repairCommand
 
-        XCTAssertTrue(repair.contains(#"^trap '__portside_preexec' DEBUG$"#),
-                      "the match must be anchored, so it hits v2's line and not v3's indented one")
+        XCTAssertTrue(repair.contains(#"^ *trap '__portside_preexec' DEBUG$"#),
+                      "anchored to the quoted form v2 and v3 wrote, at any indent")
+        XCTAssertFalse(ShellIntegrationSnippet.bash.text.contains("trap '__portside_preexec' DEBUG"),
+                       "v4's own trap must not match the repair, or installing would disarm itself")
         XCTAssertTrue(repair.contains("portside-backup"), "someone's rc file gets a backup first")
         XCTAssertTrue(repair.contains(#"cat "$f.portside-tmp" > "$f""#),
                       "rewrite through cat, not mv, so inode and permissions survive")

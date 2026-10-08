@@ -10,8 +10,9 @@ portside connect 'env:prod folder:splunk' --grid   # open them, one grid
 ```
 
 So you can tell an agent *"log me in to every Splunk box in prod"* and watch
-it happen in Portside. The agent never types into those sessions, and it
-can't arm MultiExec.
+it happen in Portside. It can't arm MultiExec, and it types into a session
+only if you turn typing on, separately, and approve each pane (see
+[Typing and reading](#typing-and-reading-the-conversation-workflow)).
 
 ## Setting it up
 
@@ -48,6 +49,12 @@ Settings ▸ Agents shows this command with the right path, ready to copy.
 | `portside_open_group` | Opens a saved group |
 | `portside_focus_tab` | Brings a tab forward |
 | `portside_close_tab` | Closes a tab (marked destructive) |
+| `portside_send` | Types into a pane, optionally running and waiting (typing switch) |
+| `portside_read_screen` | A pane's screen, or every pane in a tab |
+| `portside_last_command` | The last commands' output and exit codes (shell integration) |
+
+The host and shared-inventory tools are listed under
+[Managing hosts and shared inventories](#managing-hosts-and-shared-inventories).
 
 Each tool is one request to the same socket, so everything below applies to
 the tools exactly as it applies to the command. The tools are annotated, with
@@ -184,6 +191,10 @@ escape codes and capped at 32 KB each, keeping the end. An agent gets
 screen or re-read a transcript. This needs shell integration on the host
 (Settings ▸ Terminal). Without it, `screen` reads the visible screen and
 scrollback instead.
+
+Portside injects shell integration into SSH sessions only, so container and
+Kubernetes sessions never have it. There, `last` and `send --wait` have
+nothing to report, and an agent should use `screen`.
 
 Session logs are deliberately not offered to agents. They're the whole
 history, which is expensive to read and rarely what the question is about.
