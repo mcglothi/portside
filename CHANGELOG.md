@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Injected shell integration no longer leaves base64 junk at the prompt.** With "Inject shell integration" on and key authentication, Portside could type the integration before ssh had switched your Mac's side of the terminal to raw mode. In that state macOS holds at most 1024 bytes of a line, and the injection was one 2.3 KB line: it was cut off, never ran, and what fit showed up on the remote prompt as base64. It now waits until ssh has taken over the terminal (and isn't sent at all if that never happens), and goes as short lines typed one at a time, so no shell ever has more than a line of it waiting.
+
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.
 
 **Publishing can't undo a teammate's change you never saw.** If someone pushes to the shared inventory while your Publish Changes review is open, Publish now refuses and asks you to review again; before, it published the version merged against their *earlier* state, silently reverting them. A team manifest that can't be read stops the review instead of being treated as empty (which would have published every host as removed).

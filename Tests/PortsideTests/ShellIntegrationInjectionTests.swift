@@ -90,8 +90,15 @@ final class ShellIntegrationInjectionTests: XCTestCase {
         let command = ShellIntegrationInjection.command
         XCTAssertTrue(command.contains("[ -n \"$BASH_VERSION\" ]"))
         XCTAssertTrue(command.contains("[ -n \"$ZSH_VERSION\" ]"))
-        XCTAssertTrue(command.contains(ShellIntegrationInjection.encoded(.bash)))
-        XCTAssertTrue(command.contains(ShellIntegrationInjection.encoded(.zsh)))
+        // Each payload travels in pieces; joined in order, they're the payload.
+        func reassembled(_ prefix: String) -> String {
+            ShellIntegrationInjection.lines.compactMap { line -> String? in
+                guard line.hasPrefix(" __p_\(prefix)") else { return nil }
+                return line.split(separator: "'", omittingEmptySubsequences: false).dropFirst().first.map(String.init)
+            }.joined()
+        }
+        XCTAssertEqual(reassembled("b"), ShellIntegrationInjection.encoded(.bash))
+        XCTAssertEqual(reassembled("z"), ShellIntegrationInjection.encoded(.zsh))
     }
 
     /// A shell that is neither bash nor zsh must do nothing at all, rather than
@@ -100,9 +107,13 @@ final class ShellIntegrationInjectionTests: XCTestCase {
         XCTAssertTrue(ShellIntegrationInjection.command.contains("[ -n \"$__p\" ] && eval"))
     }
 
-    func testCommandIsASingleLine() {
-        XCTAssertFalse(ShellIntegrationInjection.command.contains("\n"),
-                       "a newline would submit the line early and run a fragment")
+    /// Each typed line is whole: a newline inside one would submit it early
+    /// and run a fragment. The Returns between lines are the only breaks.
+    func testEachLineIsWhole() {
+        for line in ShellIntegrationInjection.lines {
+            XCTAssertFalse(line.contains("\n") || line.contains("\r"),
+                           "a newline would submit the line early and run a fragment")
+        }
     }
 
     /// Leading space so hosts with `HISTCONTROL=ignorespace` / `histignorespace`
@@ -111,8 +122,14 @@ final class ShellIntegrationInjectionTests: XCTestCase {
         XCTAssertTrue(ShellIntegrationInjection.command.hasPrefix(" "))
     }
 
-    func testCommandCleansUpItsScratchVariable() {
-        XCTAssertTrue(ShellIntegrationInjection.command.hasSuffix("unset __p"))
+    /// Every scratch variable the lines set is unset at the end.
+    func testCommandCleansUpItsScratchVariables() {
+        let last = ShellIntegrationInjection.lines.last ?? ""
+        let unset = last.components(separatedBy: "unset ").last?.split(separator: " ").map(String.init) ?? []
+        let set = ShellIntegrationInjection.lines.dropLast().compactMap {
+            $0.trimmingCharacters(in: .whitespaces).split(separator: "=").first.map(String.init)
+        }
+        XCTAssertEqual(Set(unset), Set(set + ["__p"]))
     }
 
     /// The single quotes around each payload are what keep the shell from
@@ -127,20 +144,15 @@ final class ShellIntegrationInjectionTests: XCTestCase {
 
     // MARK: - The size ceiling
 
-    /// Holds the encoded line to a tty-sized budget.
+    /// Holds every typed line under Darwin's 1024-byte canonical buffer.
     ///
     /// Worth an assertion because base64 amplifies: three bytes added to the
-    /// snippet become four here, so the line grows faster than the thing being
-    /// edited, and the snippet is edited far more often than this file. The
-    /// budget is Linux's 4096-byte canonical buffer — a real bash and zsh on a
-    /// Darwin pty were both measured accepting the current 2.3 KB line intact,
-    /// so this is headroom rather than a cliff we are near.
-    func testCommandFitsTheCanonicalBudget() {
-        let size = ShellIntegrationInjection.commandByteCount
-        XCTAssertTrue(
-            ShellIntegrationInjection.fitsCanonicalBuffer(ShellIntegrationInjection.canonicalBudget),
-            "injected line is \(size) bytes, over the \(ShellIntegrationInjection.canonicalBudget)-byte "
-            + "budget — shrink the snippet or send it in chunks.")
+    /// snippet become four here, and the snippet is edited far more often than
+    /// this file. A line past the buffer is cut off where it's typed — see
+    /// `ShellIntegrationInjectionPtyTests` for what that does.
+    func testEveryLineFitsTheCanonicalBuffer() {
+        XCTAssertTrue(ShellIntegrationInjection.fitsCanonicalBuffer(1024),
+                      "a line is \(ShellIntegrationInjection.lines.map(\.utf8.count).max() ?? 0) bytes")
     }
 }
 

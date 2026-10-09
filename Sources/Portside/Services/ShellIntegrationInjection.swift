@@ -38,67 +38,88 @@ enum ShellIntegrationInjection {
             .joined(separator: "\n")
     }
 
-    /// One line of shell that installs the right snippet for whichever shell is
-    /// reading it, and nothing at all for a shell that is neither.
+    /// Lines of shell that install the right snippet for whichever shell is
+    /// reading them, and nothing at all for a shell that is neither — joined
+    /// with Returns, ready to type.
     ///
-    /// Both payloads travel in the same line and the *shell* picks — rather
-    /// than Portside detecting the shell first — because detection means a
-    /// second ssh at connect time, racing the ControlMaster socket the
-    /// interactive session is still bringing up. Letting the remote decide
-    /// costs bytes instead of a round trip, and bytes are the cheaper problem.
+    /// Both payloads travel and the *shell* picks — rather than Portside
+    /// detecting the shell first — because detection means a second ssh at
+    /// connect time, racing the ControlMaster socket the interactive session
+    /// is still bringing up. Letting the remote decide costs bytes instead of
+    /// a round trip.
     ///
-    /// **On size:** the line is 2346 bytes, which is long enough to be worth
-    /// checking against the tty rather than assuming. Measured rather than
-    /// taken from the POSIX `MAX_CANON` folklore — a real bash and a real zsh
-    /// on a Darwin pty both accept the whole line and report correctly, so the
-    /// 1024-byte figure that number suggests is not what the line discipline
-    /// actually enforces here. Confirmed against **Linux** hosts too by
-    /// `ShellIntegrationRemoteTests`, which is the line discipline that
-    /// actually receives it in the field.
-    ///
-    /// What *does* bite at this length is the writer: a pty deadlocks if you
-    /// push a long line in without draining the echo coming back, because the
-    /// output buffer fills, the shell blocks writing its echo, and it therefore
-    /// stops reading your input. Portside is never exposed to that — the bytes
-    /// go to ssh's stdin, a pipe, and SwiftTerm drains the session's output
-    /// continuously — but it is the reason a naive harness testing this appears
-    /// to prove a size limit that isn't there. `fitsCanonicalBuffer` keeps a
-    /// budget anyway, against a limit generous enough to be a real signal.
+    /// **On size: every line stays under `maxLineBytes`.** The text is often
+    /// typed before ssh has put the *local* pty into raw mode — with key auth
+    /// the session can be ready for it before ssh has switched — and until
+    /// then the pty is in canonical mode, where Darwin keeps at most 1024
+    /// bytes of a line (`MAX_CANON`). It was once one 2346-byte line: the
+    /// tty cut it off, its Return was lost, and when ssh went raw the part
+    /// that fit reached the remote prompt as base64 junk (seen on real hosts
+    /// on 2026-10-08). An earlier measurement here missed it because it typed
+    /// into bash and zsh directly, and their line editors read in raw mode.
+    /// So the payloads go as short assignments, `__p_b0='…'`, `__p_b1='…'`,
+    /// and a last line assembles the right one and evals it. Short lines also
+    /// clear a remote host's own canonical buffer, a macOS host's included.
     ///
     /// `base64 -d` is GNU/busybox; `-D` is the BSD spelling. Older macOS wants
     /// the second, newer accepts either, so it tries both and stays quiet when
     /// the first fails. A host with no `base64` at all evaluates an empty
     /// string, which is a no-op — the same place we were before injecting.
     ///
-    /// The leading space is a nod to `HISTCONTROL=ignorespace` /
+    /// The leading space on each line is a nod to `HISTCONTROL=ignorespace` /
     /// `setopt histignorespace`. Neither is on by default, so this keeps the
-    /// line out of history on hosts configured for it and not on the rest.
-    static var command: String {
-        let bash = encoded(.bash)
-        let zsh = encoded(.zsh)
-        return " __p=''; "
-            + "[ -n \"$BASH_VERSION\" ] && __p='\(bash)'; "
-            + "[ -n \"$ZSH_VERSION\" ] && __p='\(zsh)'; "
+    /// lines out of history on hosts configured for it and not on the rest.
+    static var command: String { lines.joined(separator: "\r") }
+
+    static var lines: [String] {
+        let bash = chunks(encoded(.bash)), zsh = chunks(encoded(.zsh))
+        var out: [String] = []
+        var names: [String] = []
+        func assign(_ prefix: String, _ parts: [String]) -> String {
+            parts.indices.map { i -> String in
+                let name = "__p_\(prefix)\(i)"
+                names.append(name)
+                out.append(" \(name)='\(parts[i])'")
+                return "$\(name)"
+            }.joined()
+        }
+        let bashValue = assign("b", bash), zshValue = assign("z", zsh)
+        out.append(" __p=''; "
+            + "[ -n \"$BASH_VERSION\" ] && __p=\"\(bashValue)\"; "
+            + "[ -n \"$ZSH_VERSION\" ] && __p=\"\(zshValue)\"; "
             + "[ -n \"$__p\" ] && eval \"$(printf %s \"$__p\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__p\" | base64 -D 2>/dev/null)\"; "
-            + "unset __p"
+            + "unset __p \(names.joined(separator: " "))")
+        return out
+    }
+
+    /// Base64 in pieces short enough that an assignment line holding one
+    /// stays well under `maxLineBytes`.
+    private static func chunks(_ text: String) -> [String] {
+        let size = maxLineBytes - 40
+        var out: [String] = []
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            out.append(String(rest.prefix(size)))
+            rest = rest.dropFirst(size)
+        }
+        return out
     }
 
     static func encoded(_ snippet: ShellIntegrationSnippet) -> String {
         Data(payload(for: snippet).utf8).base64EncodedString()
     }
 
-    /// Linux's `N_TTY` canonical buffer, and the most restrictive figure with
-    /// evidence behind it. Kept as the budget because it is comfortably above
-    /// what we send and comfortably below where anything is known to break.
-    static let canonicalBudget = 4096
+    /// The longest line typed. Darwin's canonical line buffer is 1024 bytes
+    /// including the newline (`MAX_CANON`), the tightest of the systems this
+    /// meets; this leaves margin under it.
+    static let maxLineBytes = 900
 
-    /// Whether the line clears a given tty line buffer. Exposed so a test can
-    /// hold the line to a budget: the snippet is edited far more often than
-    /// this file, and base64 turns every 3 bytes added there into 4 here, so
-    /// the encoded form grows faster than the thing being edited.
+    /// Whether every line clears a given tty line buffer. Exposed so a test can
+    /// hold the lines to a budget: the snippet is edited far more often than
+    /// this file, and base64 turns every 3 bytes added there into 4 here.
     static func fitsCanonicalBuffer(_ limit: Int) -> Bool {
-        command.utf8.count <= limit
+        lines.allSatisfy { $0.utf8.count < limit }
     }
 
     static var commandByteCount: Int { command.utf8.count }
