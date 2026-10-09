@@ -145,6 +145,10 @@ background queue would give its program a dead resize.
   numbered lines arrive in order.
 - **Mouse reporting**: a click encoded by SwiftTerm's own encoder, in the
   protocol vim asked for (SGR), moves vim's cursor to that cell.
+- **less** (`TerminalLivePagerTests`): paging forward and back and to the
+  end, scrolling back one line at a time (the screen scrolls down rather
+  than repainting), search matches in reverse video, and the screen
+  restored on quit.
 - **OSC 52**, and a security bug it turned up. SwiftTerm's default view
   answered clipboard *reads* from the system pasteboard, so any remote
   program could read the Mac's clipboard. Portside now refuses reads and
