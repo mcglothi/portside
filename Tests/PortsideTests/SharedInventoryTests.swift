@@ -300,6 +300,81 @@ final class SharedInventoryTests: XCTestCase {
         XCTAssertTrue(store.sharedEntries.isEmpty)
     }
 
+    /// A pull that brings in a broken manifest keeps the last good one —
+    /// across a relaunch too, which reads only the local clone.
+    @MainActor
+    func testABrokenManifestDoesNotSurviveARelaunch() async throws {
+        try publish([host("web01")])
+        let src = source()
+        do {
+            let store = SessionStore(fileURL: libraryURL)
+            store.addInventorySource(src)
+            await store.refreshInventorySource(id: src.id)
+            XCTAssertEqual(store.sharedEntries.map(\.name), ["web01"])
+
+            try Data("{ not json".utf8).write(to: work.appendingPathComponent("portside.json"))
+            try git(["commit", "--quiet", "-am", "broken"], in: work)
+            try git(["push", "--quiet", "origin", "main"], in: work)
+            await store.refreshInventorySource(id: src.id)
+            XCTAssertNotNil(store.sharedState[src.id]?.error)
+            XCTAssertEqual(store.sharedEntries.map(\.name), ["web01"])
+        }
+        let relaunched = SessionStore(fileURL: libraryURL)
+        XCTAssertEqual(relaunched.sharedEntries.map(\.name), ["web01"], "the clone still holds the last good manifest")
+    }
+
+    /// A host the team removed takes your settings for it with it when you
+    /// unsubscribe — including a saved password — even though it's no longer
+    /// in the manifest to say which source it came from.
+    @MainActor
+    func testRemovingASourceCleansUpHostsItAlreadyDropped() async throws {
+        let goneID = UUID()
+        try publish([host("web01"), host("gone", id: goneID)])
+        let store = SessionStore(fileURL: libraryURL)
+        let src = source()
+        store.addInventorySource(src)
+        await store.refreshInventorySource(id: src.id)
+        let gone = SharedManifest.entryID(sourceID: src.id, manifestID: goneID)
+        store.setEnvironment(.dev, ids: [gone])
+        XCTAssertNotNil(store.sharedOverlays[gone])
+
+        try publish([host("web01")], message: "drop gone")
+        await store.refreshInventorySource(id: src.id)
+        XCTAssertNil(store.entry(id: gone))
+
+        store.removeInventorySource(id: src.id)
+        XCTAssertTrue(store.sharedOverlays.isEmpty, "\(store.sharedOverlays.keys)")
+    }
+
+    /// An overlay saved before overlays recorded their source learns it at
+    /// launch, and that's written down — so a pull that drops the host
+    /// can't leave it unattributable.
+    @MainActor
+    func testOlderOverlaysLearnTheirSourceAndKeepIt() async throws {
+        let webID = UUID()
+        try publish([host("web01", id: webID)])
+        let src = source()
+        let id = SharedManifest.entryID(sourceID: src.id, manifestID: webID)
+        do {
+            let store = SessionStore(fileURL: libraryURL)
+            store.addInventorySource(src)
+            await store.refreshInventorySource(id: src.id)
+            store.setEnvironment(.dev, ids: [id])
+        }
+        // Make it an older library: strip sourceID from the saved overlay.
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: libraryURL)) as? [String: Any])
+        var overlays = try XCTUnwrap(json["sharedOverlays"] as? [[String: Any]])
+        XCTAssertNotNil(overlays.first?["sourceID"])
+        overlays = overlays.map { var o = $0; o["sourceID"] = nil; return o }
+        json["sharedOverlays"] = overlays
+        try JSONSerialization.data(withJSONObject: json).write(to: libraryURL)
+
+        _ = SessionStore(fileURL: libraryURL)   // a launch
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: libraryURL)) as? [String: Any])
+        let after = try XCTUnwrap(saved["sharedOverlays"] as? [[String: Any]])
+        XCTAssertEqual(after.first?["sourceID"] as? String, src.id.uuidString, "learned at launch and saved")
+    }
+
     @MainActor
     func testUnreachableRemoteReportsWithoutHanging() async throws {
         let store = SessionStore(fileURL: libraryURL)

@@ -57,7 +57,13 @@ final class InventoryPublishFlowTests: XCTestCase {
         for n in names { store.upsert(host(n)) }
         let src = InventorySource(name: "Team", remote: bare.path)
         let r = await store.createSharedInventory(src, fromFolder: "team")
-        guard case .success(let result) = r else { throw XCTSkip("create failed: \(r)") }
+        // A failure here fails the test. It used to skip — and on CI, where
+        // git had no identity to commit with, every test in this file
+        // skipped without anyone noticing.
+        guard case .success(let result) = r else {
+            XCTFail("create failed: \(r)")
+            throw CreateFailed()
+        }
         XCTAssertTrue(result.createdSourceBranch)
         return src
     }
@@ -65,12 +71,12 @@ final class InventoryPublishFlowTests: XCTestCase {
     private func publish(_ src: InventorySource, resolutions: [UUID: InventoryPublishing.Side] = [:])
         async throws -> InventoryPublisher.Result {
         guard case .success(let plan) = await store.planPublish(sourceID: src.id) else {
-            XCTFail("plan failed"); throw XCTSkip()
+            XCTFail("plan failed"); throw CreateFailed()
         }
         let r = await store.publish(plan, resolutions: resolutions, message: "test publish")
         switch r {
         case .success(let result): return result
-        case .failure(let f): XCTFail(f.message); throw XCTSkip(f.message)
+        case .failure(let f): XCTFail(f.message); throw CreateFailed()
         }
     }
 
@@ -144,6 +150,116 @@ final class InventoryPublishFlowTests: XCTestCase {
         _ = try await publish(src)
         XCTAssertEqual(try onBranch("main").entries.first { $0.name == "plex" }?.container?.name, "plex-2",
                        "a second publish kept their change rather than reverting it")
+    }
+
+    /// The team moved on after the review was shown: publishing what was
+    /// reviewed would quietly undo their change. It refuses instead.
+    func testATeamChangeAfterTheReviewIsNotOverwritten() async throws {
+        let src = try await create(["web01", "web02"])
+        store.setDirectPush(true, forSource: src.id)
+        var mine = try XCTUnwrap(store.entries.first { $0.name == "web01" })
+        mine.user = "deploy"
+        store.upsert(mine)
+        guard case .success(let plan) = await store.planPublish(sourceID: src.id) else { return XCTFail("plan") }
+
+        try teammateEdits { hosts in
+            if let i = hosts.firstIndex(where: { $0.name == "web02" }) { hosts[i].port = 2222 }
+        }
+        let r = await store.publish(plan, message: "stale")
+        guard case .failure(let f) = r else { return XCTFail("published over a change it never reviewed") }
+        XCTAssertTrue(f.message.contains("changed"), f.message)
+        XCTAssertEqual(try onBranch("main").entries.first { $0.name == "web02" }?.port, 2222)
+    }
+
+    /// A team manifest that exists but can't be read is not an empty team.
+    func testAnUnreadableTeamManifestStopsThePlan() async throws {
+        let src = try await create(["web01"])
+        try git(["clone", "--quiet", bare.path, teammate.path])
+        try Data("{ broken".utf8).write(to: teammate.appendingPathComponent("portside.json"))
+        try git(["commit", "--quiet", "-am", "oops"], in: teammate)
+        try git(["push", "--quiet", "origin", "main"], in: teammate)
+        guard case .failure(let f) = await store.planPublish(sourceID: src.id) else {
+            return XCTFail("planned against an empty team")
+        }
+        XCTAssertTrue(f.message.lowercased().contains("read"), f.message)
+    }
+
+    /// Renaming the linked folder, or a folder above it, keeps the link.
+    func testRenamingTheLinkedFolderKeepsItsLink() async throws {
+        let src = try await create(["web01"])
+        store.renameFolder("team", to: "crew")
+        XCTAssertEqual(store.publishLink(forSource: src.id)?.folder, "crew")
+        guard case .success(let plan) = await store.planPublish(sourceID: src.id) else { return XCTFail("plan") }
+        XCTAssertEqual(plan.mine.hosts.map(\.name), ["web01"])
+        XCTAssertTrue(plan.changes().isEmpty, "\(plan.changes())")
+    }
+
+    func testRenamingAFolderAboveTheLinkedOneKeepsItsLink() async throws {
+        for n in ["web01"] { store.upsert(host(n, folder: "org/team")) }
+        let src = InventorySource(name: "Team", remote: bare.path)
+        guard case .success = await store.createSharedInventory(src, fromFolder: "org/team") else {
+            return XCTFail("create")
+        }
+        store.renameFolder("org", to: "company")
+        XCTAssertEqual(store.publishLink(forSource: src.id)?.folder, "company/team")
+    }
+
+    /// Renaming one linked folder onto another would leave two links on one
+    /// folder, each publishing the other's hosts. It's refused.
+    func testARenameCantPutTwoLinksOnOneFolder() async throws {
+        let src = try await create(["web01"])
+        let otherBare = root.appendingPathComponent("other.git")
+        try git(["init", "--quiet", "--bare", "--initial-branch=main", otherBare.path])
+        store.upsert(host("db01", folder: "ops"))
+        let other = InventorySource(name: "Ops", remote: otherBare.path)
+        guard case .success = await store.createSharedInventory(other, fromFolder: "ops") else {
+            return XCTFail("create ops")
+        }
+        store.renameFolder("ops", to: "team")
+        XCTAssertEqual(store.publishLink(forSource: other.id)?.folder, "ops")
+        XCTAssertEqual(store.publishLink(forSource: src.id)?.folder, "team")
+        XCTAssertEqual(store.entries.first { $0.name == "db01" }?.folder, "ops", "the rename didn't happen")
+    }
+
+    /// Deleting the linked folder moves its hosts up a level. Publishing that
+    /// folder afterwards would send every host as removed, so the link goes
+    /// with the folder.
+    func testDeletingTheLinkedFolderUnlinksItInsteadOfPublishingRemovals() async throws {
+        let src = try await create(["web01", "web02"])
+        store.deleteFolder("team")
+        XCTAssertNil(store.publishLink(forSource: src.id))
+        guard case .failure = await store.planPublish(sourceID: src.id) else {
+            return XCTFail("a deleted folder can still publish")
+        }
+        XCTAssertEqual(try onBranch("main").entries.count, 2)
+    }
+
+    /// A repository whose manifest path runs through a symlink can't make a
+    /// publish write — or even create a folder — outside the clone.
+    func testPublishingThroughASymlinkedFolderIsRefused() async throws {
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try git(["clone", "--quiet", bare.path, teammate.path])
+        try FileManager.default.createSymbolicLink(at: teammate.appendingPathComponent("inv"),
+                                                   withDestinationURL: outside)
+        try git(["add", "inv"], in: teammate)
+        try git(["commit", "--quiet", "-m", "symlink"], in: teammate)
+        try git(["push", "--quiet", "origin", "HEAD:main"], in: teammate)
+
+        let source = InventorySource(name: "Team", remote: bare.path, path: "inv/sub/portside.json")
+        let dir = root.appendingPathComponent("pub")
+        XCTAssertThrowsError(try InventoryPublisher.publish(source, manifest: Data("{}".utf8), message: "x",
+                                                            mode: .direct, branchName: "main", in: dir))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("sub").path),
+                       "created a folder outside the clone")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("portside.json").path))
+    }
+
+    func testReviewBranchNamesDontCollideWithinAMinute() {
+        let now = Date()
+        XCTAssertNotEqual(InventoryPublisher.branchName(user: "tim", date: now),
+                          InventoryPublisher.branchName(user: "tim", date: now))
+        XCTAssertTrue(InventoryPublisher.branchName(user: "tim", date: now).hasPrefix("portside/tim-"))
     }
 
     func testSameHostEditedOnBothSidesIsAConflictToChoose() async throws {
@@ -233,3 +349,5 @@ final class InventoryPublishFlowTests: XCTestCase {
         XCTAssertNotNil(store.undoLastDelete(), "but it went through the undoable delete")
     }
 }
+
+private struct CreateFailed: Error {}

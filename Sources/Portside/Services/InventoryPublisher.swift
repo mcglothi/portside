@@ -74,8 +74,17 @@ enum InventoryPublisher {
     ///
     /// `branchName` is used in `.branch` mode; the caller names it so it can be
     /// shown before anything happens.
+    /// What the publish was reviewed against: `.at(tip)` makes it refuse if
+    /// the team's branch has moved since (`nil` tip: it didn't exist yet).
+    enum Reviewed: Equatable { case unchecked, at(String?) }
+
+    /// The team branch's current commit in a fetched clone, or nil.
+    static func tip(_ source: InventorySource, in directory: URL) -> String? {
+        try? InventoryGit.run(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/\(source.ref)"], in: directory)
+    }
+
     static func publish(_ source: InventorySource, manifest: Data, message: String, mode: Mode,
-                        branchName: String, in directory: URL) throws -> Result {
+                        branchName: String, reviewed: Reviewed = .unchecked, in directory: URL) throws -> Result {
         guard let parts = InventorySource.normalizedManifestPath(source.path) else {
             throw Failure(message: "The manifest path must be a file inside the repository.")
         }
@@ -84,6 +93,13 @@ enum InventoryPublisher {
             throw Failure(message: "That isn't a usable branch name.")
         }
         let sourceBranchExists = try fetch(source, into: directory)
+        // The manifest was merged against the team's version as reviewed. If
+        // a teammate pushed since, `checkout -B` below would start from their
+        // new commit and this file would quietly undo what they changed.
+        if case .at(let reviewedTip) = reviewed, tip(source, in: directory) != reviewedTip {
+            throw Failure(message: "The team's inventory changed since you reviewed it. Open Publish Changes "
+                + "again to see what changed, then publish.")
+        }
 
         // Start from the team's latest, or — for an empty repository — from
         // nothing at all.
@@ -96,12 +112,22 @@ enum InventoryPublisher {
 
         let file = parts.reduce(directory) { $0.appendingPathComponent($1) }
         // The same containment rule reading has: never write through a symlink
-        // the repository put there.
+        // the repository put there. Checked before anything is created —
+        // `createDirectory` follows a symlinked folder, so checking after it
+        // had already made folders wherever the link pointed.
+        var walked = directory
+        for part in parts.dropLast() {
+            walked = walked.appendingPathComponent(part)
+            if (try? FileManager.default.destinationOfSymbolicLink(atPath: walked.path)) != nil {
+                throw Failure(message: "The manifest path runs through a symlink in the repository; "
+                    + "refusing to write through it.")
+            }
+        }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
-        guard file.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
-                .hasPrefix(root) else {
+        let parent = file.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        guard parent == root || parent.hasPrefix(root + "/") else {
             throw Failure(message: "The manifest path leads outside the repository.")
         }
         if (try? FileManager.default.destinationOfSymbolicLink(atPath: file.path)) != nil {
@@ -165,13 +191,16 @@ enum InventoryPublisher {
         return nil
     }
 
-    /// `portside/<who>-<yyyymmdd-hhmm>`: readable on the forge, sortable, and
-    /// unlikely to collide between two people publishing the same minute.
+    /// `portside/<who>-<yyyymmdd-hhmmss>-<4 hex>`: readable on the forge and
+    /// sortable. The suffix keeps two publishes in the same second apart —
+    /// with minutes alone, a second publish reset the first's still-open
+    /// branch and its push was refused until the clock moved on.
     static func branchName(user: String = NSUserName(), date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyyMMdd-HHmm"
+        f.dateFormat = "yyyyMMdd-HHmmss"
         let who = user.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
-        return "portside/\(who.isEmpty ? "update" : who)-\(f.string(from: date))"
+        let suffix = String(format: "%04x", UInt16.random(in: .min ... .max))
+        return "portside/\(who.isEmpty ? "update" : who)-\(f.string(from: date))-\(suffix)"
     }
 }

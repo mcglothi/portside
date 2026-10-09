@@ -62,6 +62,17 @@ subscribers until the PR is merged. For a solo or small trusted repository,
 **Push Directly to main** on the folder's menu fast-forwards the branch
 instead.
 
+If a teammate pushes while your review is open, **Publish** refuses and asks
+you to open Publish Changes again. The review you saw was merged against their
+earlier version, and publishing it would quietly undo what they just changed.
+A team manifest that exists but can't be read stops the review too. It isn't
+treated as an empty inventory, which would publish every host as removed.
+
+Renaming the linked folder, or a folder above it, keeps the link. Deleting
+the linked folder removes the link: its hosts move up a level, and
+publishing the folder afterwards would send each one as removed. The
+subscription and the team's copy stay, and you can link a folder again.
+
 Portside **never force-pushes**. A protected branch, or a push someone else
 made first, is reported in git's own words. It uses your git setup (SSH agent
 or credential helper) and never prompts. Commits carry your
@@ -136,7 +147,10 @@ The source's dialog shows how many records were skipped.
 **History rewrites are refused.** Updates are fast-forward only. If someone
 force-pushes the branch, Portside won't follow it. A force-push is exactly how
 a host could be slipped into everyone's sidebar without anyone reviewing it.
-The source keeps its previous contents and reports the problem. To accept the
+The source keeps its previous contents and reports the problem. The same
+goes for a pull that brings a manifest Portside can't read: the local clone is
+put back to the last good commit, so the hosts are still there after a
+relaunch. To accept the
 new history, remove the source and add it again.
 
 **The manifest must live inside the repository.** If the manifest path
