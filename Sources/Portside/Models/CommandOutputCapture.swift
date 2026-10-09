@@ -168,58 +168,99 @@ struct CommandOutputCapture {
     /// of the new row and rewrites the character it just printed there
     /// (`…MN\rNOPQ…`), which reads as `MNN` with the CR gone.
     ///
-    /// The cursor is a column within the current logical line, plus whether a
+    /// The cursor is a screen row and a column within it, plus whether a
     /// wrap is pending: a character written in a row's last column leaves the
     /// cursor *on* that column until the next character, which is when the
     /// terminal wraps. Kept as a flag because the column alone can't tell
-    /// "end of a full row" from "start of the next" — the same number — and
-    /// guessing sent a second CR on a wrapped row back to the row above.
-    /// Wide characters count as one column; the cost is an occasional
-    /// misplaced overwrite in CJK output.
+    /// "end of a full row" from "start of the next", and guessing sent a
+    /// second CR on a wrapped row back to the row above. Cursor up, down,
+    /// right, left and to-column (the stripper's move markers) move it the
+    /// way a terminal would, so a tool that redraws several lines — `docker
+    /// pull`, BuildKit, cargo — comes back as its final screen. Up stops at
+    /// the command's first row: what was above isn't its output. Wide
+    /// characters count as one column; the cost is an occasional misplaced
+    /// overwrite in CJK output.
     static func render(_ text: String, columns: Int) -> String {
         let width = columns > 0 ? columns : Int.max
-        var lines: [String] = []
-        var row: [Character] = []
-        var col = 0
+        // Counts come from the remote program, so every move is bounded: a
+        // `CSI 9999999999 B` used to make this build that many rows, and a
+        // few bytes of output hung Portside.
+        let maxMove = 1_000, maxRows = 2_000, maxColumn = width == .max ? 500 : width - 1
+        // Screen rows, and for each whether it carries on the row above it
+        // (a soft wrap) — so a long line still comes back as one line. Rows,
+        // not logical lines, because cursor movement is in screen rows: a
+        // tool redrawing three lines moves up three rows.
+        var rows: [[Character]] = [[]]
+        var continues = [false]
+        var r = 0, col = 0
         var wrapPending = false
-        func rowStart() -> Int { width == .max ? 0 : col / width * width }
-        func rowEnd() -> Int { width == .max ? row.count : min(row.count, rowStart() + width) }
+        func ensure(_ row: Int) { while rows.count <= row { rows.append([]); continues.append(false) } }
         func blank(_ range: Range<Int>) {
-            let range = range.clamped(to: 0..<row.count)
+            let range = range.clamped(to: 0..<rows[r].count)
             guard !range.isEmpty else { return }
-            if range.upperBound == row.count { row.removeSubrange(range) }
-            else { row.replaceSubrange(range, with: repeatElement(" ", count: range.count)) }
+            if range.upperBound == rows[r].count { rows[r].removeSubrange(range) }
+            else { rows[r].replaceSubrange(range, with: repeatElement(" ", count: range.count)) }
         }
-        for ch in text {
+        let move = Character(Unicode.Scalar(ANSIStripper.moveMarker))
+        var chars = text.makeIterator()
+        while let ch = chars.next() {
             switch ch {
             case "\n", "\r\n":
-                lines.append(String(row))
-                row = []
+                r = min(r + 1, maxRows)
+                ensure(r)
+                // An explicit newline starts a line, even in a row a wrap once
+                // made a continuation of the one above.
+                continues[r] = false
                 col = 0
                 wrapPending = false
             case "\r":
-                col = rowStart()
+                col = 0
                 wrapPending = false
             case "\u{08}":
                 wrapPending = false
-                if col > rowStart() { col -= 1 }
+                if col > 0 { col -= 1 }
             case ANSIStripper.Erase.toEnd.character:
-                blank(col..<rowEnd())
+                blank(col..<rows[r].count)
             case ANSIStripper.Erase.toStart.character:
-                blank(rowStart()..<(col + 1))
+                blank(0..<(col + 1))
             case ANSIStripper.Erase.line.character:
-                blank(rowStart()..<rowEnd())
-            default:
-                if wrapPending { col += 1; wrapPending = false }
-                if col < row.count { row[col] = ch }
-                else {
-                    row.append(contentsOf: repeatElement(" ", count: col - row.count))
-                    row.append(ch)
+                blank(0..<rows[r].count)
+            case move:
+                // `US <final> <count> US`, from the stripper.
+                guard let final = chars.next() else { break }
+                var digits = ""
+                while let d = chars.next(), d != move { digits.append(d) }
+                let n = digits.count > 6 ? maxMove : min(max(Int(digits) ?? 1, 1), maxMove)
+                wrapPending = false
+                switch final {
+                case "A": r = max(0, r - n)           // never above the command's own output
+                case "B": r = min(r + n, maxRows); ensure(r)
+                case "C": col = min(col + n, maxColumn)
+                case "D": col = max(0, col - n)
+                case "G": col = min(n - 1, maxColumn)
+                default: break
                 }
-                if width != .max, (col + 1) % width == 0 { wrapPending = true } else { col += 1 }
+            default:
+                if wrapPending {
+                    r = min(r + 1, maxRows)
+                    ensure(r)
+                    continues[r] = true
+                    col = 0
+                    wrapPending = false
+                }
+                if col < rows[r].count { rows[r][col] = ch }
+                else {
+                    rows[r].append(contentsOf: repeatElement(" ", count: col - rows[r].count))
+                    rows[r].append(ch)
+                }
+                if width != .max, col == width - 1 { wrapPending = true } else { col += 1 }
             }
         }
-        lines.append(String(row))
+        var lines: [String] = []
+        for (i, row) in rows.enumerated() {
+            if i > 0, continues[i], !lines.isEmpty { lines[lines.count - 1] += String(row) }
+            else { lines.append(String(row)) }
+        }
         return lines.joined(separator: "\n")
     }
 }
