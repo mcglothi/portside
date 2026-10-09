@@ -210,6 +210,10 @@ enum InventoryPublishing {
         var theirFolders: [String]
         /// Whether the source's branch exists yet (false: a brand-new repo).
         var remoteBranchExists: Bool
+        /// The team branch's commit this plan was made against (nil: it
+        /// didn't exist yet). Publishing refuses if it has moved since — the
+        /// merge was made against what the user reviewed, not what's there now.
+        var reviewedTip: String? = nil
 
         func merged(_ resolutions: [UUID: Side] = [:]) -> Merge {
             InventoryPublishing.merge(base: base, mine: mine.hosts, theirs: theirs,

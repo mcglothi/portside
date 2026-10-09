@@ -300,6 +300,52 @@ final class SharedInventoryTests: XCTestCase {
         XCTAssertTrue(store.sharedEntries.isEmpty)
     }
 
+    /// A pull that brings in a broken manifest keeps the last good one —
+    /// across a relaunch too, which reads only the local clone.
+    @MainActor
+    func testABrokenManifestDoesNotSurviveARelaunch() async throws {
+        try publish([host("web01")])
+        let src = source()
+        do {
+            let store = SessionStore(fileURL: libraryURL)
+            store.addInventorySource(src)
+            await store.refreshInventorySource(id: src.id)
+            XCTAssertEqual(store.sharedEntries.map(\.name), ["web01"])
+
+            try Data("{ not json".utf8).write(to: work.appendingPathComponent("portside.json"))
+            try git(["commit", "--quiet", "-am", "broken"], in: work)
+            try git(["push", "--quiet", "origin", "main"], in: work)
+            await store.refreshInventorySource(id: src.id)
+            XCTAssertNotNil(store.sharedState[src.id]?.error)
+            XCTAssertEqual(store.sharedEntries.map(\.name), ["web01"])
+        }
+        let relaunched = SessionStore(fileURL: libraryURL)
+        XCTAssertEqual(relaunched.sharedEntries.map(\.name), ["web01"], "the clone still holds the last good manifest")
+    }
+
+    /// A host the team removed takes your settings for it with it when you
+    /// unsubscribe — including a saved password — even though it's no longer
+    /// in the manifest to say which source it came from.
+    @MainActor
+    func testRemovingASourceCleansUpHostsItAlreadyDropped() async throws {
+        let goneID = UUID()
+        try publish([host("web01"), host("gone", id: goneID)])
+        let store = SessionStore(fileURL: libraryURL)
+        let src = source()
+        store.addInventorySource(src)
+        await store.refreshInventorySource(id: src.id)
+        let gone = SharedManifest.entryID(sourceID: src.id, manifestID: goneID)
+        store.setEnvironment(.dev, ids: [gone])
+        XCTAssertNotNil(store.sharedOverlays[gone])
+
+        try publish([host("web01")], message: "drop gone")
+        await store.refreshInventorySource(id: src.id)
+        XCTAssertNil(store.entry(id: gone))
+
+        store.removeInventorySource(id: src.id)
+        XCTAssertTrue(store.sharedOverlays.isEmpty, "\(store.sharedOverlays.keys)")
+    }
+
     @MainActor
     func testUnreachableRemoteReportsWithoutHanging() async throws {
         let store = SessionStore(fileURL: libraryURL)

@@ -190,6 +190,8 @@ final class InventoryPublisherTests: XCTestCase {
         var c = DateComponents()
         c.year = 2026; c.month = 10; c.day = 8; c.hour = 9; c.minute = 5
         let date = Calendar(identifier: .gregorian).date(from: c)!
-        XCTAssertEqual(InventoryPublisher.branchName(user: "Tim McG!", date: date), "portside/timmcg-20261008-0905")
+        let name = InventoryPublisher.branchName(user: "Tim McG!", date: date)
+        XCTAssertNotNil(name.range(of: #"^portside/timmcg-20261008-090500-[0-9a-f]{4}$"#, options: .regularExpression),
+                        name)
     }
 }

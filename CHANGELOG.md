@@ -3,6 +3,18 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Publishing can't undo a teammate's change you never saw.** If someone pushes to the shared inventory while your Publish Changes review is open, Publish now refuses and asks you to review again; before, it published the version merged against their *earlier* state, silently reverting them. A team manifest that can't be read stops the review instead of being treated as empty (which would have published every host as removed).
+
+**Renaming or deleting a linked folder no longer breaks publishing.** A rename — of the folder or one above it — keeps its link. Deleting it removes the link, because its hosts move up a level and publishing the empty folder would have removed them all from the team's inventory.
+
+**A broken pull doesn't empty a shared inventory at the next launch.** A pull that brings a manifest Portside can't read now puts the local copy back to the last good version; before, the hosts stayed only until Portside restarted.
+
+**Removing a shared inventory cleans up after hosts it had already dropped** — your settings for them, and a saved password if you'd kept one — not only the hosts still in it.
+
+Review branches are named down to the second with a short random suffix, so two publishes in the same minute no longer collide, and the manifest is never written — nor a folder created — through a symlink in the repository.
+
 ## 0.34.0
 
 **Shared inventories can carry containers on an SSH host.** A container you reach through a server — `docker exec` on babbage, `podman exec` on a build box — now publishes and syncs like the host it lives on, so a team, or just your own Macs, gets the same container list everywhere. What a subscriber's Portside runs is rebuilt from checked fields, not read as a command: the container must be a plain container name, the user a name or `uid:gid`, and the shell one of the usual shells (`sh`, `bash`, `zsh`, …). Containers on your own Mac and Kubernetes pods still stay out of shared inventories, since they run on the subscriber's machine. `portside-inventory-check.py` applies the same rules in CI.

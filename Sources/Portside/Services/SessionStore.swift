@@ -1203,6 +1203,15 @@ final class SessionStore: ObservableObject {
             if f.hasPrefix(prefix) { return newPath + "/" + String(f.dropFirst(prefix.count)) }
             return f
         }
+        // A publishing link names its folder by path. Left behind, the folder
+        // lost its badge, and a publish from the source found no local hosts
+        // under the old path — every host on the team's side a removal.
+        publishLinks = publishLinks.map { link in
+            var link = link
+            if link.folder == path { link.folder = newPath }
+            else if link.folder.hasPrefix(prefix) { link.folder = newPath + "/" + String(link.folder.dropFirst(prefix.count)) }
+            return link
+        }
         // Groups live in folders too. Without this a rename left them behind in
         // a path nothing else referenced, so the old folder stayed in the
         // sidebar containing only orphans.
@@ -1228,6 +1237,10 @@ final class SessionStore: ObservableObject {
             groups[i].folder = parent
         }
         explicitFolders.removeAll { $0 == path || $0.hasPrefix(prefix) }
+        // Its hosts just moved out of a linked folder: publishing it now would
+        // send each of them to the team as removed. The link goes with the
+        // folder; the subscription and the team's copy stay.
+        publishLinks.removeAll { $0.folder == path || $0.folder.hasPrefix(prefix) }
         save()
     }
 
@@ -1509,7 +1522,10 @@ final class SessionStore: ObservableObject {
     /// Unsubscribes: the source, its clone, and every overlay on its hosts.
     func removeInventorySource(id: UUID) {
         guard inventorySources.contains(where: { $0.id == id }) else { return }
+        // The hosts in the manifest now, and any it has dropped since that
+        // still carry your settings (recorded on the overlay).
         let hosts = Set(sharedState[id]?.entries.map(\.id) ?? [])
+            .union(sharedOverlays.values.filter { $0.sourceID == id }.map(\.entryID))
         for host in hosts where sharedOverlays[host]?.savePassword == true {
             CredentialStore.deletePassword(for: host)
         }
@@ -1540,9 +1556,21 @@ final class SessionStore: ObservableObject {
         let outcome = await Task.detached(priority: .userInitiated) {
             () -> Swift.Result<(InventoryGit.Result, SharedManifest.Parsed), InventoryGit.Failure> in
             do {
+                // A pull that brings a manifest that can't be read is rolled
+                // back to the last good commit. Otherwise the clone — which is
+                // all a relaunch reads — holds the broken one, and the source
+                // comes up empty the next time Portside starts.
+                let before = try? InventoryGit.run(["rev-parse", "--verify", "--quiet", "HEAD"], in: directory)
                 let pulled = try InventoryGit.sync(source, into: directory)
-                let data = try InventoryGit.readManifest(source, in: directory)
-                return .success((pulled, try SharedManifest.parse(data, sourceID: source.id)))
+                do {
+                    let data = try InventoryGit.readManifest(source, in: directory)
+                    return .success((pulled, try SharedManifest.parse(data, sourceID: source.id)))
+                } catch {
+                    if pulled.changed, let before {
+                        _ = try? InventoryGit.run(["reset", "--quiet", "--hard", before], in: directory)
+                    }
+                    throw error
+                }
             } catch {
                 return .failure(error as? InventoryGit.Failure
                                 ?? InventoryGit.Failure(message: error.localizedDescription))
@@ -1602,6 +1630,12 @@ final class SessionStore: ObservableObject {
             }
         }
         sharedSourceByEntry = byEntry
+        // Overlays from before they recorded their source learn it while the
+        // host is still in the manifest, so removing the source later finds
+        // them even after the host has gone.
+        for (entry, source) in byEntry where sharedOverlays[entry] != nil && sharedOverlays[entry]?.sourceID == nil {
+            sharedOverlays[entry]?.sourceID = source
+        }
         if resolved != sharedEntries { sharedEntries = resolved }
     }
 
@@ -1615,6 +1649,7 @@ final class SessionStore: ObservableObject {
             var overlay = sharedOverlays[id] ?? SharedOverlay(entryID: id)
             let before = overlay
             change(&overlay)
+            overlay.sourceID = sharedSourceByEntry[id]
             guard overlay != before else { continue }
             sharedOverlays[id] = overlay.isEmpty ? nil : overlay
             changed = true
@@ -1766,25 +1801,36 @@ final class SessionStore: ObservableObject {
             return .failure(.init(message: "That source has no linked folder."))
         }
         let dir = InventoryPublisher.directory(for: sourceID, in: sourcesDirectory)
-        let fetched = await Task.detached { () -> Result<(Bool, Data?), InventoryGit.Failure> in
+        let fetched = await Task.detached { () -> Result<(Bool, Data?, String?), InventoryGit.Failure> in
             do {
                 let exists = try InventoryPublisher.fetch(source, into: dir)
-                return .success((exists, InventoryPublisher.remoteManifest(source, in: dir)))
+                return .success((exists, InventoryPublisher.remoteManifest(source, in: dir),
+                                 InventoryPublisher.tip(source, in: dir)))
             } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
         }.value
-        guard case .success(let (exists, data)) = fetched else {
+        guard case .success(let (exists, data, tip)) = fetched else {
             if case .failure(let f) = fetched { return .failure(f) }
             return .failure(.init(message: "Couldn't read the repository."))
         }
-        let theirs = (try? data.map(SharedManifest.parseKeepingIDs))
-            ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
+        // No manifest yet is an empty team; one that can't be read is not —
+        // planning against "empty" would publish every host as a removal over
+        // the damaged file instead of saying it couldn't be read.
+        let theirs: SharedManifest.Parsed
+        if let data {
+            do { theirs = try SharedManifest.parseKeepingIDs(data) } catch {
+                return .failure(.init(message: "Couldn't read the team's \(source.path) on \(source.ref): "
+                    + "\((error as? LocalizedError)?.errorDescription ?? "\(error)") Fix it in the repository first."))
+            }
+        } else {
+            theirs = SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
+        }
         let base = storedBase(for: sourceID) ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
         let mine = InventoryPublishing.prepare(entries: entries, folders: folders, root: link.folder,
                                                manifestIDs: link.manifestIDs)
         return .success(InventoryPublishing.Plan(source: source, link: link,
                                                  base: base.entries, baseFolders: base.folders,
                                                  mine: mine, theirs: theirs.entries, theirFolders: theirs.folders,
-                                                 remoteBranchExists: exists))
+                                                 remoteBranchExists: exists, reviewedTip: tip))
     }
 
     /// Sends a planned publish.
@@ -1814,11 +1860,13 @@ final class SessionStore: ObservableObject {
         let dir = InventoryPublisher.directory(for: source.id, in: sourcesDirectory)
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let branch = InventoryPublisher.branchName()
+        let reviewedTip = plan.reviewedTip
         let outcome = await Task.detached { () -> Result<InventoryPublisher.Result, InventoryGit.Failure> in
             do {
                 return .success(try InventoryPublisher.publish(source, manifest: data,
                                                                message: text.isEmpty ? "Update hosts" : text,
-                                                               mode: mode, branchName: branch, in: dir))
+                                                               mode: mode, branchName: branch,
+                                                               reviewed: .at(reviewedTip), in: dir))
             } catch { return .failure(error as? InventoryGit.Failure ?? .init(message: "\(error)")) }
         }.value
         guard case .success(let result) = outcome else { return outcome }
