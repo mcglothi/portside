@@ -1208,6 +1208,7 @@ final class AgentController: ObservableObject {
             "remote": .string(source.remote),
             "branch": .string(source.ref),
             "manifest": .string(source.path),
+            "enabled": .bool(source.isEnabled),
             "hosts": JSONValue(store.sharedEntries(inSource: source.id).count),
             "skipped": JSONValue(state?.skipped ?? 0),
             "commit": JSONValue(state?.commit),

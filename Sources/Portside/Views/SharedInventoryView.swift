@@ -80,11 +80,20 @@ struct SharedInventoryView: View {
             HStack(alignment: .firstTextBaseline) {
                 Image(systemName: "person.2.fill").foregroundStyle(.secondary)
                 Text(source.name).font(.body.weight(.semibold))
+                    .foregroundStyle(source.isEnabled ? .primary : .secondary)
                 Spacer()
+                Toggle("On", isOn: Binding(get: { source.isEnabled },
+                                           set: { on in Task { await store.setInventorySourceEnabled(source.id, on) } }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .help(source.isEnabled ? "Turn off: hide its hosts and stop pulling it, keeping your settings on them"
+                                           : "Turn on: show its hosts again and pull")
                 if state.isSyncing {
                     ProgressView().controlSize(.small)
                 } else {
                     Button("Pull") { Task { await store.refreshInventorySource(id: source.id) } }
+                        .disabled(!source.isEnabled)
                 }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([store.cloneDirectory(for: source.id)])
@@ -100,7 +109,8 @@ struct SharedInventoryView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-            Text(summary(state, count: count))
+            Text(source.isEnabled ? summary(state, count: count)
+                                  : "Off \u{2014} its hosts are hidden and it isn\u{2019}t pulled. Your settings on them are kept.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let error = state.error {

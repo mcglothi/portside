@@ -255,6 +255,15 @@ final class InventoryPublishFlowTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("portside.json").path))
     }
 
+    func testAnInventoryThatsOffCantBePublishedTo() async throws {
+        let src = try await create(["web01"])
+        await store.setInventorySourceEnabled(src.id, false)
+        guard case .failure(let f) = await store.planPublish(sourceID: src.id) else {
+            return XCTFail("planned a publish to an inventory that's off")
+        }
+        XCTAssertTrue(f.message.contains("turned off"), f.message)
+    }
+
     func testReviewBranchNamesDontCollideWithinAMinute() {
         let now = Date()
         XCTAssertNotEqual(InventoryPublisher.branchName(user: "tim", date: now),

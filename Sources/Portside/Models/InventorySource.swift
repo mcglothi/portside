@@ -19,17 +19,24 @@ struct InventorySource: Identifiable, Codable, Equatable {
     var ref: String = "main"
     /// The manifest within the repository — a Portside sessions export.
     var path: String = "portside.json"
+    /// Off: its hosts leave the sidebar and it isn't pulled, but the clone
+    /// and your settings on its hosts — favourites, profiles, saved
+    /// passwords — stay, so turning it back on loses nothing. For an
+    /// inventory needed now and then (a customer between engagements)
+    /// rather than unsubscribing and starting over.
+    var isEnabled = true
 
     init(id: UUID = UUID(), name: String, remote: String, ref: String = "main",
-         path: String = "portside.json") {
+         path: String = "portside.json", isEnabled: Bool = true) {
         self.id = id
         self.name = name
         self.remote = remote
         self.ref = ref
         self.path = path
+        self.isEnabled = isEnabled
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, remote, ref, path }
+    enum CodingKeys: String, CodingKey { case id, name, remote, ref, path, isEnabled }
 
     // Tolerant for the reason spelled out on `Macro`: a field added later must
     // not make an older library fail to load.
@@ -40,6 +47,7 @@ struct InventorySource: Identifiable, Codable, Equatable {
         remote = try c.decode(String.self, forKey: .remote)
         ref = try c.decodeIfPresent(String.self, forKey: .ref) ?? "main"
         path = try c.decodeIfPresent(String.self, forKey: .path) ?? "portside.json"
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
     }
 
     /// Why this source can't be used as written, or nil when it can.
