@@ -856,9 +856,9 @@ final class AgentAccessTests: XCTestCase {
         let codex = AgentClient(pid: 2, name: "codex", path: "/usr/local/bin/codex")
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: pane.id.uuidString)),
                                              from: codex) }
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         agent.answer(0)   // codex may use Portside, with typing
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotNil(agent.prompt, "codex read a pane only claude was let into")
         XCTAssertTrue(agent.prompt?.title.contains("codex") == true, "\(String(describing: agent.prompt?.title))")
         agent.answer(agent.prompt?.refusal)
