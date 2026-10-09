@@ -87,6 +87,42 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: path), "the socket goes when access is off")
     }
 
+    /// A client that gives up while its request waits (an unanswered prompt,
+    /// Ctrl-C on the CLI) closes the socket before the reply. Writing that
+    /// reply must fail quietly, not raise SIGPIPE and end Portside.
+    func testAClientThatLeavesEarlyDoesNotTakePortsideWithIt() throws {
+        let path = root.appendingPathComponent("agent.sock").path
+        let server = AgentServer(socketPath: path) { request, _ in
+            usleep(300_000)
+            return AgentProtocol.Response(id: request.id, result: .string(String(repeating: "x", count: 200_000)))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            let bytes = Array(path.utf8)
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let ok = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(ok, 0)
+        let line = Array((#"{"id":1,"method":"status"}"# + "\n").utf8)
+        _ = write(fd, line, line.count)
+        close(fd)
+        usleep(800_000)
+
+        // Still here, and still answering.
+        let reply = try Self.roundTrip(path, #"{"id":2,"method":"status"}"#)
+        XCTAssertEqual(reply["id"] as? Int, 2)
+    }
+
     nonisolated static func roundTrip(_ path: String, _ line: String) throws -> [String: Any] {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         defer { close(fd) }
@@ -170,6 +206,22 @@ final class AgentAccessTests: XCTestCase {
         let open = await run(agent, "connect", .init(query: "web2"), answering: [1]) // Don't Allow
         XCTAssertEqual(open.error?.code, "declined")
         XCTAssertEqual(agent.settings.approvals.first?.tier, .read)
+    }
+
+    /// Approvals are written with ISO 8601 dates; reading them back has to
+    /// agree, or the next launch finds no settings at all — Agent Access off
+    /// and every approval gone.
+    func testApprovalsSurviveARelaunch() async {
+        let (agent, _, _) = controller([host("web1")])
+        agent.setEnabled(true)
+        _ = await run(agent, "hosts", answering: [1]) // Read only
+        XCTAssertEqual(agent.settings.approvals.count, 1)
+        agent.setEnabled(true)   // stays on
+
+        let (relaunched, _, _) = controller([host("web1")])
+        defer { relaunched.setEnabled(false) }
+        XCTAssertTrue(relaunched.settings.enabled, "Agent Access is still on")
+        XCTAssertEqual(relaunched.settings.approvals.map(\.name), ["claude"], "and remembers who it approved")
     }
 
     func testDenyingIsRememberedBrieflySoItCantNag() async {
@@ -724,6 +776,65 @@ final class AgentAccessTests: XCTestCase {
     /// heavy rc took seven seconds to get there idle, and far longer with the
     /// suite running in parallel; typing before then lands in the shell's
     /// startup, not at its prompt.
+    /// Don't Ask without "also for protected hosts" still asks before an
+    /// agent reads a protected pane, as it does before typing into one.
+    func testDontAskStillAsksBeforeReadingAProtectedPane() async throws {
+        var entry = SessionEntry(name: "vault", hostname: "", kind: .container)
+        entry.isProtected = true
+        entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
+        let (agent, _, sessions) = controller([entry])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.connect(to: entry)
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+
+        let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: pane.id.uuidString)),
+                                             from: claude) }
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNotNil(agent.prompt, "a protected pane's screen was read without asking")
+        agent.answer(agent.prompt?.refusal)
+        let r = await task.value
+        XCTAssertEqual(r.error?.code, "declined")
+    }
+
+    /// A password prompt that turns up while the user is being asked — a
+    /// remote one, which only the screen shows — stops the text from going
+    /// into it once they say yes.
+    func testAPasswordPromptThatAppearsDuringTheQuestionIsNotTypedInto() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+
+        let secret = "agent-text-\(UUID().uuidString.prefix(6))"
+        let task = Task { await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString,
+                                                                                 text: secret)), from: claude) }
+        // First the program's approval, then the pane's.
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        agent.answer(0)
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNotNil(agent.prompt, "the pane's own question")
+
+        // Meanwhile the session reaches a password prompt (echo still on, as
+        // a remote one looks from here).
+        pane.sendText("printf 'Password: '; read -r x\r")
+        for _ in 0..<300 {
+            if AgentPolicy.screenText(AgentController.screenLines(pane.terminalView.getTerminal()), lines: 1)
+                .hasSuffix("Password:") { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        agent.answer(0)
+        let r = await task.value
+        XCTAssertNotNil(r.error, "typed into a password prompt")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(AgentController.screenLines(pane.terminalView.getTerminal()).contains(secret))
+    }
+
     private func waitForPrompt(_ pane: TerminalSession, seconds: Double = 60) async throws {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {

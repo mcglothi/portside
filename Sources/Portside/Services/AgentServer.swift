@@ -109,6 +109,7 @@ final class AgentServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 return // stopped
             }
+            guard Self.suppressSIGPIPE(conn) else { close(conn); continue }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.serve(conn)
             }
@@ -209,6 +210,19 @@ final class AgentServer: @unchecked Sendable {
             current = info.parent
         }
         return fallback
+    }
+
+    /// A client that quits while its request waits on a prompt closes the
+    /// socket before the reply is written, and writing to it would raise
+    /// SIGPIPE — whose default action ends Portside, not the request.
+    /// Fails (EINVAL) when the client is already gone by the time it's
+    /// accepted; the caller drops such a connection, since nobody is there
+    /// to answer. Ignoring SIGPIPE process-wide isn't an option: an ignored
+    /// signal stays ignored across exec, in every shell Portside starts.
+    @discardableResult
+    static func suppressSIGPIPE(_ fd: Int32) -> Bool {
+        var on: Int32 = 1
+        return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0
     }
 
     /// The name people know a program by, from its process name and path.

@@ -3,9 +3,19 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.34.0
 
 **Shared inventories can carry containers on an SSH host.** A container you reach through a server — `docker exec` on babbage, `podman exec` on a build box — now publishes and syncs like the host it lives on, so a team, or just your own Macs, gets the same container list everywhere. What a subscriber's Portside runs is rebuilt from checked fields, not read as a command: the container must be a plain container name, the user a name or `uid:gid`, and the shell one of the usual shells (`sh`, `bash`, `zsh`, …). Containers on your own Mac and Kubernetes pods still stay out of shared inventories, since they run on the subscriber's machine. `portside-inventory-check.py` applies the same rules in CI.
+
+**Agent Access remembers its approvals across launches.** Approvals were saved with their dates in one format and read back expecting another, so once any program was approved the next launch couldn't read the settings at all — Agent Access came back off and every approval was gone.
+
+**An agent client that quits mid-request no longer quits Portside.** A CLI interrupted while its request waited on a prompt closed its socket before the reply; writing the reply raised SIGPIPE, which ends the app. Portside now gets an error instead, and drops a connection whose client left before it was answered.
+
+**Agents can't type into a password prompt that appears while you're being asked.** After you approve typing, Portside checks the screen again, not only the local terminal, so a remote `Password:` that turned up during the question stops the text.
+
+**Don't Ask still asks before reading a protected pane** unless "Also for protected hosts" is on — reads now follow the same rule as typing.
+
+Command output past the 32 KB cap is trimmed in steps instead of on every byte.
 
 ## 0.33.0
 
