@@ -1484,10 +1484,14 @@ final class SessionStore: ObservableObject {
         guard let i = inventorySources.firstIndex(where: { $0.id == id }), inventorySources[i].isEnabled != on
         else { return }
         inventorySources[i].isEnabled = on
-        if on { loadShared(from: inventorySources[i]) }
+        // A pull still running from before it was turned off carries on and
+        // fills in the state itself; reading the clone over it, or starting
+        // a second pull against the same clone, would race it.
+        let pulling = sharedState[id]?.isSyncing == true
+        if on && !pulling { loadShared(from: inventorySources[i]) }
         rebuildShared()
         save()
-        if on { await refreshInventorySource(id: id) }
+        if on && !pulling { await refreshInventorySource(id: id) }
     }
 
     /// Each source as a sidebar root, in subscription order.
@@ -1893,6 +1897,11 @@ final class SessionStore: ObservableObject {
             return .failure(.init(message: "Couldn't write the manifest."))
         }
         let source = plan.source
+        // Checked again here, not only when planning: the review can sit open
+        // while the source is turned off in another window.
+        guard inventorySource(id: source.id)?.isEnabled == true else {
+            return .failure(.init(message: "\u{201C}\(source.name)\u{201D} is turned off. Turn it on to publish to it."))
+        }
         let mode: InventoryPublisher.Mode = plan.link.directPush ? .direct : .branch
         let dir = InventoryPublisher.directory(for: source.id, in: sourcesDirectory)
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
