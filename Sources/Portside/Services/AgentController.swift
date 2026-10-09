@@ -303,8 +303,14 @@ final class AgentController: ObservableObject {
     var logURL: URL? { directory?.appendingPathComponent("portside.agent.log") }
 
     private func loadSettings() -> Settings {
+        // Dates are written as ISO 8601 (`saveSettings`); a decoder expecting
+        // Foundation's numbers failed on the first approval's date, and the
+        // `try?` turned that into fresh settings — Agent Access off and every
+        // approval gone at the next launch.
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         guard let url = settingsURL, let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(Settings.self, from: data) else { return Settings() }
+              let decoded = try? decoder.decode(Settings.self, from: data) else { return Settings() }
         return decoded
     }
 
@@ -679,8 +685,11 @@ final class AgentController: ObservableObject {
                 }
                 if allowPane && answer == 0 { typingPanes.insert(pane.id) }
                 // The pane may have ended, or reached a password prompt, while
-                // the question was up.
-                guard pane.isRunning, !pane.isReadingSecret else {
+                // the question was up — including a remote one, which only the
+                // screen shows.
+                let now = Self.screenLines(pane.terminalView.getTerminal())
+                guard pane.isRunning, !pane.isReadingSecret,
+                      !AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(now, lines: 1)) else {
                     return .failure(.badRequest("\(paneName(pane)) changed while waiting; nothing was typed."))
                 }
             }
@@ -913,6 +922,9 @@ final class AgentController: ObservableObject {
                         + "type into \(unread.count == 1 ? "this pane" : "these panes"), asking again for protected "
                         + "hosts and multi-line input.",
                     choices: [unread.count == 1 ? "Allow for This Pane" : "Allow for These Panes", "Don\u{2019}t Allow"],
+                    // Don't Ask skips this unless a protected pane is among
+                    // them and protected hosts aren't included.
+                    protected: unread.contains { $0.entry?.isProtected == true },
                     hosts: unread.map(\.entry))
                 guard answer == 0 else { return .failure(answer == nil ? .timedOut : .declined) }
                 typingPanes.formUnion(unread.map(\.id))

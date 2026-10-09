@@ -154,5 +154,23 @@ final class CommandOutputCaptureTests: XCTestCase {
         feed(&c, osc("D;1"))
         XCTAssertEqual(c.completed.count, 1)
     }
-}
 
+    /// Output past the cap keeps its end and says it was cut. (The buffer
+    /// now trims only once it has doubled instead of on every byte; measured
+    /// in a debug build that was ~1.5x on 8 MB, not a stall, so this checks
+    /// what's kept rather than a timing.)
+    func testAHugeOutputKeepsTheEndAndSaysItWasCut() {
+        let line = Array(String(repeating: "y", count: 99).utf8) + [0x0A]
+        let chunk = Array(repeating: line, count: 100).flatMap { $0 }   // 10 KB
+        var big = CommandOutputCapture()
+        big.consume(ArraySlice(Array("\u{1B}]133;C\u{07}".utf8)))
+        for _ in 0..<200 { big.consume(ArraySlice(chunk)) }               // 2 MB
+        big.consume(ArraySlice(Array("the-end\n\u{1B}]133;D;0\u{07}".utf8)))
+        let done = big.completed.last
+        XCTAssertEqual(done?.truncated, true)
+        XCTAssertTrue(done?.output.hasSuffix("the-end") == true)
+        XCTAssertLessThanOrEqual(done?.output.utf8.count ?? .max, CommandOutputCapture.maxBytesPerCommand)
+        XCTAssertGreaterThan(done?.output.utf8.count ?? 0, CommandOutputCapture.maxBytesPerCommand - 200,
+                             "keeps a full cap's worth, not less")
+    }
+}

@@ -55,8 +55,9 @@ struct CommandOutputCapture {
     var running: Command? {
         guard recording else { return nil }
         var copy = stripper
-        return Command(command: pendingCommand, exitCode: nil, output: Self.text(copy.strip(raw), columns: columns),
-                       truncated: dropped, finished: false)
+        return Command(command: pendingCommand, exitCode: nil,
+                       output: Self.text(copy.strip(Self.tail(raw)), columns: columns),
+                       truncated: dropped || raw.count > Self.maxBytesPerCommand, finished: false)
     }
 
     /// Most recent first: the running command, if any, then completed ones.
@@ -76,16 +77,10 @@ struct CommandOutputCapture {
         for byte in bytes {
             if recording {
                 raw.append(byte)
-                if raw.count > Self.maxBytesPerCommand {
-                    raw.removeFirst(raw.count - Self.maxBytesPerCommand)
-                    dropped = true
-                }
+                if Self.trim(&raw) { dropped = true }
             } else {
                 unclaimed.append(byte)
-                if unclaimed.count > Self.maxBytesPerCommand {
-                    unclaimed.removeFirst(unclaimed.count - Self.maxBytesPerCommand)
-                    unclaimedDropped = true
-                }
+                if Self.trim(&unclaimed) { unclaimedDropped = true }
             }
             for marker in parser.consume([byte][...]) {
                 switch marker {
@@ -103,6 +98,21 @@ struct CommandOutputCapture {
                 }
             }
         }
+    }
+
+    /// Keeps a buffer's last `maxBytesPerCommand` bytes, trimming only once it
+    /// has doubled. Trimming on every byte past the cap shifted 32 KB per
+    /// byte, so a command printing megabytes stalled the terminal's receive
+    /// path; this way each byte is moved at most once more. Readers take the
+    /// `tail`. Returns whether anything was dropped.
+    private static func trim(_ buffer: inout [UInt8]) -> Bool {
+        guard buffer.count >= maxBytesPerCommand * 2 else { return false }
+        buffer.removeFirst(buffer.count - maxBytesPerCommand)
+        return true
+    }
+
+    private static func tail(_ buffer: [UInt8]) -> [UInt8] {
+        buffer.count > maxBytesPerCommand ? Array(buffer.suffix(maxBytesPerCommand)) : buffer
     }
 
     /// A finish whose start came before the capture did. Only the first such
@@ -127,9 +137,9 @@ struct CommandOutputCapture {
     }
 
     private mutating func finish(exitCode: Int?) {
-        let output = Self.text(stripper.strip(raw), columns: columns)
+        let output = Self.text(stripper.strip(Self.tail(raw)), columns: columns)
         completed.append(Command(command: pendingCommand, exitCode: exitCode, output: output,
-                                 truncated: dropped, finished: true))
+                                 truncated: dropped || raw.count > Self.maxBytesPerCommand, finished: true))
         finishedTotal += 1
         if completed.count > Self.kept { completed.removeFirst(completed.count - Self.kept) }
         recording = false
