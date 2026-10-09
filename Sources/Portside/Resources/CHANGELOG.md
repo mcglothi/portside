@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.35.0
 
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.
 
