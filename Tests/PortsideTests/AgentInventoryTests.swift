@@ -178,6 +178,7 @@ final class AgentInventoryTests: XCTestCase {
                               answering: [0, 0])   // Allow Editing Too, then the edit
         XCTAssertNil(added.error)
         XCTAssertEqual(agent.settings.approvals.first?.tier, .edit)
+        XCTAssertEqual(agent.settings.approvals.first?.label, "Read, open and edit", "shown without typing")
         agent.setAllowInput(true)
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "current")), from: claude) }
         for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }

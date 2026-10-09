@@ -42,6 +42,13 @@ final class AgentController: ObservableObject {
 
         var allowsTyping: Bool { canType ?? (tier == .input) }
 
+        /// What this program may do, as shown in Settings and `status` — from
+        /// what was granted, not the tier's rank: an edit approval without
+        /// typing mustn't read as "type and edit".
+        var label: String {
+            tier == .edit && !allowsTyping ? "Read, open and edit" : tier.label
+        }
+
         /// Whether this approval covers a request needing `needed`.
         func covers(_ needed: AgentProtocol.Tier) -> Bool {
             needed == .input ? tier >= .input && allowsTyping : tier >= needed
@@ -532,7 +539,7 @@ final class AgentController: ObservableObject {
                 "version": JSONValue(ReleaseNotes.appVersion),
                 "protocol": JSONValue(AgentProtocol.version),
                 "client": .string(client.name),
-                "tier": .string(settings.approvals.first { $0.name == client.name }?.tier.label ?? "none"),
+                "tier": .string(settings.approvals.first { $0.name == client.name }?.label ?? "none"),
                 "typingEnabled": .bool(settings.allowInput),
                 "hosts": JSONValue(store.allEntries.count),
                 "tabs": JSONValue(sessions.tabs.filter { !$0.isStartPage }.count),
