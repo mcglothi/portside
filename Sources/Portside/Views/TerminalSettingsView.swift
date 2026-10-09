@@ -33,7 +33,7 @@ struct TerminalSettingsView: View {
                 Toggle("Set up directory tracking on connect", isOn: Binding(
                     get: { store.terminal.injectShellIntegration },
                     set: { var t = store.terminal; t.injectShellIntegration = $0; store.updateTerminal(t) }))
-                Text("Experimental. Types the shell integration into each SSH session as it connects, so the file browser follows `cd` without adding anything to the host's .bashrc or .zshrc. It lasts only for that session, appears as one line in the scrollback, and applies to hosts — not serial, telnet, or container sessions.")
+                Text("Experimental. Types the shell integration into each SSH session as it connects, so the file browser follows `cd` without adding anything to the host's .bashrc or .zshrc. Also into a container or pod on this Mac once its exec attaches, so agents can wait on commands there — bash and zsh only; sh and ash are left as they are. It lasts only for that session and appears as a few lines in the scrollback. Not for serial or telnet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

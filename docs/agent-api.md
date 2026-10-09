@@ -212,10 +212,16 @@ its last frame rather than every frame. This needs shell integration on the host
 (Settings ▸ Terminal). Without it, `screen` reads the visible screen and
 scrollback instead.
 
-Portside injects shell integration into SSH sessions only, so container and
-Kubernetes sessions don't have it unless the container's shell carries it
-(issue #25). There, `last` and `send --wait` say so, and an agent should use
-`screen`.
+With Settings ▸ Terminal ▸ "Set up directory tracking on connect" on,
+Portside also injects shell integration into a **container or pod on this
+Mac** once its exec attaches. In a bash or zsh container, `last` and
+`send --wait` work as they do on a host. Two cases still get no integration:
+- **`sh`, `ash` and distroless containers:** they have no hook to use.
+- **Containers reached through an SSH host:** there's no telling when the
+  container's shell is up.
+
+In those cases, `last` and `send --wait` say there's no integration, and an
+agent should use `screen` (issue #25).
 
 Session logs are deliberately not offered to agents. They're the whole
 history, which is expensive to read and rarely what the question is about.
