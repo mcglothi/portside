@@ -1527,12 +1527,15 @@ final class SessionManager: ObservableObject {
     /// fails, and gives the container's shell a moment to start reading.
     func injectIntoContainerWhenAttached(_ session: TerminalSession, entry: SessionEntry,
                                          until deadline: Date = Date().addingTimeInterval(180)) {
-        guard terminalSettings.injectShellIntegration, entry.usesLocalTransport, session.isRunning else { return }
+        guard terminalSettings.injectShellIntegration, entry.usesLocalTransport, session.isRunning,
+              ShellIntegrationInjection.acceptsInjection(shell: entry.kind == .kubernetes
+                  ? entry.kubernetes?.shell ?? "sh" : entry.container?.shell ?? "sh") else { return }
         switch session.execStage() {
         case .attached?:
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.containerShellSettle) { [weak self, weak session] in
                 guard let self, let session, session.execStage() == .attached else { return }
-                self.typeWhenReady(ShellIntegrationInjection.command, to: session, deadline: .now() + 10, untilRaw: true)
+                self.typeWhenReady(ShellIntegrationInjection.command, to: session, deadline: .now() + 10, untilRaw: true,
+                                   stillWanted: { [weak session] in session?.execStage() == .attached })
             }
         case .returned?, nil:
             return
@@ -1569,12 +1572,12 @@ final class SessionManager: ObservableObject {
     /// later lines were sometimes dropped mid-line. One short line waiting at
     /// a time stays under any of those limits.
     func typeWhenReady(_ command: String, to session: TerminalSession, deadline: DispatchTime,
-                       untilRaw: Bool, sent: (() -> Void)? = nil) {
+                       untilRaw: Bool, stillWanted: (() -> Bool)? = nil, sent: (() -> Void)? = nil) {
         guard session.isRunning else { return }   // died during auth; nothing to send to
         let ready = !session.isReadingSecret && (!untilRaw || session.localTTYIsRaw)
         guard !ready, DispatchTime.now() < deadline else {
             if untilRaw && ready {
-                typePaced(command.components(separatedBy: "\r"), to: session, sent: sent)
+                typePaced(command.components(separatedBy: "\r"), to: session, stillWanted: stillWanted, sent: sent)
             } else if ready || !untilRaw {
                 session.sendText(command + "\r")
                 sent?()
@@ -1584,21 +1587,25 @@ final class SessionManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.postConnectPollInterval) {
             [weak self, weak session] in
             guard let self, let session else { return }
-            self.typeWhenReady(command, to: session, deadline: deadline, untilRaw: untilRaw, sent: sent)
+            self.typeWhenReady(command, to: session, deadline: deadline, untilRaw: untilRaw,
+                               stillWanted: stillWanted, sent: sent)
         }
     }
 
     static let pacedLineGap: TimeInterval = 0.2
 
-    private func typePaced(_ lines: [String], to session: TerminalSession, sent: (() -> Void)?) {
-        guard let line = lines.first, session.isRunning else { return }
+    /// `stillWanted` is asked before every line: a container whose exec ends
+    /// mid-way leaves the Mac's own shell in front, which must not get the rest.
+    private func typePaced(_ lines: [String], to session: TerminalSession, stillWanted: (() -> Bool)?,
+                           sent: (() -> Void)?) {
+        guard let line = lines.first, session.isRunning, stillWanted?() ?? true else { return }
         // A password prompt that turned up meanwhile gets none of it.
         guard !session.isReadingSecret else { return }
         session.sendText(line + "\r")
         guard lines.count > 1 else { sent?(); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.pacedLineGap) { [weak self, weak session] in
             guard let self, let session else { return }
-            self.typePaced(Array(lines.dropFirst()), to: session, sent: sent)
+            self.typePaced(Array(lines.dropFirst()), to: session, stillWanted: stillWanted, sent: sent)
         }
     }
 

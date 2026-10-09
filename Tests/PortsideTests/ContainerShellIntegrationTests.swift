@@ -140,4 +140,35 @@ final class ContainerShellIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(try XCTUnwrap(recorded, screen(pane)).output, "pod-42")
     }
+
+    /// The lines are POSIX: typed into fish they'd only make errors.
+    func testOnlySHFamilyShellsGetTheInjection() {
+        for ok in ["sh", "bash", "/bin/bash", "/usr/bin/zsh", "ash", "dash", "ksh"] {
+            XCTAssertTrue(ShellIntegrationInjection.acceptsInjection(shell: ok), ok)
+        }
+        for no in ["fish", "/usr/bin/fish", "csh", "tcsh", "nu", "pwsh"] {
+            XCTAssertFalse(ShellIntegrationInjection.acceptsInjection(shell: no), no)
+        }
+    }
+
+    /// A container that exits part-way through the injection leaves the
+    /// Mac's own shell in front; it must not get the rest.
+    func testAContainerThatExitsMidInjectionLeavesTheLocalShellAlone() async throws {
+        let name = try container("bash:5.2")
+        let (sessions, pane) = try session(name, shell: "bash", inject: true)
+        defer { sessions.tabs.forEach(sessions.closeTab) }
+        for _ in 0..<100 where pane.execStage() != .attached { try await Task.sleep(nanoseconds: 100_000_000) }
+        // Settle (0.5 s) plus a couple of paced lines, then the container goes.
+        try await Task.sleep(nanoseconds: 800_000_000)
+        _ = docker(["rm", "-f", name])
+        for _ in 0..<100 where pane.execStage() == .attached { try await Task.sleep(nanoseconds: 100_000_000) }
+        try await Task.sleep(nanoseconds: 3_000_000_000)   // anything still queued has had its chance
+
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("local-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        pane.sendText(" typeset -f __portside_preexec >/dev/null 2>&1 && echo yes > '\(marker.path)' || echo no > '\(marker.path)'\r")
+        for _ in 0..<50 where !FileManager.default.fileExists(atPath: marker.path) { try await Task.sleep(nanoseconds: 100_000_000) }
+        let answer = try String(contentsOf: marker, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(answer, "no", "the Mac's own shell got the container's integration")
+    }
 }
