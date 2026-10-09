@@ -112,6 +112,12 @@ final class KubernetesDiagnosisTests: XCTestCase {
         XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: joined, local: true),
                        "aws sso login --profile dev")
 
+        // Both: the argument wins, as it does for the AWS CLI itself.
+        let both = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["eks","get-token","--profile","from-arg"],"env":[{"name":"AWS_PROFILE","value":"from-env"}]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: both, local: true),
+                       "aws sso login --profile from-arg")
+
         let none = try XCTUnwrap(KubernetesSignIn.parse(configView: view(#"{"command":"aws","args":["eks","get-token"]}"#)))
         XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: none, local: true), "aws sso login")
 

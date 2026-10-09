@@ -212,14 +212,10 @@ enum KubernetesSignIn {
                     awsProfile: awsProfile(exec))
     }
 
-    /// `env: [{name: AWS_PROFILE, value}]` wins, as the plugin sees it last;
-    /// otherwise `--profile X` or `--profile=X` among the args.
+    /// `--profile X` or `--profile=X` among the args, else `AWS_PROFILE` in
+    /// its env: the AWS CLI lets a command-line option override the
+    /// environment, so that's the profile the plugin actually uses.
     private static func awsProfile(_ exec: [String: Any]?) -> String? {
-        let env = exec?["env"] as? [[String: Any]] ?? []
-        if let value = env.first(where: { $0["name"] as? String == "AWS_PROFILE" })?["value"] as? String,
-           !value.isEmpty, !value.hasPrefix("-") {
-            return value
-        }
         let args = exec?["args"] as? [String] ?? []
         for (i, arg) in args.enumerated() {
             if arg == "--profile", i + 1 < args.count, !args[i + 1].hasPrefix("-") { return args[i + 1] }
@@ -227,6 +223,11 @@ enum KubernetesSignIn {
                 let value = String(arg.dropFirst("--profile=".count))
                 if !value.isEmpty, !value.hasPrefix("-") { return value }
             }
+        }
+        let env = exec?["env"] as? [[String: Any]] ?? []
+        if let value = env.first(where: { $0["name"] as? String == "AWS_PROFILE" })?["value"] as? String,
+           !value.isEmpty, !value.hasPrefix("-") {
+            return value
         }
         return nil
     }
