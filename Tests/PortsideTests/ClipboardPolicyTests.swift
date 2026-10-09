@@ -10,12 +10,27 @@ import SwiftTerm
 /// secret on the system clipboard (and restores what was there).
 @MainActor
 final class ClipboardPolicyTests: XCTestCase {
-    private var saved: String?
-    private let board = NSPasteboard(name: NSPasteboard.Name("portside-test-\(UUID().uuidString)"))
-
-    override func setUp() async throws {
-        saved = NSPasteboard.general.string(forType: .string)
+    /// The whole system clipboard, every item in every type — the read test
+    /// has to put a secret there, and must leave an image or rich text the
+    /// user had copied exactly as it was.
+    private struct Snapshot {
+        let items: [[(NSPasteboard.PasteboardType, Data)]]
+        init(_ board: NSPasteboard) {
+            items = (board.pasteboardItems ?? []).map { item in
+                item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+            }
+        }
+        func restore(to board: NSPasteboard) {
+            board.clearContents()
+            let restored = items.map { pairs -> NSPasteboardItem in
+                let item = NSPasteboardItem()
+                for (type, data) in pairs { item.setData(data, forType: type) }
+                return item
+            }
+            if !restored.isEmpty { board.writeObjects(restored) }
+        }
     }
+    private let board = NSPasteboard(name: NSPasteboard.Name("portside-test-\(UUID().uuidString)"))
 
     override func tearDown() async throws {
         board.releaseGlobally()
@@ -33,12 +48,10 @@ final class ClipboardPolicyTests: XCTestCase {
     /// typed back to it at all.
     func testARemoteProgramCantReadTheClipboard() {
         let secret = "hunter2-\(UUID().uuidString.prefix(6))"
+        let before = Snapshot(.general)
+        defer { before.restore(to: .general) }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(secret, forType: .string)
-        defer {
-            NSPasteboard.general.clearContents()
-            if let saved { NSPasteboard.general.setString(saved, forType: .string) }
-        }
         let (view, sent) = view()
 
         view.feed(byteArray: Array("\u{1B}]52;c;?\u{07}".utf8)[...])
