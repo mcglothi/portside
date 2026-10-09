@@ -636,6 +636,17 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     ///
     /// False for transports with no child process (serial, telnet) and for a
     /// session that has already exited: nothing to read, nothing to protect.
+    /// Whether the local pty is in raw mode. For an ssh session that means
+    /// ssh has taken the terminal over; before then it is cooked, and the tty
+    /// keeps only about a kilobyte of typed-ahead input in total — anything
+    /// longer typed then is cut off or dropped.
+    @MainActor var localTTYIsRaw: Bool {
+        guard isRunning, let process = terminalView.process, process.running else { return false }
+        var settings = termios()
+        guard tcgetattr(process.childfd, &settings) == 0 else { return false }
+        return settings.c_lflag & tcflag_t(ICANON) == 0
+    }
+
     var isReadingSecret: Bool {
         guard isRunning, let process = terminalView.process, process.running else { return false }
         var settings = termios()
@@ -1404,8 +1415,8 @@ final class SessionManager: ObservableObject {
         // Both wait on the same "nothing is reading a secret" signal and are
         // scheduled in this order, so they arrive in it.
         if shouldInjectShellIntegration(for: entry) {
-            sendWhenNotPrompting(ShellIntegrationInjection.command, to: session,
-                                 deadline: .now() + Self.postConnectAuthTimeout)
+            typeWhenReady(ShellIntegrationInjection.command, to: session,
+                          deadline: .now() + Self.postConnectAuthTimeout, untilRaw: true)
         }
         if let command = entry.postConnectCommand {
             if entry.kind == .kubernetes { watchKubernetesExec(session, entry: entry) }
@@ -1497,16 +1508,56 @@ final class SessionManager: ObservableObject {
 
     private func sendWhenNotPrompting(_ command: String, to session: TerminalSession,
                                       deadline: DispatchTime, sent: (() -> Void)? = nil) {
+        typeWhenReady(command, to: session, deadline: deadline, untilRaw: false, sent: sent)
+    }
+
+    /// Types `command` once nothing is reading a secret — and, with
+    /// `untilRaw`, once the local pty has gone raw.
+    ///
+    /// `untilRaw` is for the shell-integration injection: kilobytes, typed
+    /// as soon as key auth lets it, which can be before ssh has switched the
+    /// local pty out of canonical mode. Typed then, the tty cut it off and
+    /// the remote prompt got base64 junk. If the pty never goes raw before
+    /// the deadline it isn't typed at all — no integration beats junk. A
+    /// plain post-connect command keeps the old rule and goes at the deadline.
+    ///
+    /// A multi-line injection is also *paced*: one line, then a short gap,
+    /// then the next. Between commands a shell puts its tty back into
+    /// canonical mode, where only about a kilobyte of typed-ahead input is
+    /// kept in total (Darwin; Linux keeps 4 KB) — typed all at once, the
+    /// later lines were sometimes dropped mid-line. One short line waiting at
+    /// a time stays under any of those limits.
+    func typeWhenReady(_ command: String, to session: TerminalSession, deadline: DispatchTime,
+                       untilRaw: Bool, sent: (() -> Void)? = nil) {
         guard session.isRunning else { return }   // died during auth; nothing to send to
-        guard session.isReadingSecret, DispatchTime.now() < deadline else {
-            session.sendText(command + "\r")
-            sent?()
+        let ready = !session.isReadingSecret && (!untilRaw || session.localTTYIsRaw)
+        guard !ready, DispatchTime.now() < deadline else {
+            if untilRaw && ready {
+                typePaced(command.components(separatedBy: "\r"), to: session, sent: sent)
+            } else if ready || !untilRaw {
+                session.sendText(command + "\r")
+                sent?()
+            }
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.postConnectPollInterval) {
             [weak self, weak session] in
             guard let self, let session else { return }
-            self.sendWhenNotPrompting(command, to: session, deadline: deadline, sent: sent)
+            self.typeWhenReady(command, to: session, deadline: deadline, untilRaw: untilRaw, sent: sent)
+        }
+    }
+
+    static let pacedLineGap: TimeInterval = 0.2
+
+    private func typePaced(_ lines: [String], to session: TerminalSession, sent: (() -> Void)?) {
+        guard let line = lines.first, session.isRunning else { return }
+        // A password prompt that turned up meanwhile gets none of it.
+        guard !session.isReadingSecret else { return }
+        session.sendText(line + "\r")
+        guard lines.count > 1 else { sent?(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pacedLineGap) { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.typePaced(Array(lines.dropFirst()), to: session, sent: sent)
         }
     }
 
