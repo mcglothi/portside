@@ -106,6 +106,14 @@ enum ShellIntegrationInjection {
         return out
     }
 
+    /// Whether the injection may be typed into `shell` — a container's or
+    /// pod's configured shell. The lines are POSIX: harmless in any sh-family
+    /// shell (only bash and zsh act on them), errors in fish, csh or nu.
+    static func acceptsInjection(shell: String) -> Bool {
+        let name = (shell.trimmingCharacters(in: .whitespaces) as NSString).lastPathComponent
+        return ["sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"].contains(name)
+    }
+
     static func encoded(_ snippet: ShellIntegrationSnippet) -> String {
         Data(payload(for: snippet).utf8).base64EncodedString()
     }

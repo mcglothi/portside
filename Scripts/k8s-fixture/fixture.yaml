@@ -3,8 +3,9 @@
 #   kubectl --context=<ctx> delete namespace portside-fixture
 # Everything lives in one namespace so deleting it removes all of it.
 # Shapes covered: a multi-replica Deployment whose pods have two containers and
-# a default-container annotation (the container picker), a StatefulSet, and a
-# bare pod (renamed on every rollout vs. stable names).
+# a default-container annotation (the container picker), a StatefulSet, a
+# bare pod (renamed on every rollout vs. stable names), and a pod whose image
+# has bash (shell integration inside a pod).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -62,3 +63,14 @@ spec:
     - name: lone
       image: alpine:3.20
       command: ["sh", "-c", "sleep infinity"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bashbox
+  namespace: portside-fixture
+spec:
+  containers:
+    - name: bashbox
+      image: bash:5.2
+      command: ["sleep", "infinity"]
