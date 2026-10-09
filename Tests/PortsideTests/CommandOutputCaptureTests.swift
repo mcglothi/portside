@@ -135,6 +135,52 @@ final class CommandOutputCaptureTests: XCTestCase {
         XCTAssertEqual(output("0123456789ABC\r\u{1B}[2KX", columns: 10), "0123456789X")
     }
 
+    // MARK: - Cursor movement (#32)
+
+    /// `docker pull` and friends redraw several lines by moving the cursor
+    /// up: the answer is the final screen, not every frame.
+    func testAMultiLineRedrawComesBackAsItsLastFrame() {
+        let frames = "layer1: Waiting\nlayer2: Waiting\n"
+            + "\u{1B}[2A\u{1B}[2Klayer1: Pull complete\n\u{1B}[2Klayer2: Pull complete\n"
+        XCTAssertEqual(output(frames, columns: 80), "layer1: Pull complete\nlayer2: Pull complete")
+    }
+
+    func testCursorForwardBackAndColumnAreReplayed() {
+        XCTAssertEqual(output("abcdef\u{1B}[3DX", columns: 80), "abcXef")
+        XCTAssertEqual(output("abc\u{1B}[1GZ", columns: 80), "Zbc")
+        XCTAssertEqual(output("abc\u{1B}[GZ", columns: 80), "Zbc", "no count means 1")
+        XCTAssertEqual(output("ab\u{1B}[2Cc", columns: 80), "ab  c")
+        XCTAssertEqual(output("ab\u{1B}[Cc", columns: 80), "ab c")
+    }
+
+    /// Down keeps the column, as a terminal does, adding rows as needed.
+    func testCursorDownKeepsTheColumn() {
+        XCTAssertEqual(output("a\u{1B}[2Bb", columns: 80), "a\n\n b")
+    }
+
+    /// Up can't leave the command's own output: what was above it isn't
+    /// the command's to change.
+    func testCursorUpStopsAtTheFirstRow() {
+        XCTAssertEqual(output("x\ny\u{1B}[9A\u{1B}[1GZ", columns: 80), "Z\ny")
+    }
+
+    /// Rows are screen rows: up from the continuation of a wrapped line lands
+    /// on the row it wrapped from, and the line still reads as one line.
+    func testCursorUpIntoAWrappedLine() {
+        XCTAssertEqual(output("0123456789ABC\u{1B}[1A\u{1B}[1GZ", columns: 10), "Z123456789ABC")
+    }
+
+    /// A progress bar that moves up and rewrites several lines repeatedly
+    /// (BuildKit, cargo) ends as its last frame however many there were.
+    func testManyRedrawsEndAsTheLastFrame() {
+        var text = ""
+        for i in 0...20 {
+            if i > 0 { text += "\u{1B}[3A" }
+            text += "\u{1B}[2Ka \(i)\n\u{1B}[2Kb \(i)\n\u{1B}[2Kc \(i)\n"
+        }
+        XCTAssertEqual(output(text, columns: 80), "a 20\nb 20\nc 20")
+    }
+
     /// A CSI aborted by CAN leaves no parameter behind for the next one.
     func testAnAbortedSequenceDoesntChangeTheNextErasesMode() {
         XCTAssertEqual(output("first\nabcdef\u{8}\u{8}\u{1B}[2\u{18}\u{1B}[K", columns: 80), "first\nabcd")

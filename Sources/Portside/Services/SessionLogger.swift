@@ -144,6 +144,15 @@ struct ANSIStripper {
         var character: Character { Character(Unicode.Scalar(rawValue)) }
     }
 
+    /// Cursor movement, kept for the same caller: `US <final> <count> US`,
+    /// where `<final>` is the CSI's own letter — `A` up, `B` down, `C` right,
+    /// `D` left, `G` to a column — and `<count>` its decimal parameter. US
+    /// (0x1F) is another C0 byte this stripper otherwise always drops, so a
+    /// real one can't be mistaken for the frame. Without these, a tool that
+    /// redraws several lines (`docker pull`) came back as every frame.
+    static let moveMarker: UInt8 = 0x1F
+    static let moveFinals: Set<UInt8> = [0x41, 0x42, 0x43, 0x44, 0x47]   // A B C D G
+
     init(keepsLineEditing: Bool = false) {
         self.keepsLineEditing = keepsLineEditing
     }
@@ -217,6 +226,13 @@ struct ANSIStripper {
                         case [0x32]: out.append(Erase.line.rawValue)
                         default: break    // private or malformed: nothing a screen would erase
                         }
+                    } else if keepsLineEditing, Self.moveFinals.contains(b),
+                              csiParameters.allSatisfy({ (0x30...0x39).contains($0) }) {
+                        // A plain count only: `CSI ? …` and the like are modes, not moves.
+                        out.append(Self.moveMarker)
+                        out.append(b)
+                        out.append(contentsOf: csiParameters.isEmpty ? [0x31] : csiParameters)
+                        out.append(Self.moveMarker)
                     }
                 } else if keepsLineEditing, csiParameters.count < 16 {
                     csiParameters.append(b)
