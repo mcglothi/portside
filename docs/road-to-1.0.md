@@ -48,6 +48,25 @@ same layer.
 That is a lot of integrity bugs from one week of looking, in the part of the
 app that has produced them before.
 
+**2026-10-08: the clock restarted.** An audit of review findings that had
+been left open turned up seven more integrity bugs, all in shared inventory,
+the newest on-disk state. All are fixed with tests that fail on the old code
+(#36):
+- a publish could silently undo a teammate's change you never reviewed
+- an unreadable team manifest was read as "delete everything"
+- renaming a linked folder broke its link, and deleting it made the next
+  publish remove every host
+- a bad pull survived a relaunch
+- unsubscribing leaked overlays and saved passwords for hosts the team had
+  already dropped
+- two links could be stacked on one folder
+
+The same audit found that **CI had been skipping every publish-flow test**.
+CI's git had no identity, so they couldn't commit, and the test helpers
+turned that into a skip. That's the failure this gate worries about most: a
+check that looks green and tests nothing. CI now has an identity, and those
+helpers fail instead of skipping.
+
 **What would satisfy it:** a few months of real use across more than one
 person's library with no new data-integrity finding. The signal isn't "we fixed
 them all" — it's that looking stops turning things up. This one cannot be
@@ -222,6 +241,17 @@ the real app rather than by tests:
 - The pre-existing "is this a password prompt?" check read every live session
   as one.
 
+**2026-10-08: the clock restarted here too.** The same audit found four
+refusals that didn't hold. All are fixed with tests (#34, #37):
+- Don't Ask read protected panes without asking
+- text could be typed into a password prompt that appeared while the user
+  was being asked
+- letting one program into a pane let every approved program in
+- approving a program to edit hosts also let it type
+
+It also found that approvals were lost at every launch, and that a client
+quitting mid-request could crash Portside (SIGPIPE).
+
 **What would satisfy it:** the same as MultiExec's gate. That means real use
 by more than one person, with at least one agent that isn't Claude Code, and
 no finding that a refusal didn't hold: a prompt skipped, a protected host
@@ -239,7 +269,10 @@ The maintainer's call, not a readiness question.
   wanted for 1.0. Read-only team inventory over plain git, alongside personal
   sessions rather than instead of them.
 
-  **Built after 0.26.0**, see [shared-inventory.md](shared-inventory.md). Like
+  **Built after 0.26.0**, see [shared-inventory.md](shared-inventory.md).
+  Since 0.34 it also carries containers on an SSH host, with their exec
+  rebuilt from checked fields. A source can be switched off without losing
+  your settings on its hosts. Like
   key distribution, it now needs mileage: a second person's library
   subscribed to a real team repo, and gate 1 applies to the new on-disk state
   (sources and overlays in the library, clones under `sources/`).
