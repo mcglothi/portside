@@ -182,6 +182,10 @@ struct CommandOutputCapture {
     /// overwrite in CJK output.
     static func render(_ text: String, columns: Int) -> String {
         let width = columns > 0 ? columns : Int.max
+        // Counts come from the remote program, so every move is bounded: a
+        // `CSI 9999999999 B` used to make this build that many rows, and a
+        // few bytes of output hung Portside.
+        let maxMove = 1_000, maxRows = 2_000, maxColumn = width == .max ? 500 : width - 1
         // Screen rows, and for each whether it carries on the row above it
         // (a soft wrap) — so a long line still comes back as one line. Rows,
         // not logical lines, because cursor movement is in screen rows: a
@@ -202,8 +206,11 @@ struct CommandOutputCapture {
         while let ch = chars.next() {
             switch ch {
             case "\n", "\r\n":
-                r += 1
+                r = min(r + 1, maxRows)
                 ensure(r)
+                // An explicit newline starts a line, even in a row a wrap once
+                // made a continuation of the one above.
+                continues[r] = false
                 col = 0
                 wrapPending = false
             case "\r":
@@ -223,19 +230,19 @@ struct CommandOutputCapture {
                 guard let final = chars.next() else { break }
                 var digits = ""
                 while let d = chars.next(), d != move { digits.append(d) }
-                let n = max(Int(digits) ?? 1, 1)
+                let n = digits.count > 6 ? maxMove : min(max(Int(digits) ?? 1, 1), maxMove)
                 wrapPending = false
                 switch final {
                 case "A": r = max(0, r - n)           // never above the command's own output
-                case "B": r += n; ensure(r)
-                case "C": col = width == .max ? col + n : min(col + n, width - 1)
+                case "B": r = min(r + n, maxRows); ensure(r)
+                case "C": col = min(col + n, maxColumn)
                 case "D": col = max(0, col - n)
-                case "G": col = width == .max ? n - 1 : min(n - 1, width - 1)
+                case "G": col = min(n - 1, maxColumn)
                 default: break
                 }
             default:
                 if wrapPending {
-                    r += 1
+                    r = min(r + 1, maxRows)
                     ensure(r)
                     continues[r] = true
                     col = 0

@@ -170,6 +170,26 @@ final class CommandOutputCaptureTests: XCTestCase {
         XCTAssertEqual(output("0123456789ABC\u{1B}[1A\u{1B}[1GZ", columns: 10), "Z123456789ABC")
     }
 
+    /// A remote program decides these counts. A huge one mustn't make the
+    /// capture build millions of rows or columns — a few bytes of output
+    /// would otherwise hang Portside.
+    func testHugeMoveCountsAreBounded() {
+        let started = Date()
+        let down = output("a\u{1B}[9999999999999999Bb", columns: 80)
+        let right = output("a\u{1B}[9999999999999999Cb", columns: 0)
+        let column = output("a\u{1B}[9999999999999999Gb", columns: 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        XCTAssertLessThan(down?.count ?? .max, 5_000)
+        XCTAssertLessThan(right?.count ?? .max, 5_000)
+        XCTAssertLessThan(column?.count ?? .max, 5_000)
+    }
+
+    /// An explicit newline starts a new line, even into a row that a wrap
+    /// once made a continuation of the row above.
+    func testANewlineIntoARowThatWasAWrapStartsANewLine() {
+        XCTAssertEqual(output("abcdeX\u{1B}[1A\r\u{1B}[2Ktop\r\nY", columns: 5), "top\nY")
+    }
+
     /// A progress bar that moves up and rewrites several lines repeatedly
     /// (BuildKit, cargo) ends as its last frame however many there were.
     func testManyRedrawsEndAsTheLastFrame() {
