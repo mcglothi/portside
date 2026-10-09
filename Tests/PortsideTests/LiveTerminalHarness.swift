@@ -117,6 +117,27 @@ final class LiveTerminalHarness {
     var cursor: (x: Int, y: Int) { queue.sync { (headless.terminal.buffer.x, headless.terminal.buffer.y) } }
     var isAlternateScreen: Bool { queue.sync { headless.terminal.isCurrentBufferAlternate } }
     var exitCode: Int32? { exited.code }
+    var cursorStyle: CursorStyle { queue.sync { headless.terminal.options.cursorStyle } }
+    var bracketedPasteMode: Bool { queue.sync { headless.terminal.bracketedPasteMode } }
+    var mouseMode: Terminal.MouseMode { queue.sync { headless.terminal.mouseMode } }
+
+    /// A left click at a cell (0-based), encoded the way the terminal view
+    /// encodes a real one — in whichever protocol the program asked for.
+    func click(col: Int, row: Int) {
+        queue.sync {
+            let t = headless.terminal!
+            t.sendEvent(buttonFlags: t.encodeButton(button: 0, release: false, shift: false, meta: false, control: false),
+                        x: col, y: row)
+            t.sendEvent(buttonFlags: t.encodeButton(button: 0, release: true, shift: false, meta: false, control: false),
+                        x: col, y: row)
+        }
+    }
+
+    /// The attribute of one cell — colours and style — for a program that
+    /// says what it means through them.
+    func attribute(col: Int, row: Int) -> Attribute? {
+        queue.sync { headless.terminal.getLine(row: row).map { $0[col].attribute } }
+    }
 
     /// Screen text, numbered, for failure messages: an assertion about where
     /// something was drawn is unreadable without seeing what *was* drawn.

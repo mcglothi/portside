@@ -199,7 +199,7 @@ final class LibrarySplitTests: XCTestCase {
                        "local state falls back to defaults")
         let preserved = try FileManager.default
             .contentsOfDirectory(atPath: tempURL.deletingLastPathComponent().path)
-            .filter { $0.contains("local.unreadable-") }
+            .filter { $0.hasPrefix(tempURL.deletingPathExtension().lastPathComponent) && $0.contains("local.unreadable-") }
         XCTAssertFalse(preserved.isEmpty, "the unreadable sidecar is kept, not discarded")
         for name in preserved {
             try? FileManager.default.removeItem(
@@ -217,10 +217,13 @@ final class LibrarySplitTests: XCTestCase {
         XCTAssertNotNil(store.loadFailure)
         XCTAssertEqual(store.terminal.scrollbackLines, 4321,
                        "a broken host list is no reason to lose the window layout too")
-        // Cleanup: the quarantine copy.
+        // Cleanup: the quarantine copy — this test's own. Every test's files
+        // share the temp directory, and deleting every `unreadable-` file in
+        // it took another test's out from under its assertion under --parallel.
         let dir = tempURL.deletingLastPathComponent()
+        let mine = tempURL.deletingPathExtension().lastPathComponent
         for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        where name.contains("unreadable-") {
+        where name.hasPrefix(mine) && name.contains("unreadable-") {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
         }
     }

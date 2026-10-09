@@ -147,4 +147,21 @@ final class TerminalLiveVimTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent(path), encoding: .utf8),
                        "hello from portside\n")
     }
+
+    /// With the mouse on, a click reaches vim as a mouse report in the
+    /// protocol it asked for, and vim puts the cursor where the click was.
+    /// Gets either half wrong — the mode, or the encoding — and clicks do
+    /// nothing, or land in the wrong place.
+    func testAClickMovesVimsCursorThere() async throws {
+        let path = try file("mouse.txt", (1...10).map { "line \($0) of the file" }.joined(separator: "\n") + "\n")
+        let t = LiveTerminalHarness(LiveTerminalHarness.find("vim")!,
+                                    ["-u", "NONE", "-i", "NONE", "-N", "-n", "-c", "set mouse=a ttymouse=sgr", path],
+                                    directory: dir.path)
+        await t.waitFor(text: "line 10 of the file")
+        await t.waitFor("vim turning on mouse reporting") { _ in t.mouseMode != .off }
+        t.click(col: 8, row: 4)
+        await t.waitFor("the cursor where the click was") { _ in t.cursor == (8, 4) }
+        t.send(":q\r")
+        await t.waitForExit()
+    }
 }

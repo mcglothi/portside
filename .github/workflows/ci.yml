@@ -14,8 +14,8 @@ jobs:
       # without it; vim ships with macOS. Installed so CI runs it rather than
       # skipping it — the suite is the thing standing between a SwiftTerm bump
       # and a regression nobody notices.
-      - name: Install tmux
-        run: brew install tmux
+      - name: Install tmux and neovim
+        run: brew install tmux neovim
       # Publishing commits with the user's own git identity and refuses to
       # guess one (user.useConfigOnly). Without this every publish-flow test
       # failed to create its inventory — and, until they were made to fail,
