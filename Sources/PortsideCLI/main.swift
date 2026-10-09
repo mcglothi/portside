@@ -353,20 +353,35 @@ case "send":
         let status = (c["finished"] as? Bool == true) ? "exit \(str(c["exitCode"]))" : "still running"
         print("\u{1B}[1m$ \(str(c["command"]))\u{1B}[0m  (\(status))")
         print(str(c["output"]))
+    } else if let row = r["result"] as? [String: Any], let error = row["error"] {
+        print("(\(str(error)))")
     } else if r["waitedOut"] as? Bool == true {
         print("(gave up waiting; it may still be running)")
     }
-case "screen":
+case "screen", "last-command":
+    // One pane answers with its row; a tab (even of one pane) or several
+    // panes with `panes: [row]`. Each row is shown under its host's name.
     let r = result as? [String: Any] ?? [:]
-    print(str(r["text"]))
-case "last-command":
-    let r = result as? [String: Any] ?? [:]
-    for c in r["commands"] as? [[String: Any]] ?? [] {
-        let status = (c["finished"] as? Bool == true) ? "exit \(str(c["exitCode"]))" : "still running"
-        print("\u{1B}[1m$ \(str(c["command"]))\u{1B}[0m  (\(status))")
-        print(str(c["output"]))
-        print("")
+    let rows = r["panes"] as? [[String: Any]] ?? [r]
+    for (i, row) in rows.enumerated() {
+        if rows.count > 1 || r["panes"] != nil {
+            if i > 0 { print("") }
+            let name = str(row["host"]).isEmpty ? str(row["pane"]) : str(row["host"])
+            print("\u{1B}[1m\u{2500}\u{2500} \(name)\u{1B}[0m")
+        }
+        if let error = row["error"] { print("(\(str(error)))"); continue }
+        if method == "screen" {
+            print(str(row["text"]))
+            continue
+        }
+        for c in row["commands"] as? [[String: Any]] ?? [] {
+            let status = (c["finished"] as? Bool == true) ? "exit \(str(c["exitCode"]))" : "still running"
+            print("\u{1B}[1m$ \(str(c["command"]))\u{1B}[0m  (\(status))")
+            print(str(c["output"]))
+            print("")
+        }
     }
+    if r["waitedOut"] as? Bool == true { print("(gave up waiting; it may still be running)") }
 case "status":
     let r = result as? [String: Any] ?? [:]
     print("Portside \(str(r["version"]))  \u{00B7}  access: \(str(r["tier"]))  \u{00B7}  "

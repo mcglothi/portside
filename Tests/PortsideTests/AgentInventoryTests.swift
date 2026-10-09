@@ -135,6 +135,58 @@ final class AgentInventoryTests: XCTestCase {
         XCTAssertEqual(store.entries.map(\.name), ["ok"])
     }
 
+    /// An update has to leave an entry that can still connect — the same
+    /// bar as adding one.
+    func testUpdatesCantLeaveAnEntryThatCantConnect() async {
+        var pod = SessionEntry(name: "web (k8s)", folder: "team", hostname: "", kind: .kubernetes)
+        var target = KubernetesTarget()
+        target.pod = "deploy/web"
+        pod.kubernetes = target
+        let (agent, store) = controller([host("web1"), pod])
+        let cleared = await run(agent, "host-update", .init(ids: [store.entries[0].id.uuidString], hostname: ""),
+                                answering: [0])
+        XCTAssertEqual(cleared.error?.code, "bad_request", "\(String(describing: cleared.error))")
+        XCTAssertEqual(store.entries.first { $0.name == "web1" }?.hostname, "web1.example.com")
+
+        var params = AgentProtocol.Params(ids: [pod.id.uuidString])
+        params.kubernetes = .init(target: "  ")
+        let noTarget = await run(agent, "host-update", params)
+        XCTAssertEqual(noTarget.error?.code, "bad_request")
+        XCTAssertEqual(store.entries.first { $0.name == "web (k8s)" }?.kubernetes?.pod, "deploy/web")
+    }
+
+    /// `portside host update redis --target redis-2` sends the target in a
+    /// `kubernetes` object, since the CLI can't tell; on a container entry
+    /// it's the container's.
+    func testATargetOnlyUpdateToAContainerChangesTheContainer() async {
+        var box = SessionEntry(name: "redis", folder: "team", hostname: "", kind: .container)
+        box.container = ContainerTarget(engine: .docker, name: "redis-1")
+        let (agent, store) = controller([box])
+        var params = AgentProtocol.Params(ids: [box.id.uuidString])
+        params.kubernetes = .init(target: "redis-2", shell: "bash")
+        let r = await run(agent, "host-update", params, answering: [0, 0])
+        XCTAssertNil(r.error, "\(String(describing: r.error))")
+        XCTAssertEqual(store.entries.first?.container?.name, "redis-2")
+        XCTAssertEqual(store.entries.first?.container?.shell, "bash")
+    }
+
+    /// Approving editing never asked about typing, so it doesn't grant it —
+    /// even though `edit` ranks above `input` — when typing is switched on.
+    func testAnEditApprovalDoesntLetAProgramType() async {
+        let (agent, _) = controller()
+        let added = await run(agent, "host-add", .init(name: "web1", folder: "team", hostname: "web1.example.com"),
+                              answering: [0, 0])   // Allow Editing Too, then the edit
+        XCTAssertNil(added.error)
+        XCTAssertEqual(agent.settings.approvals.first?.tier, .edit)
+        XCTAssertEqual(agent.settings.approvals.first?.label, "Read, open and edit", "shown without typing")
+        agent.setAllowInput(true)
+        let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "current")), from: claude) }
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNotNil(agent.prompt, "typing was assumed from an edit approval")
+        agent.answer(agent.prompt?.refusal)
+        _ = await task.value
+    }
+
     func testProtectionCanBeAddedNeverRemovedAndAsksEveryTime() async {
         let (agent, store) = controller([host("db1", protected: true)])
         // Even after "this session", a protected host asks again.
@@ -267,6 +319,14 @@ final class AgentInventoryTests: XCTestCase {
         let unresolved = await run(agent, "publish", .init(source: "Team"), answering: [0])
         XCTAssertEqual(unresolved.error?.code, "bad_request")
         XCTAssertTrue(unresolved.error?.message.contains("web1") == true)
+        // The preview names each conflict by id too: two conflicting hosts
+        // with the same name can only be resolved that way.
+        let preview = await run(agent, "publish-preview", .init(source: "Team"))
+        guard case .object(let p)? = preview.result, case .array(let conflicts)? = p["conflicts"],
+              case .object(let c)? = conflicts.first, case .string(let id)? = c["id"] else {
+            return XCTFail("no conflict id in \(String(describing: preview.result)) \(String(describing: preview.error))")
+        }
+        XCTAssertNotNil(UUID(uuidString: id))
         let bad = await run(agent, "publish", .init(source: "Team", resolutions: ["web1": "both"]))
         XCTAssertEqual(bad.error?.code, "bad_request")
         let ok = await run(agent, "publish", .init(source: "Team", resolutions: ["web1": "mine"]), answering: [0])

@@ -141,8 +141,10 @@ sessions**, which is off by default. Turning it off takes typing back from
 every program and stops the output capture. While it's on:
 
 - **Each pane asks the first time** before an agent can type into it or read
-  it. A protected host, and any multi-line text, ask **every** time, the same
-  as a MultiExec paste.
+  it, per program: letting Claude into a pane doesn't let Codex in. A
+  protected host, and any multi-line text, ask **every** time, the same as a
+  MultiExec paste. Approving a program for editing hosts doesn't approve it
+  for typing; that's asked separately.
 - **Staged by default.** Text goes to your prompt and you press Return. The
   agent runs something itself only when it sends `enter`, and the tool
   descriptions tell it to do that only when you asked.
@@ -174,7 +176,10 @@ An agent shouldn't have to poll. Three requests can wait, up to 120 seconds:
   exec that failed or ended is `failed` (with a `problem`) or `returned to the
   local shell`. `tabs` reports the same `state` per pane.
 
-A wait that runs out says so (`waitedOut`) instead of hanging. Waiting on a
+A wait that runs out says so (`waitedOut`) instead of hanging. A read of a
+tab answers with `panes: [...]`, with or without a wait. If more than five
+commands finish so fast that the one waited for is no longer kept, the answer
+says so rather than returning a newer command. Waiting on a
 command needs shell integration on the host, which is the same thing that
 marks where commands start and end. If a session has never sent a command
 marker, `send --wait` stops five seconds after typing instead of running out

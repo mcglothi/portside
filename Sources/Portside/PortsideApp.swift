@@ -139,6 +139,13 @@ struct PortsideApp: App {
                 .environmentObject(agent)
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
+                    // Once per launch. onAppear runs for every window, and
+                    // again when the last one is closed and the app reopened
+                    // from the Dock — which re-ran tab restore, tunnel
+                    // auto-start and agent setup (turning a session-only
+                    // Don't Ask off mid-session).
+                    guard !LaunchSetup.done else { return }
+                    LaunchSetup.done = true
                     applyAppAppearance(store.appearance.appAppearance)
                     sessions.appearance = store.appearance
                     sessions.loggingSettings = store.logging
@@ -484,4 +491,10 @@ struct PortsideApp: App {
         let binding = store.keyBindings.binding(for: action)
         return KeyboardShortcut(binding.key.keyEquivalent, modifiers: binding.modifiers.eventModifiers)
     }
+}
+
+/// Whether the app's one-time setup in the main window's onAppear has run.
+@MainActor
+enum LaunchSetup {
+    static var done = false
 }

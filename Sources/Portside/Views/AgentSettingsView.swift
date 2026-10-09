@@ -151,7 +151,7 @@ struct AgentSettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(approval.name).font(.body.weight(.medium))
-                            Text("\(approval.tier.label) \u{00B7} approved "
+                            Text("\(approval.label) \u{00B7} approved "
                                  + RelativeTime.phrase(for: approval.approvedAt))
                                 .font(.caption).foregroundStyle(.secondary)
                             if !approval.path.isEmpty {
