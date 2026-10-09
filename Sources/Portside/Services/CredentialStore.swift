@@ -189,8 +189,25 @@ enum AskpassInjector {
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
+        // Who's using it, so a sweep from another Portside can tell a login
+        // still waiting on MFA from one abandoned by a crash.
+        try "\(getpid())".write(to: dir.appendingPathComponent(ownerFile), atomically: true, encoding: .utf8)
         return dir
     }
+
+    static let ownerFile = "owner.pid"
+
+    /// Whether the process that made `dir` is still running. A directory made
+    /// before owners were recorded has none, and goes by age alone.
+    nonisolated private static func ownerIsAlive(_ dir: URL) -> Bool {
+        guard let text = try? String(contentsOf: dir.appendingPathComponent(ownerFile), encoding: .utf8),
+              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return false }
+        return kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    /// However long a live owner has had it, a day is past any login. A pid
+    /// reused by an unrelated process can't keep a directory forever.
+    nonisolated static let ownerTrustedFor: TimeInterval = 24 * 60 * 60
 
     static let directoryPrefix = "portside-askpass-"
 
@@ -208,16 +225,31 @@ enum AskpassInjector {
     /// after 30 seconds, so anything older than this is certainly abandoned.
     nonisolated static let staleAfter: TimeInterval = 5 * 60
 
-    nonisolated static func purgeStaleDirectories(now: Date = Date()) {
+    ///
+    /// Age alone isn't abandonment either: a login on an MFA prompt or a slow
+    /// ProxyJump can outlast `staleAfter` while ssh still needs its helper.
+    /// So a directory whose recorded owner is still running is kept.
+    ///
+    /// Returns how many abandoned directories were too new to remove, so the
+    /// caller can sweep again once they're old enough — after a crash and a
+    /// quick relaunch, the crashed run's password would otherwise sit there
+    /// for the whole new session.
+    @discardableResult
+    nonisolated static func purgeStaleDirectories(now: Date = Date()) -> Int {
         let fm = FileManager.default
         let temp = fm.temporaryDirectory
         guard let contents = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: [.contentModificationDateKey])
-        else { return }
+        else { return 0 }
+        var tooNew = 0
         for url in contents where url.lastPathComponent.hasPrefix(directoryPrefix) {
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            guard let modified, now.timeIntervalSince(modified) > staleAfter else { continue }
+            guard let modified else { continue }
+            let age = now.timeIntervalSince(modified)
+            if ownerIsAlive(url) && age < ownerTrustedFor { continue }
+            guard age > staleAfter else { tooNew += 1; continue }
             try? fm.removeItem(at: url)
         }
+        return tooNew
     }
 
     private static func installHelper(in dir: URL) throws -> URL {

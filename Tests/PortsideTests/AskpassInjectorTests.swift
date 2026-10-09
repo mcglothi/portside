@@ -99,6 +99,63 @@ final class AskpassInjectorTests: XCTestCase {
                       "a live one — another Portside mid-login — must be left alone")
     }
 
+    /// Age alone isn't abandonment: a login can sit on an MFA prompt or a
+    /// slow ProxyJump past `staleAfter`, and another Portside launching then
+    /// (a dev build, say) swept its helper away mid-login. A directory whose
+    /// owner is still running stays, however old.
+    func testAnOldDirectoryWhoseOwnerIsStillRunningIsKept() throws {
+        let dir = try ownedDirectory(pid: getpid())
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)],
+                                              ofItemAtPath: dir.path)
+        AskpassInjector.purgeStaleDirectories()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), "swept a live login's helper")
+    }
+
+    func testAnOldDirectoryWhoseOwnerHasExitedIsRemoved() throws {
+        let dir = try ownedDirectory(pid: try exitedPID())
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)],
+                                              ofItemAtPath: dir.path)
+        AskpassInjector.purgeStaleDirectories()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    /// After a crash and a quick relaunch, the crashed run's directory is too
+    /// new to call abandoned at launch. It's counted, so the app can sweep
+    /// again once it's old enough, rather than leave the password on disk for
+    /// the whole session.
+    func testATooNewAbandonedDirectoryIsLeftForALaterSweep() throws {
+        let dir = try ownedDirectory(pid: try exitedPID())
+        XCTAssertGreaterThanOrEqual(AskpassInjector.purgeStaleDirectories(), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path))
+        AskpassInjector.purgeStaleDirectories(now: Date().addingTimeInterval(AskpassInjector.staleAfter + 1))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    func testANewHelperDirectoryRecordsItsOwner() throws {
+        let env = try XCTUnwrap(AskpassInjector.environment(for: "pw"))
+        defer { env.cleanup() }
+        let dir = try XCTUnwrap(env.env.first { $0.hasPrefix("PORTSIDE_ASKPASS_STATE_DIR=") }?
+            .dropFirst("PORTSIDE_ASKPASS_STATE_DIR=".count))
+        let owner = try String(contentsOfFile: "\(dir)/owner.pid", encoding: .utf8)
+        XCTAssertEqual(owner.trimmingCharacters(in: .whitespacesAndNewlines), "\(getpid())")
+    }
+
+    private func ownedDirectory(pid: pid_t) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("portside-askpass-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "\(pid)".write(to: dir.appendingPathComponent("owner.pid"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    private func exitedPID() throws -> pid_t {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try p.run()
+        p.waitUntilExit()
+        return p.processIdentifier
+    }
+
     func testPurgeLeavesUnrelatedDirectoriesAlone() throws {
         let temp = FileManager.default.temporaryDirectory
         let unrelated = temp.appendingPathComponent("some-other-app-\(UUID().uuidString)")

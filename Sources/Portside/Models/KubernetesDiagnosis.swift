@@ -173,6 +173,9 @@ enum KubernetesSignIn {
         var execCommand: String?
         var server: String?
         var usesToken: Bool
+        /// The AWS profile an EKS exec stanza signs in with — its env's
+        /// `AWS_PROFILE`, or a `--profile` argument.
+        var awsProfile: String? = nil
     }
 
     static func command(for target: KubernetesTarget, auth: Auth?, local: Bool) -> String {
@@ -181,6 +184,11 @@ enum KubernetesSignIn {
             return "gcloud auth login"
         }
         if plugin == "aws" || plugin == "aws-iam-authenticator" {
+            // The kubeconfig's own profile: the default one may be another
+            // account, or not SSO at all.
+            if let profile = auth?.awsProfile, !profile.isEmpty {
+                return ShellQuoting.command(["aws", "sso", "login", "--profile", profile])
+            }
             return "aws sso login"
         }
         // OpenShift keeps a plain token from `oc login`. Only when the entry
@@ -200,6 +208,27 @@ enum KubernetesSignIn {
         let exec = user["exec"] as? [String: Any]
         let server = ((object["clusters"] as? [[String: Any]])?.first?["cluster"] as? [String: Any])?["server"] as? String
         return Auth(execCommand: exec?["command"] as? String, server: server,
-                    usesToken: user["token"] != nil || user["tokenFile"] != nil)
+                    usesToken: user["token"] != nil || user["tokenFile"] != nil,
+                    awsProfile: awsProfile(exec))
+    }
+
+    /// `--profile X` or `--profile=X` among the args, else `AWS_PROFILE` in
+    /// its env: the AWS CLI lets a command-line option override the
+    /// environment, so that's the profile the plugin actually uses.
+    private static func awsProfile(_ exec: [String: Any]?) -> String? {
+        let args = exec?["args"] as? [String] ?? []
+        for (i, arg) in args.enumerated() {
+            if arg == "--profile", i + 1 < args.count, !args[i + 1].hasPrefix("-") { return args[i + 1] }
+            if arg.hasPrefix("--profile=") {
+                let value = String(arg.dropFirst("--profile=".count))
+                if !value.isEmpty, !value.hasPrefix("-") { return value }
+            }
+        }
+        let env = exec?["env"] as? [[String: Any]] ?? []
+        if let value = env.first(where: { $0["name"] as? String == "AWS_PROFILE" })?["value"] as? String,
+           !value.isEmpty, !value.hasPrefix("-") {
+            return value
+        }
+        return nil
     }
 }

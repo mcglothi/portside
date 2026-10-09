@@ -88,6 +88,15 @@ final class ShellIntegrationBashTests: XCTestCase {
         assertRecords(try records(rc: rc, input: "\n\ntrue\n\n"), [("true", "0")])
     }
 
+    /// With `set -T` the DEBUG trap is inherited by functions, so it fires on
+    /// `__portside_precmd`'s own first line after an empty Return. If the
+    /// empty-Return check returns still armed, that line — `local
+    /// __portside_ret=$?` — is recorded as a command.
+    func testAnEmptyReturnRecordsNothingUnderSetT() throws {
+        let rc = "set -T\n" + ShellIntegrationSnippet.bash.text
+        assertRecords(try records(rc: rc, input: "\n\ntrue\n\n"), [("true", "0")])
+    }
+
     /// History skipping a line (a leading space under ignorespace, history
     /// off) must not label it as the previous command. The fallback is
     /// `BASH_COMMAND`, which is bash's own reprint of the command — hence

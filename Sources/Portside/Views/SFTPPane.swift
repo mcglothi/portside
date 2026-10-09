@@ -39,7 +39,9 @@ enum ShellIntegrationSnippet: String, CaseIterable, Identifiable {
                 __portside_preexec() {
                   [ -n "$COMP_LINE" ] && return              # tab completion, not a command
                   [ -n "$__portside_armed" ] || return       # PROMPT_COMMAND, startup files
-                  [ "$BASH_COMMAND" = __portside_precmd ] && return  # empty Return
+                  # Empty Return. Disarmed too: under `set -T` the trap fires
+                  # inside __portside_precmd next and would record its first line.
+                  [ "$BASH_COMMAND" = __portside_precmd ] && { unset __portside_armed; return; }
                   unset __portside_armed
                   __portside_running=1
                   printf '\033]133;C\007'

@@ -90,6 +90,43 @@ final class KubernetesDiagnosisTests: XCTestCase {
                        "a token alone isn't OpenShift; no login renews a static one")
     }
 
+    /// EKS kubeconfigs name their AWS profile in the exec stanza — through
+    /// `AWS_PROFILE` in its env, or `--profile`. Signing in the default
+    /// profile instead signs in the wrong account, or one that isn't SSO.
+    func testEKSSignsInTheProfileItsKubeconfigUses() throws {
+        func view(_ exec: String) -> String {
+            #"{"clusters":[{"cluster":{"server":"https://x.eks.amazonaws.com"}}],"users":[{"user":{"exec":"# + exec + "}}]}"
+        }
+        let byEnv = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["eks","get-token","--cluster-name","prod"],"env":[{"name":"AWS_PROFILE","value":"prod-admin"}]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: byEnv, local: true),
+                       "aws sso login --profile prod-admin")
+
+        let byArg = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["--region","us-west-2","eks","get-token","--cluster-name","prod","--profile","staging"]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: byArg, local: true),
+                       "aws sso login --profile staging")
+
+        let joined = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["eks","get-token","--profile=dev"]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: joined, local: true),
+                       "aws sso login --profile dev")
+
+        // Both: the argument wins, as it does for the AWS CLI itself.
+        let both = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["eks","get-token","--profile","from-arg"],"env":[{"name":"AWS_PROFILE","value":"from-env"}]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: both, local: true),
+                       "aws sso login --profile from-arg")
+
+        let none = try XCTUnwrap(KubernetesSignIn.parse(configView: view(#"{"command":"aws","args":["eks","get-token"]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: none, local: true), "aws sso login")
+
+        let hostile = try XCTUnwrap(KubernetesSignIn.parse(configView: view(
+            #"{"command":"aws","args":["--profile","x; touch /tmp/p"]}"#)))
+        XCTAssertEqual(KubernetesSignIn.command(for: KubernetesTarget(pod: "web"), auth: hostile, local: true),
+                       "aws sso login --profile 'x; touch /tmp/p'")
+    }
+
     func testAServerShapedLikeAnInjectionIsQuoted() {
         let auth = KubernetesSignIn.Auth(execCommand: nil, server: "https://x;touch /tmp/p", usesToken: true)
         let command = KubernetesSignIn.command(for: KubernetesTarget(pod: "web", binary: .oc), auth: auth, local: true)

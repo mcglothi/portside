@@ -8,7 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         RemoteFileEditor.purgeStaleCopies()
-        AskpassInjector.purgeStaleDirectories()
+        // Abandoned too recently to be sure at launch (a crash, then a quick
+        // relaunch): sweep once more when they're old enough.
+        if AskpassInjector.purgeStaleDirectories() > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + AskpassInjector.staleAfter + 5) {
+                AskpassInjector.purgeStaleDirectories()
+            }
+        }
     }
 
     /// Quitting used to silently destroy remote edits that had never reached
