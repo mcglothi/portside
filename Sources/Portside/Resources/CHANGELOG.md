@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.
+
 **Publishing can't undo a teammate's change you never saw.** If someone pushes to the shared inventory while your Publish Changes review is open, Publish now refuses and asks you to review again; before, it published the version merged against their *earlier* state, silently reverting them. A team manifest that can't be read stops the review instead of being treated as empty (which would have published every host as removed).
 
 **Renaming or deleting a linked folder no longer breaks publishing.** A rename — of the folder or one above it — keeps its link. Deleting it removes the link, because its hosts move up a level and publishing the empty folder would have removed them all from the team's inventory.
