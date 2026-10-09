@@ -116,9 +116,28 @@ program spawned from one never received SIGWINCH. The app spawns from the
 main thread and isn't affected, but anything that spawns a pty off a
 background queue would give its program a dead resize.
 
-Still to cover: vttest, neovim, ncurses beyond tmux, OSC 52, Sixel, Kitty
-graphics, iTerm2 inline images, mouse reporting from a real program, and
-large pastes into a real program.
+**Extended on 2026-10-08:**
+- **neovim** (`TerminalLiveNeovimTests`): drawing and status line, the
+  alternate screen on quit, resize both ways, CJK columns, **24-bit colour**
+  landing exactly (`termguicolors`, checked cell by cell), and the **cursor
+  shape** following the mode (DECSCUSR).
+- **Large paste** (`TerminalLivePasteTests`): 2 MB bracketed-pasted into vim
+  through the same `LocalProcess.send` the app's paste uses. All 20,000
+  numbered lines arrive in order.
+- **Mouse reporting**: a click encoded by SwiftTerm's own encoder, in the
+  protocol vim asked for (SGR), moves vim's cursor to that cell.
+- **OSC 52**, and a security bug it turned up. SwiftTerm's default view
+  answered clipboard *reads* from the system pasteboard, so any remote
+  program could read the Mac's clipboard. Portside now refuses reads and
+  allows writes (`ClipboardPolicyTests`).
+
+CI installs tmux and neovim, so none of these skip there. A SwiftTerm bump
+is a PR like any other, so it runs them all before it can merge, and
+`release.sh` runs them again before a release.
+
+Still to cover: vttest (it's interactive, and automating it means scripting
+its menus and comparing screens), ncurses beyond tmux, Sixel, Kitty
+graphics, and iTerm2 inline images.
 
 **What would satisfy it:** an executable suite — vttest, tmux, vim/neovim,
 ncurses, Unicode width, combining marks, CJK, emoji/ZWJ, bracketed paste, mouse
