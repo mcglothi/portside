@@ -154,10 +154,15 @@ final class AgentAccessTests: XCTestCase {
 
     // MARK: - Controller
 
-    private func controller(_ entries: [SessionEntry]) -> (AgentController, SessionStore, SessionManager) {
+    /// `loginShell`: the user's real login shell, for the tests that are
+    /// about how one starts up. Everything else gets `zsh -f` — no rc files —
+    /// so many shells at once under `--parallel` reach a prompt in time (#31).
+    private func controller(_ entries: [SessionEntry], loginShell: Bool = false)
+        -> (AgentController, SessionStore, SessionManager) {
         let store = SessionStore(fileURL: root.appendingPathComponent("portside.json"))
         entries.forEach(store.upsert)
         let sessions = SessionManager()
+        if !loginShell { sessions.localShell = ("/bin/zsh", ["-f"]) }
         let agent = AgentController()
         agent.promptTimeout = 5
         agent.approvalArmingDelay = 0
@@ -174,7 +179,7 @@ final class AgentAccessTests: XCTestCase {
                      answering choices: [Int?] = []) async -> AgentProtocol.Response {
         let task = Task { await agent.handle(.init(method: method, params: params), from: claude) }
         for choice in choices {
-            for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+            for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
             XCTAssertNotNil(agent.prompt, "expected a prompt")
             agent.answer(choice)
         }
@@ -270,7 +275,7 @@ final class AgentAccessTests: XCTestCase {
         defer { agent.setEnabled(false) }
 
         let task = Task { await agent.handle(.init(method: "hosts"), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         agent.answer(0) // instantly: ignored
         XCTAssertNotNil(agent.prompt, "an approval in the first moment doesn't count")
         try? await Task.sleep(nanoseconds: 600_000_000)
@@ -280,7 +285,7 @@ final class AgentAccessTests: XCTestCase {
 
         let other = AgentClient(pid: 2, name: "other", path: "")
         let refused = Task { await agent.handle(.init(method: "hosts"), from: other) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         agent.answer(agent.prompt!.refusal) // instantly: refusals always count
         let no = await refused.value
         XCTAssertEqual(no.error?.code, "declined")
@@ -291,7 +296,7 @@ final class AgentAccessTests: XCTestCase {
         agent.setEnabled(true)
         defer { agent.setEnabled(false) }
         let task = Task { await agent.handle(.init(method: "hosts"), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         let prompt = agent.prompt!
         XCTAssertTrue(prompt.choices[prompt.refusal].contains("Don"), prompt.choices.joined(separator: "|"))
         agent.answer(prompt.refusal)
@@ -488,7 +493,7 @@ final class AgentAccessTests: XCTestCase {
         agent.setAllowInput(true)
         defer { agent.setEnabled(false) }
         let task = Task { await agent.handle(.init(method: "send", params: .init(pane: "x", text: "y")), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         let prompt = agent.prompt!
         XCTAssertLessThanOrEqual(prompt.choices.count, AgentController.maxChoices, prompt.choices.joined(separator: "|"))
         XCTAssertTrue(prompt.choices[prompt.refusal].hasPrefix("Don"))
@@ -536,7 +541,7 @@ final class AgentAccessTests: XCTestCase {
         agent.setDontAskAllowed(true)
         defer { agent.setEnabled(false) }
         let task = Task { await agent.handle(.init(method: "connect", params: .init(query: "db1")), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertNotNil(agent.prompt, "a protected host still asks")
         agent.answer(agent.prompt?.refusal)
         let r = await task.value
@@ -612,7 +617,7 @@ final class AgentAccessTests: XCTestCase {
         _ = await run(agent, "send", .init(pane: "none", text: "x"), answering: [0]) // grant typing tier
 
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "tab")), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         let prompt = try XCTUnwrap(agent.prompt)
         XCTAssertTrue(prompt.title.contains("3 panes"), prompt.title)
         agent.answer(0)
@@ -716,7 +721,7 @@ final class AgentAccessTests: XCTestCase {
         _ = await run(agent, "status")
         agent.setConnectCap(1)
         let task = Task { await agent.handle(.init(method: "connect", params: .init(query: "env:prod")), from: claude) }
-        for _ in 0..<200 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertNotNil(agent.prompt)
         agent.answer(agent.prompt?.refusal)
         _ = await task.value
@@ -792,7 +797,7 @@ final class AgentAccessTests: XCTestCase {
 
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: pane.id.uuidString)),
                                              from: claude) }
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotNil(agent.prompt, "a protected pane's screen was read without asking")
         agent.answer(agent.prompt?.refusal)
         let r = await task.value
@@ -815,9 +820,9 @@ final class AgentAccessTests: XCTestCase {
         let task = Task { await agent.handle(.init(method: "send", params: .init(pane: pane.id.uuidString,
                                                                                  text: secret)), from: claude) }
         // First the program's approval, then the pane's.
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         agent.answer(0)
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotNil(agent.prompt, "the pane's own question")
 
         // Meanwhile the session reaches a password prompt (echo still on, as
@@ -851,9 +856,9 @@ final class AgentAccessTests: XCTestCase {
         let codex = AgentClient(pid: 2, name: "codex", path: "/usr/local/bin/codex")
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: pane.id.uuidString)),
                                              from: codex) }
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         agent.answer(0)   // codex may use Portside, with typing
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotNil(agent.prompt, "codex read a pane only claude was let into")
         XCTAssertTrue(agent.prompt?.title.contains("codex") == true, "\(String(describing: agent.prompt?.title))")
         agent.answer(agent.prompt?.refusal)
@@ -1079,7 +1084,7 @@ final class AgentAccessTests: XCTestCase {
 
         var entry = SessionEntry(name: "box", hostname: "", kind: .container)
         entry.container = ContainerTarget(engine: .nerdctl, name: "portside-test-\(UUID().uuidString.prefix(6))")
-        let (agent, _, sessions) = controller([entry])
+        let (agent, _, sessions) = controller([entry], loginShell: true)
         agent.setEnabled(true)
         agent.setAllowInput(true)
         agent.setDontAskAllowed(true)

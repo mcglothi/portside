@@ -1259,8 +1259,8 @@ final class SessionManager: ObservableObject {
             // A container/pod that runs on this Mac: a local login shell we
             // then drive into the container. The login shell (-l) gives
             // docker/kubectl/gcloud their usual PATH.
-            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            return TerminalSession(title: entry.name, executable: shell, args: ["-l"],
+            let shell = localShell
+            return TerminalSession(title: entry.name, executable: shell.path, args: shell.args,
                                    entry: entry, appearance: appearance, logger: logger)
         } else {
             // ControlMaster options so this interactive session becomes the
@@ -1531,11 +1531,17 @@ final class SessionManager: ObservableObject {
         if selectedTabID != tab.id { selectedTabID = tab.id } else { notifyWorkspaceChanged() }
     }
 
+    /// The shell local sessions run, and that local containers and pods are
+    /// driven from: the user's login shell. Tests swap in a bare one —
+    /// dozens of logins through a real rc file at once under `--parallel`
+    /// was what timed them out waiting for a prompt (#31).
+    var localShell: (path: String, args: [String]) = (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh", ["-l"])
+
     private func makeLocalShellSession() -> TerminalSession {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let shell = localShell
         let logger = LogManager.makeLogger(hostKey: "local", title: "Local Shell",
-                                           subtitle: shell, settings: loggingSettings)
-        return TerminalSession(title: "local", executable: shell, args: ["-l"],
+                                           subtitle: shell.path, settings: loggingSettings)
+        return TerminalSession(title: "local", executable: shell.path, args: shell.args,
                                appearance: appearance, logger: logger)
     }
 

@@ -49,7 +49,7 @@ final class AgentInventoryTests: XCTestCase {
         async -> AgentProtocol.Response {
         let task = Task { await agent.handle(.init(method: method, params: params), from: claude) }
         for choice in choices {
-            for _ in 0..<400 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+            for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }  // up to 30s: git under --parallel load
             XCTAssertNotNil(agent.prompt, "expected a prompt", file: file, line: line)
             agent.answer(choice)
         }
@@ -181,7 +181,7 @@ final class AgentInventoryTests: XCTestCase {
         XCTAssertEqual(agent.settings.approvals.first?.label, "Read, open and edit", "shown without typing")
         agent.setAllowInput(true)
         let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: "current")), from: claude) }
-        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotNil(agent.prompt, "typing was assumed from an edit approval")
         agent.answer(agent.prompt?.refusal)
         _ = await task.value
@@ -287,7 +287,7 @@ final class AgentInventoryTests: XCTestCase {
         e.port = 2202
         store.upsert(e)
         let task = Task { await agent.handle(.init(method: "publish", params: .init(source: "Team")), from: claude) }
-        for _ in 0..<400 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        for _ in 0..<3000 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }  // up to 30s: git under --parallel load
         let prompt = try XCTUnwrap(agent.prompt, "a direct push asked, Don't Ask notwithstanding")
         XCTAssertTrue(prompt.message.contains("Straight onto main"), prompt.message)
         agent.answer(prompt.refusal)
