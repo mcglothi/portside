@@ -67,7 +67,9 @@ final class TerminalLivePagerTests: XCTestCase {
         await t.waitFor("the first page") { $0[0] == "line 001 of the file" }
         t.send("/line 150\r")
         await t.waitFor("the match on screen") { $0.contains { $0.hasPrefix("line 150") } }
-        let row = t.screen.firstIndex { $0.hasPrefix("line 150") }!
+        guard let row = t.screen.firstIndex(where: { $0.hasPrefix("line 150") }) else {
+            return XCTFail("no match on screen\n\(t.dump)")
+        }
         XCTAssertTrue(t.attribute(col: 0, row: row)?.style.contains(.inverse) == true,
                       "the match isn't highlighted\n\(t.dump)")
         XCTAssertFalse(t.attribute(col: 10, row: row)?.style.contains(.inverse) == true, "only the match")
