@@ -835,6 +835,94 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertFalse(AgentController.screenLines(pane.terminalView.getTerminal()).contains(secret))
     }
 
+    /// Letting one program into a pane doesn't let another in: the question
+    /// named the program.
+    func testPaneConsentBelongsToTheProgramThatWasAsked() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+
+        let first = await run(agent, "screen", .init(pane: pane.id.uuidString), answering: [0, 0])
+        XCTAssertNil(first.error)
+        let codex = AgentClient(pid: 2, name: "codex", path: "/usr/local/bin/codex")
+        let task = Task { await agent.handle(.init(method: "screen", params: .init(pane: pane.id.uuidString)),
+                                             from: codex) }
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        agent.answer(0)   // codex may use Portside, with typing
+        for _ in 0..<300 where agent.prompt == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNotNil(agent.prompt, "codex read a pane only claude was let into")
+        XCTAssertTrue(agent.prompt?.title.contains("codex") == true, "\(String(describing: agent.prompt?.title))")
+        agent.answer(agent.prompt?.refusal)
+        let r = await task.value
+        XCTAssertEqual(r.error?.code, "declined")
+    }
+
+    /// A wait on a tab answers in the tab's shape — a list — like the same
+    /// read without a wait.
+    func testWaitingOnATabKeepsTheListShape() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+        sessions.selectedTabID = sessions.tabs.last?.id
+        _ = await run(agent, "screen", .init(pane: pane.id.uuidString), answering: [0, 0])
+        _ = await run(agent, "send", .init(pane: pane.id.uuidString,
+                                           text: "printf '\\033]133;C\\007'; echo hi; printf '\\033]133;D;0\\007'",
+                                           enter: true, wait: 10))
+        let r = await run(agent, "last-command", .init(pane: "tab", wait: 1))
+        guard case .object(let o)? = r.result else { return XCTFail("\(String(describing: r.error))") }
+        XCTAssertNotNil(o["panes"], "\(o.keys)")
+        XCTAssertNotNil(o["waitedOut"])
+    }
+
+    /// More than five commands finishing after a wait began push the one it
+    /// was for out. The answer says so, rather than returning a newer command.
+    func testAWaitTargetThatWasPushedOutIsntReplacedByANewerCommand() async throws {
+        let (agent, _, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setAllowInput(true)
+        defer { agent.setEnabled(false); sessions.tabs.forEach(sessions.closeTab) }
+        sessions.openLocalShell()
+        let pane = try XCTUnwrap(sessions.tabs.last?.leaves.first)
+        try await waitForPrompt(pane)
+        _ = await run(agent, "screen", .init(pane: pane.id.uuidString), answering: [0, 0])
+        let one = "printf '\\033]133;C\\007\\033]133;E;%s\\007' $(printf 'cmd%s' N | base64); echo outN; printf '\\033]133;D;0\\007'"
+        let line = (1...7).map { one.replacingOccurrences(of: "N", with: "\($0)") }.joined(separator: "; ")
+        let r = await run(agent, "send", .init(pane: pane.id.uuidString, text: line, enter: true, wait: 10))
+        guard case .object(let o)? = r.result, case .object(let row)? = o["result"] else {
+            return XCTFail("\(String(describing: r.error))")
+        }
+        // Either the wait caught the first command before the others finished
+        // (a busy machine), or they all finished between two looks and it
+        // was pushed out — which must be said, never answered with a newer one.
+        if case .array(let cmds)? = row["commands"], case .object(let c)? = cmds.first {
+            XCTAssertEqual(c["command"], .string("cmd1"), "answered with a command that wasn't the one waited for")
+        } else {
+            guard case .string(let error)? = row["error"] else { return XCTFail("\(row)") }
+            XCTAssertTrue(error.contains("finished"), error)
+        }
+    }
+
+    /// Setting up again for the same library — a window appearing again —
+    /// doesn't redo the launch-time reset.
+    func testConfiguringAgainKeepsASessionOnlyDontAsk() {
+        let (agent, store, sessions) = controller([])
+        agent.setEnabled(true)
+        agent.setDontAskAllowed(true)
+        defer { agent.setEnabled(false) }
+        agent.setDontAsk(true)
+        XCTAssertTrue(agent.settings.dontAsk)
+        agent.configure(store: store, sessions: sessions)
+        XCTAssertTrue(agent.settings.dontAsk, "reopening a window turned Don't Ask off")
+    }
+
     private func waitForPrompt(_ pane: TerminalSession, seconds: Double = 60) async throws {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {

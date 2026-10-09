@@ -15,6 +15,14 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 Review branches are named down to the second with a short random suffix, so two publishes in the same minute no longer collide, and the manifest is never written — nor a folder created — through a symlink in the repository.
 
+**Agent approvals belong to the program that got them.** Letting one agent into a pane no longer lets every other approved agent in without asking, and approving a program to edit hosts no longer quietly lets it type into sessions once typing is switched on — typing is asked about on its own.
+
+**Agent requests that would break an entry are refused.** An update that clears a host's address or a pod's target is rejected, as adding one would be. `portside host update NAME --target X` on a container entry changes the container (it used to be refused as a Kubernetes field).
+
+**`portside screen tab` and `portside last tab` print each pane** in a terminal instead of nothing, and a wait on a tab answers in the same list shape as a read without one. A wait whose command was pushed out by five newer ones says so instead of returning one of those. Publish previews include each conflict's id, so two conflicting hosts with the same name can be resolved.
+
+**Reopening Portside's window no longer re-runs launch setup**, which turned a session-only Don't Ask off and could restore tabs or start auto-start tunnels a second time.
+
 ## 0.34.0
 
 **Shared inventories can carry containers on an SSH host.** A container you reach through a server — `docker exec` on babbage, `podman exec` on a build box — now publishes and syncs like the host it lives on, so a team, or just your own Macs, gets the same container list everywhere. What a subscriber's Portside runs is rebuilt from checked fields, not read as a command: the container must be a plain container name, the user a name or `uid:gid`, and the shell one of the usual shells (`sh`, `bash`, `zsh`, …). Containers on your own Mac and Kubernetes pods still stay out of shared inventories, since they run on the subscriber's machine. `portside-inventory-check.py` applies the same rules in CI.
