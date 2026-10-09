@@ -112,7 +112,7 @@ struct SidebarView: View {
             profileNames: profileNames)
         // Each source matched on its own, then its folder paths moved into
         // that source's namespace — a team's `prod` is not the user's `prod`.
-        for source in store.inventorySources {
+        for source in store.activeInventorySources {
             let shared = SidebarMatches.compute(
                 query: query,
                 entries: store.sharedEntries(inSource: source.id),

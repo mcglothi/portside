@@ -176,6 +176,19 @@ your own library.
 You can't delete, move or rename a shared host. Change the repository
 instead.
 
+## Turning a source off
+
+Each source in **File ▸ Shared Inventory…** has an on/off switch. Turning a
+source off hides its hosts from the sidebar, search and agents, and Portside
+stops pulling it. The local clone stays, and so do your own settings on its
+hosts: favourites, credential profiles, saved passwords and environment.
+Turning it back on brings its hosts back at once from the clone, then pulls.
+
+This suits an inventory you only need some of the time, such as a customer
+between engagements. Removing a source throws away your settings on its
+hosts; turning it off keeps them. You can't publish to an inventory while
+it's off.
+
 ## Removing a source
 
 **File ▸ Shared Inventory…**, then the trash button. This removes the source,

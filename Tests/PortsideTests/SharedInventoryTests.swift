@@ -375,6 +375,40 @@ final class SharedInventoryTests: XCTestCase {
         XCTAssertEqual(after.first?["sourceID"] as? String, src.id.uuidString, "learned at launch and saved")
     }
 
+    /// Off hides an inventory's hosts and stops pulling it; on brings them
+    /// back with your settings intact — from the clone, then a pull.
+    @MainActor
+    func testTurningASourceOffAndOnKeepsYourSettings() async throws {
+        let webID = UUID()
+        try publish([host("web01", id: webID)])
+        let src = source()
+        let store = SessionStore(fileURL: libraryURL)
+        store.addInventorySource(src)
+        await store.refreshInventorySource(id: src.id)
+        let id = SharedManifest.entryID(sourceID: src.id, manifestID: webID)
+        store.setFavorite(true, ids: [id])
+
+        await store.setInventorySourceEnabled(src.id, false)
+        XCTAssertNil(store.entry(id: id), "an off source's hosts are hidden")
+        XCTAssertTrue(store.sharedSidebarRoots.isEmpty)
+        XCTAssertNotNil(store.sharedOverlays[id], "but your settings on them are kept")
+
+        // Off isn't pulled: a host added upstream doesn't arrive.
+        try publish([host("web01", id: webID), host("web02")], message: "add web02")
+        await store.refreshInventorySources()
+        await store.refreshInventorySource(id: src.id)
+        XCTAssertTrue(store.sharedEntries.isEmpty)
+
+        // Still off after a relaunch.
+        let relaunched = SessionStore(fileURL: libraryURL)
+        XCTAssertEqual(relaunched.inventorySources.first?.isEnabled, false)
+        XCTAssertTrue(relaunched.sharedEntries.isEmpty)
+
+        await relaunched.setInventorySourceEnabled(src.id, true)
+        XCTAssertEqual(relaunched.sharedEntries.map(\.name).sorted(), ["web01", "web02"], "back, and pulled")
+        XCTAssertEqual(relaunched.entry(id: id)?.isFavorite, true, "with your settings")
+    }
+
     @MainActor
     func testUnreachableRemoteReportsWithoutHanging() async throws {
         let store = SessionStore(fileURL: libraryURL)

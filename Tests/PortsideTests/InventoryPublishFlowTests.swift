@@ -255,6 +255,31 @@ final class InventoryPublishFlowTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("portside.json").path))
     }
 
+    /// Turned off while its review is open: the publish is refused then too.
+    func testAnInventoryTurnedOffDuringTheReviewIsntPublishedTo() async throws {
+        let src = try await create(["web01"])
+        store.setDirectPush(true, forSource: src.id)
+        var mine = try XCTUnwrap(store.entries.first { $0.name == "web01" })
+        mine.user = "deploy"
+        store.upsert(mine)
+        guard case .success(let plan) = await store.planPublish(sourceID: src.id) else { return XCTFail("plan") }
+        await store.setInventorySourceEnabled(src.id, false)
+        guard case .failure(let f) = await store.publish(plan, message: "x") else {
+            return XCTFail("published to an inventory turned off during the review")
+        }
+        XCTAssertTrue(f.message.contains("turned off"), f.message)
+        XCTAssertNil(try onBranch("main").entries.first?.user)
+    }
+
+    func testAnInventoryThatsOffCantBePublishedTo() async throws {
+        let src = try await create(["web01"])
+        await store.setInventorySourceEnabled(src.id, false)
+        guard case .failure(let f) = await store.planPublish(sourceID: src.id) else {
+            return XCTFail("planned a publish to an inventory that's off")
+        }
+        XCTAssertTrue(f.message.contains("turned off"), f.message)
+    }
+
     func testReviewBranchNamesDontCollideWithinAMinute() {
         let now = Date()
         XCTAssertNotEqual(InventoryPublisher.branchName(user: "tim", date: now),

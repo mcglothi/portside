@@ -1473,9 +1473,30 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// The sources that are switched on — the ones shown, searched and pulled.
+    var activeInventorySources: [InventorySource] { inventorySources.filter(\.isEnabled) }
+
+    /// Turns a source on or off. Off hides its hosts and stops pulling it;
+    /// the clone and every overlay stay. On reads the clone straight away —
+    /// so its hosts are back offline too — then pulls.
+    @MainActor
+    func setInventorySourceEnabled(_ id: UUID, _ on: Bool) async {
+        guard let i = inventorySources.firstIndex(where: { $0.id == id }), inventorySources[i].isEnabled != on
+        else { return }
+        inventorySources[i].isEnabled = on
+        // A pull still running from before it was turned off carries on and
+        // fills in the state itself; reading the clone over it, or starting
+        // a second pull against the same clone, would race it.
+        let pulling = sharedState[id]?.isSyncing == true
+        if on && !pulling { loadShared(from: inventorySources[i]) }
+        rebuildShared()
+        save()
+        if on && !pulling { await refreshInventorySource(id: id) }
+    }
+
     /// Each source as a sidebar root, in subscription order.
     var sharedSidebarRoots: [FolderNode] {
-        inventorySources.map { source in
+        activeInventorySources.map { source in
             FolderTree.sourceNode(id: source.id, name: source.name,
                                   entries: sharedEntries(inSource: source.id),
                                   folders: sharedState[source.id]?.folders ?? [])
@@ -1554,14 +1575,14 @@ final class SessionStore: ObservableObject {
     /// Pulls every source, one after another.
     @MainActor
     func refreshInventorySources() async {
-        for source in inventorySources { await refreshInventorySource(id: source.id) }
+        for source in activeInventorySources { await refreshInventorySource(id: source.id) }
     }
 
     /// Fetches, fast-forwards and re-reads one source. A failure keeps what
     /// was there and records why.
     @MainActor
     func refreshInventorySource(id: UUID) async {
-        guard let source = inventorySource(id: id), sharedState[id]?.isSyncing != true else { return }
+        guard let source = inventorySource(id: id), source.isEnabled, sharedState[id]?.isSyncing != true else { return }
         sharedState[id, default: SharedInventoryState()].isSyncing = true
         let directory = cloneDirectory(for: id)
         let outcome = await Task.detached(priority: .userInitiated) {
@@ -1639,7 +1660,7 @@ final class SessionStore: ObservableObject {
     private func rebuildShared() {
         var byEntry: [UUID: UUID] = [:]
         var resolved: [SessionEntry] = []
-        for source in inventorySources {
+        for source in activeInventorySources {
             for entry in sharedState[source.id]?.entries ?? [] where byEntry[entry.id] == nil {
                 byEntry[entry.id] = source.id
                 resolved.append(sharedOverlays[entry.id]?.applied(to: entry) ?? entry)
@@ -1817,6 +1838,9 @@ final class SessionStore: ObservableObject {
         guard let source = inventorySource(id: sourceID), let link = publishLink(forSource: sourceID) else {
             return .failure(.init(message: "That source has no linked folder."))
         }
+        guard source.isEnabled else {
+            return .failure(.init(message: "\u{201C}\(source.name)\u{201D} is turned off. Turn it on to publish to it."))
+        }
         let dir = InventoryPublisher.directory(for: sourceID, in: sourcesDirectory)
         let fetched = await Task.detached { () -> Result<(Bool, Data?, String?), InventoryGit.Failure> in
             do {
@@ -1873,6 +1897,11 @@ final class SessionStore: ObservableObject {
             return .failure(.init(message: "Couldn't write the manifest."))
         }
         let source = plan.source
+        // Checked again here, not only when planning: the review can sit open
+        // while the source is turned off in another window.
+        guard inventorySource(id: source.id)?.isEnabled == true else {
+            return .failure(.init(message: "\u{201C}\(source.name)\u{201D} is turned off. Turn it on to publish to it."))
+        }
         let mode: InventoryPublisher.Mode = plan.link.directPush ? .direct : .branch
         let dir = InventoryPublisher.directory(for: source.id, in: sourcesDirectory)
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
