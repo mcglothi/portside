@@ -16,6 +16,14 @@ jobs:
       # and a regression nobody notices.
       - name: Install tmux
         run: brew install tmux
+      # Publishing commits with the user's own git identity and refuses to
+      # guess one (user.useConfigOnly). Without this every publish-flow test
+      # failed to create its inventory — and, until they were made to fail,
+      # skipped silently.
+      - name: Git identity for publish tests
+        run: |
+          git config --global user.name "Portside CI"
+          git config --global user.email "ci@portside.invalid"
       - name: Build and test
         run: swift test
       # Per-file ratchet on the Swift 6 migration. The package is still on

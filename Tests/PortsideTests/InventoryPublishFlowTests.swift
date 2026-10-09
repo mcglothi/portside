@@ -57,7 +57,13 @@ final class InventoryPublishFlowTests: XCTestCase {
         for n in names { store.upsert(host(n)) }
         let src = InventorySource(name: "Team", remote: bare.path)
         let r = await store.createSharedInventory(src, fromFolder: "team")
-        guard case .success(let result) = r else { throw XCTSkip("create failed: \(r)") }
+        // A failure here fails the test. It used to skip — and on CI, where
+        // git had no identity to commit with, every test in this file
+        // skipped without anyone noticing.
+        guard case .success(let result) = r else {
+            XCTFail("create failed: \(r)")
+            throw CreateFailed()
+        }
         XCTAssertTrue(result.createdSourceBranch)
         return src
     }
@@ -65,12 +71,12 @@ final class InventoryPublishFlowTests: XCTestCase {
     private func publish(_ src: InventorySource, resolutions: [UUID: InventoryPublishing.Side] = [:])
         async throws -> InventoryPublisher.Result {
         guard case .success(let plan) = await store.planPublish(sourceID: src.id) else {
-            XCTFail("plan failed"); throw XCTSkip()
+            XCTFail("plan failed"); throw CreateFailed()
         }
         let r = await store.publish(plan, resolutions: resolutions, message: "test publish")
         switch r {
         case .success(let result): return result
-        case .failure(let f): XCTFail(f.message); throw XCTSkip(f.message)
+        case .failure(let f): XCTFail(f.message); throw CreateFailed()
         }
     }
 
@@ -196,6 +202,23 @@ final class InventoryPublishFlowTests: XCTestCase {
         }
         store.renameFolder("org", to: "company")
         XCTAssertEqual(store.publishLink(forSource: src.id)?.folder, "company/team")
+    }
+
+    /// Renaming one linked folder onto another would leave two links on one
+    /// folder, each publishing the other's hosts. It's refused.
+    func testARenameCantPutTwoLinksOnOneFolder() async throws {
+        let src = try await create(["web01"])
+        let otherBare = root.appendingPathComponent("other.git")
+        try git(["init", "--quiet", "--bare", "--initial-branch=main", otherBare.path])
+        store.upsert(host("db01", folder: "ops"))
+        let other = InventorySource(name: "Ops", remote: otherBare.path)
+        guard case .success = await store.createSharedInventory(other, fromFolder: "ops") else {
+            return XCTFail("create ops")
+        }
+        store.renameFolder("ops", to: "team")
+        XCTAssertEqual(store.publishLink(forSource: other.id)?.folder, "ops")
+        XCTAssertEqual(store.publishLink(forSource: src.id)?.folder, "team")
+        XCTAssertEqual(store.entries.first { $0.name == "db01" }?.folder, "ops", "the rename didn't happen")
     }
 
     /// Deleting the linked folder moves its hosts up a level. Publishing that
@@ -326,3 +349,5 @@ final class InventoryPublishFlowTests: XCTestCase {
         XCTAssertNotNil(store.undoLastDelete(), "but it went through the undoable delete")
     }
 }
+
+private struct CreateFailed: Error {}

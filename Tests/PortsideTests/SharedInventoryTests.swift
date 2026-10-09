@@ -346,6 +346,35 @@ final class SharedInventoryTests: XCTestCase {
         XCTAssertTrue(store.sharedOverlays.isEmpty, "\(store.sharedOverlays.keys)")
     }
 
+    /// An overlay saved before overlays recorded their source learns it at
+    /// launch, and that's written down — so a pull that drops the host
+    /// can't leave it unattributable.
+    @MainActor
+    func testOlderOverlaysLearnTheirSourceAndKeepIt() async throws {
+        let webID = UUID()
+        try publish([host("web01", id: webID)])
+        let src = source()
+        let id = SharedManifest.entryID(sourceID: src.id, manifestID: webID)
+        do {
+            let store = SessionStore(fileURL: libraryURL)
+            store.addInventorySource(src)
+            await store.refreshInventorySource(id: src.id)
+            store.setEnvironment(.dev, ids: [id])
+        }
+        // Make it an older library: strip sourceID from the saved overlay.
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: libraryURL)) as? [String: Any])
+        var overlays = try XCTUnwrap(json["sharedOverlays"] as? [[String: Any]])
+        XCTAssertNotNil(overlays.first?["sourceID"])
+        overlays = overlays.map { var o = $0; o["sourceID"] = nil; return o }
+        json["sharedOverlays"] = overlays
+        try JSONSerialization.data(withJSONObject: json).write(to: libraryURL)
+
+        _ = SessionStore(fileURL: libraryURL)   // a launch
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: libraryURL)) as? [String: Any])
+        let after = try XCTUnwrap(saved["sharedOverlays"] as? [[String: Any]])
+        XCTAssertEqual(after.first?["sourceID"] as? String, src.id.uuidString, "learned at launch and saved")
+    }
+
     @MainActor
     func testUnreachableRemoteReportsWithoutHanging() async throws {
         let store = SessionStore(fileURL: libraryURL)

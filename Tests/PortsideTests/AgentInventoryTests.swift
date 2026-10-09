@@ -177,7 +177,8 @@ final class AgentInventoryTests: XCTestCase {
         names.map { host($0) }.forEach(store.upsert)
         let src = InventorySource(name: "Team", remote: bare.path)
         guard case .success = await store.createSharedInventory(src, fromFolder: "team") else {
-            throw XCTSkip("couldn't create the inventory")
+            XCTFail("couldn't create the inventory (does git have a user.name/user.email?)")
+            throw NSError(domain: "AgentInventoryTests", code: 1)
         }
         return src
     }

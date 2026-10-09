@@ -1190,6 +1190,17 @@ final class SessionStore: ObservableObject {
         let newPath = parent.isEmpty ? leaf : parent + "/" + leaf
         guard newPath != path else { return }
         let prefix = path + "/"
+        // Refused if it would put two publishing links on one folder, or one
+        // inside another: each would then publish the other's hosts to its
+        // own inventory.
+        let movedLinks = publishLinks.map { link -> String in
+            if link.folder == path { return newPath }
+            if link.folder.hasPrefix(prefix) { return newPath + "/" + String(link.folder.dropFirst(prefix.count)) }
+            return link.folder
+        }
+        for (i, a) in movedLinks.enumerated() {
+            for b in movedLinks[(i + 1)...] where a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/") { return }
+        }
 
         for i in entries.indices {
             if entries[i].folder == path {
@@ -1620,6 +1631,11 @@ final class SessionStore: ObservableObject {
         sharedState[source.id] = state
     }
 
+    /// Set when `rebuildShared` taught an older overlay its source, so the
+    /// load saves it — before the next pull can drop the host and, with it,
+    /// the only way left to tell which source the overlay belonged to.
+    private var overlaySourcesLearned = false
+
     private func rebuildShared() {
         var byEntry: [UUID: UUID] = [:]
         var resolved: [SessionEntry] = []
@@ -1635,6 +1651,7 @@ final class SessionStore: ObservableObject {
         // them even after the host has gone.
         for (entry, source) in byEntry where sharedOverlays[entry] != nil && sharedOverlays[entry]?.sourceID == nil {
             sharedOverlays[entry]?.sourceID = source
+            overlaySourcesLearned = true
         }
         if resolved != sharedEntries { sharedEntries = resolved }
     }
@@ -2028,9 +2045,10 @@ final class SessionStore: ObservableObject {
             // Both cleanups rewrite the library, and only after everything
             // above has been read out of the document — rewriting mid-load
             // would persist the fields not yet applied as their empty defaults.
-            if needsLegacyHistoryCleanup || needsLegacyLocalCleanup {
+            if needsLegacyHistoryCleanup || needsLegacyLocalCleanup || overlaySourcesLearned {
                 needsLegacyHistoryCleanup = false
                 needsLegacyLocalCleanup = false
+                overlaySourcesLearned = false
                 save()
             }
     }
