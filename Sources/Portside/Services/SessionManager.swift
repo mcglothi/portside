@@ -37,6 +37,29 @@ final class OutputTail: @unchecked Sendable {
 /// A terminal view that tees the child process's output to a session log
 /// before feeding it to the terminal.
 final class LoggingTerminalView: LocalProcessTerminalView {
+    /// Stands in as the terminal's delegate so OSC 52 goes through Portside's
+    /// rules rather than SwiftTerm's defaults, which hand the clipboard to
+    /// any program that asks (see `ClipboardPolicy`). Held strongly here:
+    /// `terminalDelegate` is weak.
+    private lazy var clipboardPolicy = ClipboardPolicy(view: self)
+
+    /// Points OSC 52 copies at another pasteboard — for tests, which mustn't
+    /// touch the user's clipboard or race each other on it.
+    func useClipboard(_ pasteboard: NSPasteboard) {
+        clipboardPolicy = ClipboardPolicy(view: self, pasteboard: pasteboard)
+        terminalDelegate = clipboardPolicy
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        terminalDelegate = clipboardPolicy
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        terminalDelegate = clipboardPolicy
+    }
+
     var logger: SessionLogger?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
     /// Fires when output arrives, so a background tab can flag new activity.
@@ -2754,5 +2777,74 @@ final class SessionManager: ObservableObject {
         for peer in broadcastTargets(in: tab) where peer !== focused {
             peer.sendMirroredInput(data)
         }
+    }
+}
+
+/// OSC 52, the escape a program uses to put text on the clipboard — or to
+/// ask what's on it.
+///
+/// SwiftTerm's `LocalProcessTerminalView` answers both from the system
+/// pasteboard, with no question asked. Reading is the dangerous half: a
+/// program on any host you're connected to — or a file you `cat`, or a log
+/// line you `tail` — prints `ESC ] 52 ; c ; ? BEL` and the terminal types
+/// your clipboard back to it, base64-encoded. That's where a password
+/// manager leaves the password you just copied. So reads are refused,
+/// always: nothing a remote program does needs your clipboard, and the
+/// terminals that offer it (iTerm2, kitty) ask first or ship it off.
+///
+/// Writing stays allowed — it's how `tmux` and editors over ssh copy to
+/// your Mac's clipboard — up to a size no legitimate copy reaches.
+///
+/// Every other delegate call goes straight to the view; `clipboardRead`
+/// and `clipboardCopy` are `public`, not `open`, in SwiftTerm, so a
+/// subclass can't change them and this stands in as the delegate instead.
+@MainActor
+final class ClipboardPolicy: @preconcurrency TerminalViewDelegate {
+    static let maxCopyBytes = 1 << 20
+    private weak var view: LoggingTerminalView?
+    /// The system clipboard; tests pass a private one.
+    private let pasteboard: NSPasteboard
+
+    init(view: LoggingTerminalView, pasteboard: NSPasteboard = .general) {
+        self.view = view
+        self.pasteboard = pasteboard
+    }
+
+    func clipboardRead(source: TerminalView) -> Data? { nil }
+
+    func clipboardCopy(source: TerminalView, content: Data) {
+        guard content.count <= Self.maxCopyBytes, let text = String(data: content, encoding: .utf8) else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    // SwiftTerm calls its delegate from the view, on the main thread; the
+    // @preconcurrency conformance checks that at run time.
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        view?.sizeChanged(source: source, newCols: newCols, newRows: newRows)
+    }
+    func setTerminalTitle(source: TerminalView, title: String) {
+        view?.setTerminalTitle(source: source, title: title)
+    }
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        view?.hostCurrentDirectoryUpdate(source: source, directory: directory)
+    }
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        view?.send(source: source, data: data)
+    }
+    func scrolled(source: TerminalView, position: Double) {
+        view?.scrolled(source: source, position: position)
+    }
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        view?.requestOpenLink(source: source, link: link, params: params)
+    }
+    func bell(source: TerminalView) {
+        (view as TerminalViewDelegate?)?.bell(source: source)
+    }
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {
+        (view as TerminalViewDelegate?)?.iTermContent(source: source, content: content)
+    }
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        view?.rangeChanged(source: source, startY: startY, endY: endY)
     }
 }
