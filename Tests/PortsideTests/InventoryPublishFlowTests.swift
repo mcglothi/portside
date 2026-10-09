@@ -114,6 +114,38 @@ final class InventoryPublishFlowTests: XCTestCase {
         XCTAssertEqual(store.entries.first { $0.name == "web02" }?.port, 2222, "and came into my folder")
     }
 
+    /// A teammate's change to a shared container — which container, which
+    /// shell — comes into the linked folder like a host's address does, and
+    /// the next publish doesn't put the old one back.
+    func testTeammateContainerChangeComesIntoTheFolder() async throws {
+        var box = host("plex")
+        box.kind = .container
+        box.container = ContainerTarget(engine: .docker, name: "plex-1", shell: "sh")
+        store.upsert(box)
+        let src = try await create(["web01"])
+        store.setDirectPush(true, forSource: src.id)
+        try teammateEdits { hosts in
+            if let i = hosts.firstIndex(where: { $0.name == "plex" }) {
+                hosts[i].container = ContainerTarget(engine: .podman, name: "plex-2", shell: "bash")
+            }
+        }
+        var mine = try XCTUnwrap(store.entries.first { $0.name == "web01" })
+        mine.user = "deploy"
+        store.upsert(mine)
+
+        _ = try await publish(src)
+        let local = try XCTUnwrap(store.entries.first { $0.name == "plex" })
+        XCTAssertEqual(local.kind, .container)
+        XCTAssertEqual(local.container, ContainerTarget(engine: .podman, name: "plex-2", shell: "bash"),
+                       "the teammate's container came into my folder")
+
+        mine.user = "ops"
+        store.upsert(mine)
+        _ = try await publish(src)
+        XCTAssertEqual(try onBranch("main").entries.first { $0.name == "plex" }?.container?.name, "plex-2",
+                       "a second publish kept their change rather than reverting it")
+    }
+
     func testSameHostEditedOnBothSidesIsAConflictToChoose() async throws {
         let src = try await create(["web01"])
         store.setDirectPush(true, forSource: src.id)

@@ -1875,6 +1875,8 @@ final class SessionStore: ObservableObject {
                 e.isProtected = host.isProtected
                 e.preferMosh = host.preferMosh
                 e.keepAliveSeconds = host.keepAliveSeconds
+                e.kind = host.kind
+                e.container = host.container
                 if e != entries[i] { entries[i] = e }
             } else {
                 var e = host
