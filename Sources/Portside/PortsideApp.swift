@@ -68,6 +68,15 @@ struct PortsideApp: App {
 
     private func open(_ url: URL) { NSWorkspace.shared.open(url) }
 
+    /// Version, macOS, library counts and behaviour switches for a bug
+    /// report: no hostnames, users, paths or repositories (see `Diagnostics`).
+    private var diagnostics: Diagnostics {
+        .current(entries: store.entries, groups: store.groups.count, macros: store.macros.count,
+                 inventorySources: store.inventorySources,
+                 terminal: sessions.terminalSettings, logging: sessions.loggingSettings,
+                 agent: agent.settings)
+    }
+
     /// Drives the app chrome's light/dark setting. `nil` means "follow system",
     /// which is `NSApplication`'s own way of saying it — not a third value.
     ///
@@ -417,7 +426,11 @@ struct PortsideApp: App {
                 Button("Troubleshooting") { open(Docs.troubleshooting) }
                 Divider()
                 Button("Release Notes") { openWindow(id: "about") }
-                Button("Report an Issue…") { open(Docs.newIssue) }
+                Button("Report an Issue…") { open(diagnostics.issueURL()) }
+                Button("Copy Diagnostics") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(diagnostics.text, forType: .string)
+                }
                 Button("Portside on GitHub") { open(Docs.repository) }
             }
             CommandGroup(after: .windowArrangement) {
