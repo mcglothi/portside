@@ -47,6 +47,12 @@ struct CommandOutputCapture {
     /// start or command start, so `unclaimed` holds what was typed after a
     /// prompt and what it printed. Only the prompt-only integration sends B.
     private var afterPrompt = false
+
+    /// `atPrompt`: the session's last marker was a prompt end, so what comes
+    /// next is typed at a prompt-only shell's prompt (see `afterPrompt`).
+    init(atPrompt: Bool = false) {
+        afterPrompt = atPrompt
+    }
     static let alreadyRunning = "(already running when typing was switched on)"
     private(set) var completed: [Command] = []
     /// Commands finished since the capture began. Only ever grows, unlike
@@ -154,11 +160,13 @@ struct CommandOutputCapture {
         let dropped = unclaimedDropped || unclaimed.count > Self.maxBytesPerCommand
         unclaimed = []
         unclaimedDropped = false
-        let firstLine = text.firstIndex(of: "\n") ?? text.endIndex
+        // When the start was dropped, so was the typed line: all that's
+        // left is output.
+        let firstLine = dropped ? text.startIndex : (text.firstIndex(of: "\n") ?? text.endIndex)
         let command = text[..<firstLine].trimmingCharacters(in: .whitespaces)
         let output = text[firstLine...].trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty || !output.isEmpty else { return }
-        completed.append(Command(command: dropped ? "" : command, exitCode: exitCode, output: output,
+        completed.append(Command(command: command, exitCode: exitCode, output: output,
                                  truncated: dropped, finished: true, inferred: true))
         finishedTotal += 1
         if completed.count > Self.kept { completed.removeFirst(completed.count - Self.kept) }

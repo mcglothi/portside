@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Portside
 
@@ -281,5 +282,39 @@ final class CommandOutputCaptureTests: XCTestCase {
              + osc("D;0") + osc("A") + "$ ")
         XCTAssertEqual(c.completed.count, 1)
         XCTAssertFalse(c.completed[0].inferred)
+    }
+
+    /// Capture switched on while a prompt-only shell sits at its prompt:
+    /// the B came before the capture did, and the view passes it on.
+    func testACaptureStartedAtAPromptOnlyPromptReadsTheFirstLine() {
+        var c = CommandOutputCapture(atPrompt: true)
+        feed(&c, "echo hi\r\nhi\r\n" + prompt(0))
+        XCTAssertEqual(c.completed.first?.command, "echo hi")
+        XCTAssertEqual(c.completed.first?.output, "hi")
+        XCTAssertEqual(c.completed.first?.inferred, true)
+    }
+
+    @MainActor
+    func testTheViewStartsACaptureAtThePromptItLastSaw() {
+        let view = LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let atPrompt = Array((osc("B") + "\r\n" + prompt(0)).utf8)
+        view.dataReceived(slice: atPrompt[...])
+        view.outputCapture = view.makeOutputCapture()
+        let rest = Array(("echo hi\r\nhi\r\n" + prompt(0)).utf8)
+        view.dataReceived(slice: rest[...])
+        XCTAssertEqual(view.outputCapture?.completed.first?.command, "echo hi")
+        XCTAssertEqual(view.outputCapture?.completed.first?.inferred, true)
+    }
+
+    /// Past the cap the start is dropped, and the typed line with it: what's
+    /// kept is all output, even one long line.
+    func testATruncatedPromptOnlyCommandKeepsItsTailAsOutput() throws {
+        var c = CommandOutputCapture()
+        feed(&c, osc("B") + "cat big\r\n" + String(repeating: "x", count: 70_000) + "END" + prompt(0), chunk: 4096)
+        let cmd = try XCTUnwrap(c.completed.first)
+        XCTAssertTrue(cmd.truncated)
+        XCTAssertEqual(cmd.command, "")
+        XCTAssertTrue(cmd.output.hasSuffix("xxxEND"), String(cmd.output.suffix(20)))
+        XCTAssertGreaterThan(cmd.output.count, 30_000)
     }
 }
