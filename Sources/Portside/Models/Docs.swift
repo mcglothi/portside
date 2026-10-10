@@ -26,5 +26,7 @@ enum Docs {
     static let portForwarding = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/port-forwarding.md")!
     static let troubleshooting = URL(string: "https://github.com/mcglothi/portside/blob/main/docs/troubleshooting.md")!
     static let newIssue = URL(string: "https://github.com/mcglothi/portside/issues/new/choose")!
+    /// The bug form itself, which `Diagnostics.issueURL` fills in.
+    static let newBugReport = URL(string: "https://github.com/mcglothi/portside/issues/new")!
     static let security = URL(string: "https://github.com/mcglothi/portside/security/advisories/new")!
 }
