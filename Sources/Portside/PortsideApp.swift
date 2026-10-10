@@ -71,7 +71,8 @@ struct PortsideApp: App {
     /// Version, macOS, library counts and behaviour switches for a bug
     /// report: no hostnames, users, paths or repositories (see `Diagnostics`).
     private var diagnostics: Diagnostics {
-        .current(entries: store.entries, groups: store.groups.count, macros: store.macros.count,
+        .current(entries: store.allEntries, otherFolders: store.explicitFolders + store.groups.map(\.folder),
+                 groups: store.groups.count, macros: store.macros.count,
                  inventorySources: store.inventorySources,
                  terminal: sessions.terminalSettings, logging: sessions.loggingSettings,
                  agent: agent.settings)
