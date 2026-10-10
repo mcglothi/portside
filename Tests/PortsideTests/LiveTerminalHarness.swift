@@ -113,6 +113,23 @@ final class LiveTerminalHarness {
         }
     }
 
+    /// Every row at full width, one character per column, with cells nothing
+    /// was written to read as spaces. `screen` drops those cells, which is
+    /// right for text but loses where things are: vttest draws by moving the
+    /// cursor over untouched cells, and its tests are about columns.
+    var grid: [String] {
+        queue.sync {
+            let t = headless.terminal!
+            return (0..<t.rows).map { row in
+                guard let line = t.getLine(row: row) else { return String(repeating: " ", count: t.cols) }
+                return String((0..<t.cols).map { col -> Character in
+                    let ch = line[col].getCharacter()
+                    return ch == "\0" ? " " : ch
+                })
+            }
+        }
+    }
+
     var size: (cols: Int, rows: Int) { queue.sync { (headless.terminal.cols, headless.terminal.rows) } }
     var cursor: (x: Int, y: Int) { queue.sync { (headless.terminal.buffer.x, headless.terminal.buffer.y) } }
     var isAlternateScreen: Bool { queue.sync { headless.terminal.isCurrentBufferAlternate } }

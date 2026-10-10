@@ -154,7 +154,19 @@ background queue would give its program a dead resize.
   program could read the Mac's clipboard. Portside now refuses reads and
   allows writes (`ClipboardPolicyTests`).
 
-CI installs tmux and neovim, so none of these skip there. A SwiftTerm bump
+- **vttest** (`TerminalLiveVttestTests`): menus 1, 2 and 8 driven through a
+  pty and checked against what each screen says a correct terminal shows —
+  the border and frame cell for cell, autowrap margins, control characters
+  inside escape sequences, wraparound, tab stops, 132/80 columns, soft and
+  jump scrolling regions, origin mode, every SGR combination, save/restore
+  cursor, DEC line drawing, insert/delete line and character, insert mode.
+  It found a SwiftTerm bug: DECCOLM resets the terminal, which turns off
+  `CSI ? 40 h`, so a program that switches to 132 columns can't switch back.
+  The test expects that failure, so a fixed SwiftTerm shows up as a pass.
+  The 132-column passes of menus 1 and 8 aren't asserted: those menus don't
+  send `CSI ? 40 h`, so they wrap at 80 in xterm's default setup too.
+
+CI installs tmux, neovim and vttest, so none of these skip there. A SwiftTerm bump
 is a PR like any other, so it runs them all before it can merge, and
 `release.sh` runs them again before a release.
 
@@ -169,8 +181,8 @@ is a PR like any other, so it runs them all before it can merge, and
   bytes to the real parser, split at every chunk size, with each rule
   falsified by removing it.
 
-Still to cover: vttest (it's interactive, and automating it means scripting
-its menus and comparing screens), ncurses beyond tmux, iTerm2 inline images
+Still to cover: the rest of vttest (character sets, double-size characters,
+terminal reports, VT52, the VT220/xterm menu), ncurses beyond tmux, iTerm2 inline images
 (decoded by `NSImage`, so an image claiming huge dimensions is the case to
 check), and inline Kitty images beyond "they still display".
 
