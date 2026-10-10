@@ -21,6 +21,10 @@ struct CommandOutputCapture {
         /// errors and summaries land, is kept.
         var truncated: Bool
         var finished: Bool
+        /// Recorded by the prompt-only integration: the shell marks its
+        /// prompts but not its commands, so the command text is read off the
+        /// line typed after the prompt rather than reported by the shell.
+        var inferred = false
     }
 
     static let maxBytesPerCommand = 32 * 1024
@@ -39,6 +43,16 @@ struct CommandOutputCapture {
     /// typing as anyone's output.
     private var unclaimed: [UInt8] = []
     private var unclaimedDropped = false
+    /// A prompt-end marker (`133;B`) has been seen since the last prompt
+    /// start or command start, so `unclaimed` holds what was typed after a
+    /// prompt and what it printed. Only the prompt-only integration sends B.
+    private var afterPrompt = false
+
+    /// `atPrompt`: the session's last marker was a prompt end, so what comes
+    /// next is typed at a prompt-only shell's prompt (see `afterPrompt`).
+    init(atPrompt: Bool = false) {
+        afterPrompt = atPrompt
+    }
     static let alreadyRunning = "(already running when typing was switched on)"
     private(set) var completed: [Command] = []
     /// Commands finished since the capture began. Only ever grows, unlike
@@ -85,14 +99,21 @@ struct CommandOutputCapture {
             for marker in parser.consume([byte][...]) {
                 switch marker {
                 case .commandStart:
+                    afterPrompt = false
                     if recording { finish(exitCode: nil) }
                     begin()
                 case .commandText(let text):
                     pendingCommand = text
                 case .commandFinished(let code):
                     if recording { finish(exitCode: code) }
+                    else if afterPrompt { finishPromptOnly(exitCode: code) }
                     else { finishUnclaimed(exitCode: code) }
                 case .promptStart:
+                    afterPrompt = false
+                    unclaimed = []
+                    unclaimedDropped = false
+                case .promptEnd:
+                    afterPrompt = true
                     unclaimed = []
                     unclaimedDropped = false
                 }
@@ -125,6 +146,30 @@ struct CommandOutputCapture {
         stripper = ANSIStripper(keepsLineEditing: true)
         pendingCommand = Self.alreadyRunning
         finish(exitCode: exitCode)
+    }
+
+    /// A command from a shell with no command hook. Its prompt reports the
+    /// last exit status (`133;D;$?`) before marking itself, so everything
+    /// between the previous prompt's end and this finish is one command: the
+    /// first line is what was typed, the rest is what it printed. An empty
+    /// Return is no command at all.
+    private mutating func finishPromptOnly(exitCode: Int?) {
+        afterPrompt = false
+        var stripper = ANSIStripper(keepsLineEditing: true)
+        let text = Self.text(stripper.strip(Self.tail(unclaimed)), columns: columns)
+        let dropped = unclaimedDropped || unclaimed.count > Self.maxBytesPerCommand
+        unclaimed = []
+        unclaimedDropped = false
+        // When the start was dropped, so was the typed line: all that's
+        // left is output.
+        let firstLine = dropped ? text.startIndex : (text.firstIndex(of: "\n") ?? text.endIndex)
+        let command = text[..<firstLine].trimmingCharacters(in: .whitespaces)
+        let output = text[firstLine...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty || !output.isEmpty else { return }
+        completed.append(Command(command: command, exitCode: exitCode, output: output,
+                                 truncated: dropped, finished: true, inferred: true))
+        finishedTotal += 1
+        if completed.count > Self.kept { completed.removeFirst(completed.count - Self.kept) }
     }
 
     private mutating func begin() {

@@ -48,6 +48,10 @@ struct OSC133Parser {
 
     enum Marker: Equatable {
         case promptStart
+        /// `133;B`: the prompt has been drawn and what follows is typed. Only
+        /// the prompt-only integration for shells with no command hook (`sh`,
+        /// `ash`, `dash`) sends it; see `CommandOutputCapture`.
+        case promptEnd
         case commandStart
         case commandText(String)
         case commandFinished(exitCode: Int?)
@@ -131,6 +135,8 @@ struct OSC133Parser {
         switch parts[1] {
         case "A":
             return .promptStart
+        case "B":
+            return .promptEnd
         case "C":
             return .commandStart
         case "E":
@@ -169,7 +175,7 @@ struct CommandTimeline {
         var completed: [CommandEvent] = []
         for marker in parser.consume(bytes) {
             switch marker {
-            case .promptStart:
+            case .promptStart, .promptEnd:
                 break
 
             case .commandStart:

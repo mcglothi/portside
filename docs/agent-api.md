@@ -214,14 +214,24 @@ scrollback instead.
 
 With Settings ▸ Terminal ▸ "Set up directory tracking on connect" on,
 Portside also injects shell integration into a **container or pod on this
-Mac** once its exec attaches. In a bash or zsh container, `last` and
-`send --wait` work as they do on a host. Two cases still get no integration:
-- **`sh`, `ash` and distroless containers:** they have no hook to use.
-- **Containers reached through an SSH host:** there's no telling when the
-  container's shell is up.
+Mac** once its exec attaches. How much an agent gets depends on the shell:
 
-In those cases, `last` and `send --wait` say there's no integration, and an
-agent should use `screen` (issue #25).
+| Shell | Integration | `last` gives |
+|---|---|---|
+| bash, zsh | full | command (as the shell ran it), exit code, output |
+| sh, ash, dash, BusyBox, ksh | prompt-only | exit code, output, and the line typed after the prompt as the command |
+| no shell (distroless), or a container reached through an SSH host | none | an error saying there's no integration; use `screen` |
+
+**Prompt-only** shells have no hook that runs before a command, so the
+prompt itself reports the last exit status and marks where it ends.
+Everything between one prompt and the next is one command. Records from
+these shells carry `"integration": "prompt-only"`, because the command text
+is read off the screen rather than reported by the shell. Send one command
+at a time (`send --wait` does). A line typed while another command is still
+running is echoed into that command's output, and the prompt after it has
+nothing to read. The same prompt-only integration applies to an SSH host
+whose login shell is one of these. The remaining gaps are tracked in issue
+#25.
 
 Session logs are deliberately not offered to agents. They're the whole
 history, which is expensive to read and rarely what the question is about.
