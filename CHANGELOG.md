@@ -11,6 +11,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Reporting a bug fills in the details for you.** Help ▸ Report an Issue… now opens the bug form with your Portside version, macOS version and library shape already filled in, plus which behaviour switches are on (directory tracking, session logging, Agent Access and Don't Ask). It's counts and on/off only: no hostnames, users, folder names, paths or repositories, and you see it all before submitting. Help ▸ Copy Diagnostics copies the same text.
 
+**A library migration can no longer lose your workspace and settings if their new file can't be written.** When Portside moved tabs, appearance, terminal settings and recents out of the library into `portside.local.json`, it stripped them from the library even if writing that file had failed, so the next save left them only in the pre-migration backup. The library now keeps carrying them until the new file is written.
+
 ## 0.35.0
 
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.

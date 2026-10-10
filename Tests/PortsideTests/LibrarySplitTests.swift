@@ -23,7 +23,7 @@ final class LibrarySplitTests: XCTestCase {
     }
 
     override func tearDown() {
-        for url in [tempURL, localURL, historyURL, preSplitURL] {
+        for url in [tempURL, localURL, historyURL, preSplitURL] {   // localURL may be a directory
             try? FileManager.default.removeItem(at: url!)
         }
         super.tearDown()
@@ -105,6 +105,33 @@ final class LibrarySplitTests: XCTestCase {
         XCTAssertNotNil(decoded?["workspace"])
         XCTAssertNotNil(decoded?["terminal"])
         XCTAssertNotNil(decoded?["recents"])
+    }
+
+    /// The sidecar can't be written (here its path is a directory). The
+    /// library is then the only place local state lives, so neither the
+    /// migration nor any later save may strip it — and once a write
+    /// succeeds, the split completes as usual.
+    func testASidecarThatCantBeWrittenLeavesLocalStateInTheLibrary() throws {
+        try writeCombinedLibrary()
+        try FileManager.default.createDirectory(at: localURL.appendingPathComponent("blocker"),
+                                                withIntermediateDirectories: true)
+        let store = SessionStore(fileURL: tempURL)
+        store.upsert(host("web-02"))   // any later library save
+
+        var library = try String(contentsOf: tempURL, encoding: .utf8)
+        XCTAssertTrue(library.contains("4321"), "terminal settings stripped with nowhere else to live")
+        XCTAssertTrue(library.contains("\"workspace\""), "open tabs stripped with nowhere else to live")
+        XCTAssertTrue(library.contains("web-02"))
+        XCTAssertEqual(SessionStore(fileURL: tempURL).terminal.scrollbackLines, 4321, "lost across a relaunch")
+
+        try FileManager.default.removeItem(at: localURL)
+        var terminal = store.terminal
+        terminal.scrollbackLines = 5555
+        store.updateTerminal(terminal)    // the sidecar can be written now
+        store.upsert(host("web-03"))
+        library = try String(contentsOf: tempURL, encoding: .utf8)
+        XCTAssertFalse(library.contains("\"workspace\""), "the split completes once the sidecar is written")
+        XCTAssertTrue(try String(contentsOf: localURL, encoding: .utf8).contains("5555"))
     }
 
     // MARK: - The point of the split

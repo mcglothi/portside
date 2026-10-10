@@ -22,10 +22,18 @@ previous release did without it.
   source was on, so `InventorySource.isEnabled` defaults to `true`. A 0.34
   agent approval for editing was never asked about typing, so `canType`
   defaults from the tier it was granted, not to `true`.
-- A collection of records is a `LenientArray`, so one record that can't be
-  decoded is dropped on its own instead of failing the file. Fields with
-  no sensible default (a group without a layout) should fail their record,
-  not the library.
+- What keeps one bad record from failing the whole file differs by
+  collection, and both rules have to hold:
+  - **Hosts, macros, port forwards and credential profiles** are plain
+    arrays. Any element that throws fails the whole library, which then goes
+    to quarantine. Their decoders are tolerant field by field instead, so a
+    field added to one of these types must never be required. Only identity
+    (`name`, `id`) may be.
+  - **Groups, inventory sources, shared overlays and publish links** are
+    `LenientArray`s, so a record that can't be decoded is dropped on its own.
+    Use this for a new collection whose records can be invalid on their own
+    (a group without a layout isn't a group). Keep in mind that a dropped
+    record is gone after the next save.
 
 Renaming or retyping a field is a new field plus a read of the old one. Never
 reuse a key with a new meaning: an older build will read it with the old one.
@@ -49,8 +57,11 @@ a real library:
 
 It copies the file first and checks that nothing is lost on load and save:
 hosts, macros, credential profiles, themes, port forwards, recents, the saved
-workspace and the settings that moved to the sidecar. The original is never
-opened for writing.
+workspace and the settings that moved to the sidecar. If `portside.local.json`
+and `portside.history.json` sit beside the fixture, they're copied too and
+count toward what has to survive. Point it at a copy of a real Application
+Support folder, not just the library. The originals are never opened for
+writing.
 
 ## 4. Keep a restore point for anything one-way
 
@@ -59,18 +70,28 @@ the file aside first, as the local split does (`portside.pre-local-split.json`):
 - **Once, never overwritten.** If a first attempt migrated and something went
   wrong later, the copy worth keeping is from before the first attempt.
 - **New place first, old place second.** Write the destination (the sidecar),
-  then strip the source. A failure between the two leaves the data in both
-  places and the migration reruns. It is never in neither.
+  then strip the source, and only once the write has succeeded. A failure
+  between the two leaves the data in both places and the migration reruns.
+  If the destination can't be written at all, the source keeps carrying the
+  data on every save until a write succeeds (`localSplitPending`). It is
+  never in neither.
 
 ## 5. Know what a downgrade does
 
 An older build ignores keys it doesn't know when it **reads**, so it opens a
 newer library fine. But when it **saves**, it writes only the keys it knows,
-and the newer fields are gone. Going back and forth is safe for a field
-whose default reproduces the old behaviour: the field is lost, but nothing
-the user relied on breaks. It is **not** safe for user data that only lives
-in the new field. That data needs a restore point (section 4) or has to live
-somewhere the older build doesn't rewrite (its own file, as saved filters do).
+and the newer fields are gone. When the newer build reads the file again,
+each field comes back as its **default**, not as whatever the user had set.
+- That's harmless only for a field whose non-default values don't matter to
+  the user: a cache, or something learned and relearned automatically.
+- For anything the user set, it's a silent reset. For example, a shared
+  inventory switched **off** comes back **on** after a round trip through
+  0.34. A restore point can't help either, because it only holds what
+  existed before the upgrade.
+
+So user-controlled settings in a new field either live where an older
+build won't rewrite them (their own file, as saved filters do) or are
+listed in the changelog as reset by a downgrade.
 
 Shared inventories make this sharper, because the team's file is read and
 written by whatever build each member runs. An older build reads a newer
@@ -85,7 +106,8 @@ older publishers drop it.
 ## Checklist for a PR that touches a persisted type
 
 - [ ] New fields decode with `decodeIfPresent` and a meaning-preserving default
-- [ ] Collections of records are `LenientArray`
+- [ ] No new field is required on a host, macro, forward or profile
+- [ ] A new collection of independent records is a `LenientArray`
 - [ ] No key reused with a new meaning
 - [ ] `UpgradeFrom<previous>Tests` has a literal from the last release
 - [ ] One-way migrations keep a once-only restore point and write the new place first
