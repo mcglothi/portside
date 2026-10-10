@@ -173,6 +173,20 @@ final class TerminalImageGuardTests: XCTestCase {
         XCTAssertLessThanOrEqual(size.width, TerminalImageGuard.maxSixelWidth)
     }
 
+    /// Raster attributes (`"Pan;Pad;Ph;Pv`) declare a size. SwiftTerm sizes
+    /// the bitmap from the pixels actually drawn, not from this, so a huge
+    /// declaration over a small image must not grow it — this pins that, so a
+    /// SwiftTerm bump that starts honouring the declaration fails here first.
+    func testDeclaredRasterSizeDoesNotSizeTheBitmap() throws {
+        let harness = guarded(sixel("\"1;1;50000;50000#0~~"))
+        let size = try XCTUnwrap(harness.bitmaps.first)
+        XCTAssertLessThanOrEqual(size.width, TerminalImageGuard.maxSixelWidth)
+        XCTAssertLessThanOrEqual(size.height, TerminalImageGuard.maxSixelHeight)
+        let unguarded = TerminalHarness()
+        unguarded.feed(sixel("\"1;1;50000;50000#0~~"))
+        XCTAssertEqual(unguarded.bitmaps.first?.width, 2, "SwiftTerm ignores the declared size")
+    }
+
     func testOrdinarySixelIsUntouched() {
         var filter = TerminalImageGuard()
         let body = sixel("#0;2;100;0;0#0!40~-!40~$#1!20N-#0~~~~")
