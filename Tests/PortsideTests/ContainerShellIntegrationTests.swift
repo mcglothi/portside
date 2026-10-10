@@ -69,20 +69,41 @@ final class ContainerShellIntegrationTests: XCTestCase {
         XCTAssertEqual(command.exitCode, 0)
     }
 
-    /// `ash` has no hook to use: the injected text does nothing there, and
-    /// leaves no error behind.
-    func testAnAshContainerIsLeftAsItWas() async throws {
-        let name = try container("alpine:3.20")
+    /// `ash` and `dash` have no hook to run before a command, so they get
+    /// the prompt-only integration: exit code and output, and the typed line
+    /// as the command, marked inferred. No error left on screen either.
+    func testAnAshContainerGetsPromptOnlyRecording() async throws {
+        try await promptOnly(image: "alpine:3.20")
+    }
+
+    func testADashContainerGetsPromptOnlyRecording() async throws {
+        try await promptOnly(image: "debian:bookworm-slim")
+    }
+
+    private func promptOnly(image: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let name = try container(image)
         let (sessions, pane) = try session(name, shell: "sh", inject: true)
         defer { sessions.tabs.forEach(sessions.closeTab) }
-        for _ in 0..<100 where pane.execStage() != .attached { try await Task.sleep(nanoseconds: 100_000_000) }
-        try await Task.sleep(nanoseconds: 3_000_000_000)   // the injection, if any, has been typed
-        pane.sendText("echo still-$((6*7))\r")
-        for _ in 0..<100 where !screen(pane).contains("still-42") { try await Task.sleep(nanoseconds: 100_000_000) }
+
+        for _ in 0..<300 where !pane.terminalView.sawShellIntegration { try await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertTrue(pane.terminalView.sawShellIntegration, "no prompt marker\n\(screen(pane))", file: file, line: line)
+
+        var commands: [CommandOutputCapture.Command] = []
+        for (n, typed) in ["echo inside-$((6*7))", "false"].enumerated() {
+            pane.sendText(typed + "\r")
+            for _ in 0..<100 {
+                commands = pane.terminalView.outputCapture?.completed ?? []
+                if commands.count > n { break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        XCTAssertEqual(commands.map(\.command), ["echo inside-$((6*7))", "false"], screen(pane), file: file, line: line)
+        XCTAssertEqual(commands.map(\.output), ["inside-42", ""], file: file, line: line)
+        XCTAssertEqual(commands.map(\.exitCode), [0, 1], file: file, line: line)
+        XCTAssertTrue(commands.allSatisfy(\.inferred), file: file, line: line)
         let text = screen(pane)
-        XCTAssertTrue(text.contains("still-42"), text)
-        for complaint in ["not found", "syntax error", "unexpected"] {
-            XCTAssertFalse(text.lowercased().contains(complaint), "\(complaint)\n\(text)")
+        for complaint in ["not found", "syntax error", "unexpected", "bad substitution"] {
+            XCTAssertFalse(text.lowercased().contains(complaint), "\(complaint)\n\(text)", file: file, line: line)
         }
     }
 

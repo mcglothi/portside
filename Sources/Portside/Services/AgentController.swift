@@ -1170,13 +1170,17 @@ final class AgentController: ObservableObject {
         row["commands"] = .array(commands.prefix(min(max(count, 1), CommandOutputCapture.kept)).map { c in
             // The tail: where errors and summaries land.
             let lines = c.output.components(separatedBy: "\n")
-            return .object([
+            var command: [String: JSONValue] = [
                 "command": .string(c.command),
                 "exitCode": c.exitCode.map { JSONValue($0) } ?? .null,
                 "finished": .bool(c.finished),
                 "output": .string(lines.suffix(tailLines).joined(separator: "\n")),
                 "truncated": .bool(c.truncated || lines.count > tailLines),
-            ])
+            ]
+            // The shell marked only its prompts (sh, ash, dash): the command
+            // text is the line typed after one, not what the shell ran.
+            if c.inferred { command["integration"] = .string("prompt-only") }
+            return .object(command)
         })
         return .object(row)
     }

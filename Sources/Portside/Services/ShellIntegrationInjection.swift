@@ -90,8 +90,28 @@ enum ShellIntegrationInjection {
             + "[ -n \"$__p\" ] && eval \"$(printf %s \"$__p\" | base64 -d 2>/dev/null "
             + "|| printf %s \"$__p\" | base64 -D 2>/dev/null)\"; "
             + "unset __p \(names.joined(separator: " "))")
+        out.append(promptOnlyLine)
         return out
     }
+
+    /// For a sh-family shell that is neither bash nor zsh — `ash`, `dash`,
+    /// BusyBox `sh`, `ksh` — which has no hook to run before a command: the
+    /// prompt itself reports the previous command's exit status (`133;D;$?`)
+    /// and the directory (OSC 7), marks its start (`A`) and its end (`B`).
+    /// `CommandOutputCapture` reads the line typed after `B` as the command.
+    /// Those shells expand `$?` and `$PWD` in `PS1` at every prompt (checked
+    /// on Alpine, BusyBox and Debian's dash); nothing else here needs more
+    /// than POSIX.
+    ///
+    /// The escape bytes come from `printf` at assignment time, so nothing in
+    /// `PS1` relies on a shell interpreting backslashes there. The trailing
+    /// `B` closes the line that installed it, so the first new prompt's `D`
+    /// finds nothing typed and records nothing. A `PS1` that already carries
+    /// the markers is left alone.
+    static let promptOnlyLine = #" [ -z "$BASH_VERSION$ZSH_VERSION" ] && case "$PS1" in *'133;B'*) ;; *) "#
+        + #"__e=$(printf '\033'); __a=$(printf '\007'); "#
+        + #"PS1="$__e]133;D;\$?$__a$__e]7;file://${HOSTNAME:-$(hostname 2>/dev/null)}\$PWD$__a$__e]133;A$__a$PS1$__e]133;B$__a"; "#
+        + #"printf '\033]133;B\007'; unset __e __a;; esac"#
 
     /// Base64 in pieces short enough that an assignment line holding one
     /// stays well under `maxLineBytes`.
@@ -107,8 +127,9 @@ enum ShellIntegrationInjection {
     }
 
     /// Whether the injection may be typed into `shell` — a container's or
-    /// pod's configured shell. The lines are POSIX: harmless in any sh-family
-    /// shell (only bash and zsh act on them), errors in fish, csh or nu.
+    /// pod's configured shell. The lines are POSIX: bash and zsh get the full
+    /// integration, other sh-family shells the prompt-only one, and fish, csh
+    /// or nu would only print errors.
     static func acceptsInjection(shell: String) -> Bool {
         let name = (shell.trimmingCharacters(in: .whitespaces) as NSString).lastPathComponent
         return ["sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"].contains(name)

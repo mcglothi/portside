@@ -239,4 +239,47 @@ final class CommandOutputCaptureTests: XCTestCase {
         XCTAssertGreaterThan(done?.output.utf8.count ?? 0, CommandOutputCapture.maxBytesPerCommand - 200,
                              "keeps a full cap's worth, not less")
     }
+
+    // MARK: Prompt-only (sh, ash, dash)
+
+    /// What the prompt-only integration's PS1 prints: the last status, the
+    /// prompt start, the prompt itself, the prompt end.
+    private func prompt(_ status: Int) -> String { osc("D;\(status)") + osc("A") + "/ # " + osc("B") }
+
+    func testAPromptOnlyShellRecordsTheTypedLineAndItsOutput() {
+        var c = CommandOutputCapture()
+        // The injection line ends by printing a B of its own, so the first
+        // new prompt's D finds nothing typed.
+        feed(&c, osc("B") + "\r\n" + prompt(0) + "echo hi\r\nhi\r\n" + prompt(0) + "false\r\n" + prompt(1))
+        XCTAssertEqual(c.completed.map(\.command), ["echo hi", "false"])
+        XCTAssertEqual(c.completed.map(\.output), ["hi", ""])
+        XCTAssertEqual(c.completed.map(\.exitCode), [0, 1])
+        XCTAssertTrue(c.completed.allSatisfy(\.inferred))
+        XCTAssertEqual(c.finishedTotal, 2, "a wait sees each one finish")
+    }
+
+    func testAnEmptyReturnAtAPromptOnlyPromptIsNoCommand() {
+        var c = CommandOutputCapture()
+        feed(&c, osc("B") + prompt(0) + "\r\n" + prompt(0) + "\r\n" + prompt(0))
+        XCTAssertTrue(c.completed.isEmpty, "\(c.completed)")
+        XCTAssertEqual(c.finishedTotal, 0)
+    }
+
+    /// Line editing at the prompt is replayed, so the command is what was
+    /// finally entered, not every keystroke.
+    func testAPromptOnlyCommandIsTheLineAsFinallyTyped() {
+        var c = CommandOutputCapture()
+        feed(&c, osc("B") + prompt(0) + "ecoh\u{8}\u{8}ho hi\r\nhi\r\n" + prompt(0))
+        XCTAssertEqual(c.completed.first?.command, "echo hi")
+    }
+
+    /// A full integration (bash, zsh) never sends B, so its commands aren't
+    /// marked inferred and nothing between them is read as one.
+    func testAFullIntegrationIsNotPromptOnly() {
+        var c = CommandOutputCapture()
+        feed(&c, osc("A") + "$ " + osc("C") + osc("E;\(Data("ls".utf8).base64EncodedString())") + "a b\r\n"
+             + osc("D;0") + osc("A") + "$ ")
+        XCTAssertEqual(c.completed.count, 1)
+        XCTAssertFalse(c.completed[0].inferred)
+    }
 }
