@@ -158,9 +158,21 @@ CI installs tmux and neovim, so none of these skip there. A SwiftTerm bump
 is a PR like any other, so it runs them all before it can merge, and
 `release.sh` runs them again before a release.
 
+- **Kitty graphics and Sixel**, and two more security bugs
+  (`TerminalImageGuardTests`). Kitty graphics let a remote program name a
+  file or shared-memory object on the Mac for the image, and SwiftTerm's
+  replies said whether the path existed and how big it was. Sixel was decoded
+  with unchecked numbers: about 30 bytes crashed Portside, 20 bytes allocated
+  gigabytes. `TerminalImageGuard` rewrites both on the way in, same length:
+  file and shared-memory transmission come back "unsupported", sixel numbers
+  are capped and images cropped at 4096 × 4096. The tests feed the guarded
+  bytes to the real parser, split at every chunk size, with each rule
+  falsified by removing it.
+
 Still to cover: vttest (it's interactive, and automating it means scripting
-its menus and comparing screens), ncurses beyond tmux, Sixel, Kitty
-graphics, and iTerm2 inline images.
+its menus and comparing screens), ncurses beyond tmux, iTerm2 inline images
+(decoded by `NSImage`, so an image claiming huge dimensions is the case to
+check), and inline Kitty images beyond "they still display".
 
 **What would satisfy it:** an executable suite — vttest, tmux, vim/neovim,
 ncurses, Unicode width, combining marks, CJK, emoji/ZWJ, bracketed paste, mouse

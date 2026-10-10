@@ -77,6 +77,8 @@ final class TerminalHarness {
     /// Bytes the terminal wrote back to the host (device reports, and so on).
     var replies: [UInt8] { sink.replies }
     var bells: Int { sink.bells }
+    /// Size of each sixel image decoded, in order.
+    var bitmaps: [(width: Int, height: Int)] { sink.bitmaps }
 
     // MARK: -
 
@@ -88,6 +90,7 @@ final class TerminalHarness {
         var titles: [String] = []
         var replies: [UInt8] = []
         var bells = 0
+        var bitmaps: [(width: Int, height: Int)] = []
 
         func setTerminalTitle(source: Terminal, title: String) { titles.append(title) }
         func send(source: Terminal, data: ArraySlice<UInt8>) { replies.append(contentsOf: data) }
@@ -121,7 +124,9 @@ final class TerminalHarness {
         func clipboardRead(source: Terminal) -> Data? { nil }
         func notify(source: Terminal, title: String, body: String) {}
         func progressReport(source: Terminal, report: Terminal.ProgressReport) {}
-        func createImageFromBitmap(source: Terminal, bytes: inout [UInt8], width: Int, height: Int) {}
+        func createImageFromBitmap(source: Terminal, bytes: inout [UInt8], width: Int, height: Int) {
+            bitmaps.append((width, height))
+        }
         func createImage(source: Terminal, data: Data, width: ImageSizeRequest,
                          height: ImageSizeRequest, preserveAspectRatio: Bool) {}
     }

@@ -287,8 +287,8 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         sawOutput = true
         noteShellIntegration(slice)
         // The log and the command timeline get the bytes as they actually
-        // arrived, and so does the terminal. Nothing in this path may rewrite
-        // them: transcript offsets have to keep matching what is on disk.
+        // arrived. Nothing in this path may rewrite them: transcript offsets
+        // have to keep matching what is on disk.
         logger?.append(slice)
         if outputCapture != nil {
             outputCapture?.columns = getTerminal().cols
@@ -311,9 +311,16 @@ final class LoggingTerminalView: LocalProcessTerminalView {
                 onCommand?(event)
             }
         }
-        onTerminalBytes?(slice)
-        super.dataReceived(slice: slice)
+        // The one exception, and only for the terminal: image sequences may not
+        // read files on the Mac or crash the decoder (see
+        // `TerminalImageGuard`). Same length, so nothing that counts
+        // bytes moves.
+        let forTerminal = imageGuard.filtered(slice)
+        onTerminalBytes?(forTerminal)
+        super.dataReceived(slice: forTerminal)
     }
+
+    private var imageGuard = TerminalImageGuard()
 
     /// Everything written to the pty funnels through this delegate method:
     /// keyboard/paste/IME input, but also programmatic sends (`send(txt:)`)

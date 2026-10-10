@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Security: a remote program can no longer probe files on your Mac or crash Portside with an image.** Two image protocols trusted the host on the other end. Kitty graphics lets a program name a *file* or shared-memory object for the terminal to load the image from, and SwiftTerm loaded it from the Mac: its replies told the remote program whether any path existed and how big the file was, and it would read up to 400 MB per request or delete a shared-memory object by name. Portside now answers those requests "unsupported", the same as a terminal without the feature, and images sent inline (what `kitten icat` falls back to over ssh) still display. Sixel images were decoded without limits: about 30 bytes could crash Portside with every session in it, and 20 bytes could make it allocate gigabytes and hang. Numbers in a sixel image are now capped, and images are cropped at 4096 × 4096 pixels. Session logs still record the bytes exactly as they arrived.
+
 ## 0.35.0
 
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.
