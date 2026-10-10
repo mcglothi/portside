@@ -1,0 +1,93 @@
+# Changing what Portside stores
+
+Gate 5 of the [road to 1.0](road-to-1.0.md) is "upgrade and downgrade are
+both survivable", and the work left on it is keeping that true. This is the
+pattern every change to a persisted file follows. It's written down because
+the bugs it prevents have already happened once: the 0.16 audit's data-loss
+P0 was one undecodable record sinking a whole library, and 0.20 fixed a
+downgrade that silently dropped groups.
+
+What's persisted: the library (`portside.json`), the local sidecar
+(`portside.local.json`: workspace, appearance, terminal, logging, recents),
+agent settings (`portside.agent.json`), and anything a shared inventory
+carries (`portside.json` in the team repo, read by *other people's* builds).
+
+## 1. Add, don't change
+
+A new field is optional to decode and has a default that reproduces what the
+previous release did without it.
+- Decode it with `decodeIfPresent` in the type's hand-written decoder. A
+  missing key must never throw.
+- Choose the default for meaning, not convenience. Every 0.34 inventory
+  source was on, so `InventorySource.isEnabled` defaults to `true`. A 0.34
+  agent approval for editing was never asked about typing, so `canType`
+  defaults from the tier it was granted, not to `true`.
+- A collection of records is a `LenientArray`, so one record that can't be
+  decoded is dropped on its own instead of failing the file. Fields with
+  no sensible default (a group without a layout) should fail their record,
+  not the library.
+
+Renaming or retyping a field is a new field plus a read of the old one. Never
+reuse a key with a new meaning: an older build will read it with the old one.
+
+## 2. Prove the old file still means the same thing
+
+Each release that adds fields gets an `UpgradeFrom<previous>Tests`
+(`UpgradeFrom034Tests` is the model). Write the JSON exactly as the previous
+release wrote it, as a literal in the test, decode it with the new build, and
+assert that it behaves as it did then. A literal is the point: a fixture
+produced by encoding with the new types would already contain the new
+fields.
+
+## 3. Rehearse against a real library
+
+Synthetic fixtures are written by the person who wrote the migration and
+share their blind spots. Before release, run the rehearsal against a copy of
+a real library:
+
+    PORTSIDE_UPGRADE_FIXTURE=/path/to/portside.json swift test --filter UpgradeRehearsal
+
+It copies the file first and checks that nothing is lost on load and save:
+hosts, macros, credential profiles, themes, port forwards, recents, the saved
+workspace and the settings that moved to the sidecar. The original is never
+opened for writing.
+
+## 4. Keep a restore point for anything one-way
+
+A migration that moves or strips data (not one that only adds a field) copies
+the file aside first, as the local split does (`portside.pre-local-split.json`):
+- **Once, never overwritten.** If a first attempt migrated and something went
+  wrong later, the copy worth keeping is from before the first attempt.
+- **New place first, old place second.** Write the destination (the sidecar),
+  then strip the source. A failure between the two leaves the data in both
+  places and the migration reruns. It is never in neither.
+
+## 5. Know what a downgrade does
+
+An older build ignores keys it doesn't know when it **reads**, so it opens a
+newer library fine. But when it **saves**, it writes only the keys it knows,
+and the newer fields are gone. Going back and forth is safe for a field
+whose default reproduces the old behaviour: the field is lost, but nothing
+the user relied on breaks. It is **not** safe for user data that only lives
+in the new field. That data needs a restore point (section 4) or has to live
+somewhere the older build doesn't rewrite (its own file, as saved filters do).
+
+Shared inventories make this sharper, because the team's file is read and
+written by whatever build each member runs. An older build reads a newer
+team file fine and ignores the fields it doesn't know. If it **publishes**,
+it writes the file from what it knows, so those fields are gone for
+everyone. Its publish review can't warn about this, since it compares only
+the fields it knows. Until publishing preserves fields it doesn't
+recognise, members of a team should publish from the same release or a
+newer one. A field added to shared entries should say in the changelog that
+older publishers drop it.
+
+## Checklist for a PR that touches a persisted type
+
+- [ ] New fields decode with `decodeIfPresent` and a meaning-preserving default
+- [ ] Collections of records are `LenientArray`
+- [ ] No key reused with a new meaning
+- [ ] `UpgradeFrom<previous>Tests` has a literal from the last release
+- [ ] One-way migrations keep a once-only restore point and write the new place first
+- [ ] The changelog says what a downgrade loses, if anything, and whether older publishers drop it
+- [ ] Rehearsed with `PORTSIDE_UPGRADE_FIXTURE` before the release
