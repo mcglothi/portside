@@ -45,6 +45,15 @@ final class DiagnosticsTests: XCTestCase {
                        + "2 shared inventories (1 on)")
     }
 
+    /// An empty folder and one kept only by a group are folders the sidebar
+    /// shows, so they count.
+    func testFoldersWithoutEntriesCount() {
+        let d = Diagnostics.current(entries: [], otherFolders: ["empty", "ops/groups-only"], groups: 1, macros: 0,
+                                    inventorySources: [], terminal: TerminalSettings(), logging: LoggingSettings(),
+                                    agent: AgentController.Settings())
+        XCTAssertTrue(d.libraryLine.contains("3 folders"), d.libraryLine)
+    }
+
     func testSwitchesThatChangeBehaviourAreListed() {
         XCTAssertEqual(diagnostics().settingsLines, [
             "Directory tracking on connect: on",

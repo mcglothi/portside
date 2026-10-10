@@ -94,7 +94,10 @@ struct Diagnostics: Equatable {
 
 extension Diagnostics {
     /// The running Mac and app.
-    static func current(entries: [SessionEntry], groups: Int, macros: Int,
+    /// `entries`: every entry the sidebar shows, shared ones included.
+    /// `otherFolders`: folders that exist without an entry in them —
+    /// standalone ones and ones a saved group keeps.
+    static func current(entries: [SessionEntry], otherFolders: [String] = [], groups: Int, macros: Int,
                         inventorySources: [InventorySource],
                         terminal: TerminalSettings, logging: LoggingSettings,
                         agent: AgentController.Settings) -> Diagnostics {
@@ -104,9 +107,9 @@ extension Diagnostics {
         for entry in entries { kinds[entry.kind, default: 0] += 1 }
         // A nested folder counts once, as do its parents ("a/b" is a and a/b).
         var folders = Set<String>()
-        for entry in entries where !entry.folder.isEmpty {
+        for folder in entries.map(\.folder) + otherFolders where !folder.isEmpty {
             var path = ""
-            for part in entry.folder.split(separator: "/") {
+            for part in folder.split(separator: "/") {
                 path = path.isEmpty ? String(part) : path + "/" + part
                 folders.insert(path)
             }
