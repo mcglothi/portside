@@ -21,7 +21,14 @@ final class UpgradeRehearsalTests: XCTestCase {
         }
 
         let original = try Data(contentsOf: URL(fileURLWithPath: fixture))
-        let before = try JSONSerialization.jsonObject(with: original) as? [String: Any] ?? [:]
+        var before = try JSONSerialization.jsonObject(with: original) as? [String: Any] ?? [:]
+        // What was there is the library plus its sidecar: after the split,
+        // workspace, themes, terminal, logging and recents live beside it.
+        let localSidecar = URL(fileURLWithPath: fixture).deletingPathExtension().appendingPathExtension("local.json")
+        if let data = try? Data(contentsOf: localSidecar),
+           let local = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            before.merge(local) { library, _ in library }
+        }
 
         let work = FileManager.default.temporaryDirectory
             .appendingPathComponent("portside-upgrade-\(UUID().uuidString)")
@@ -29,6 +36,16 @@ final class UpgradeRehearsalTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: work) }
         let copy = work.appendingPathComponent("portside.json")
         try original.write(to: copy)
+        // A current install keeps machine-local state and history beside the
+        // library. Without them the rehearsal reads defaults and can't notice
+        // a migration that loses them, so they come too when they exist.
+        let fixtureURL = URL(fileURLWithPath: fixture).deletingPathExtension()
+        for sidecar in ["local.json", "history.json"] {
+            let from = fixtureURL.appendingPathExtension(sidecar)
+            if FileManager.default.fileExists(atPath: from.path) {
+                try FileManager.default.copyItem(at: from, to: copy.deletingPathExtension().appendingPathExtension(sidecar))
+            }
+        }
 
         // First launch on the new build: loads, migrates, writes.
         let upgraded = SessionStore(fileURL: copy)
