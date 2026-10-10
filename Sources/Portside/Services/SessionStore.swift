@@ -837,8 +837,11 @@ final class SessionStore: ObservableObject {
             // Sidecar first, library second. If anything fails between them the
             // library still holds the originals, so the worst case is that the
             // migration runs again — never that the state is gone from both.
-            saveLocal()
-            needsLegacyLocalCleanup = true
+            // That includes the sidecar write itself failing: then the library
+            // keeps carrying local state (see `localSplitPending`) until one
+            // succeeds.
+            if saveLocal() { needsLegacyLocalCleanup = true }
+            else { localSplitPending = true }
         }
     }
 
@@ -868,7 +871,13 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func saveLocal() {
+    /// Set when the local split couldn't write the sidecar. Until a write
+    /// succeeds, the library goes on carrying local state when it's saved,
+    /// rather than dropping it from the only file that has it.
+    private var localSplitPending = false
+
+    @discardableResult
+    private func saveLocal() -> Bool {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
@@ -876,8 +885,11 @@ final class SessionStore: ObservableObject {
                 workspace: workspace, appearance: appearance, customThemes: customThemes,
                 terminal: terminal, logging: logging, recents: recents
             )).write(to: localFileURL, options: .atomic)
+            localSplitPending = false
+            return true
         } catch {
             NSLog("Portside: could not save local state — \(error)")
+            return false
         }
     }
 
@@ -2135,13 +2147,18 @@ final class SessionStore: ObservableObject {
             // exist on `Document` so a library written before the split can be
             // read and migrated, but writing them back would put the file
             // straight back to mixing three lifetimes — and would undo the
-            // migration on the next save.
+            // migration on the next save. The exception is a split whose
+            // sidecar couldn't be written: the library is then the only place
+            // local state lives, so it keeps it.
+            let local = localSplitPending
             try encoder.encode(Document(entries: entries, macros: macros, groups: LenientArray(groups),
                                         forwards: forwards,
-                                        recents: nil,
-                                        explicitFolders: explicitFolders, appearance: nil,
-                                        customThemes: nil, defaults: defaults, logging: nil,
-                                        terminal: nil, workspace: nil, keyBindings: keyBindings,
+                                        recents: local ? recents : nil,
+                                        explicitFolders: explicitFolders, appearance: local ? appearance : nil,
+                                        customThemes: local ? customThemes : nil, defaults: defaults,
+                                        logging: local ? logging : nil,
+                                        terminal: local ? terminal : nil, workspace: local ? workspace : nil,
+                                        keyBindings: keyBindings,
                                         credentialProfiles: credentialProfiles, defaultProfileID: defaultProfileID,
                                         connectionStats: nil, connectionLog: nil,
                                         history: history,
