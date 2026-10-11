@@ -248,8 +248,9 @@ libraries via `PORTSIDE_UPGRADE_FIXTURE`, and the local split keeps a
 pre-migration copy so going back is possible.
 
 **What's left:** keep it true. Every future migration needs the same rehearsal
-and the same restore point, and the pattern should be documented rather than
-remembered.
+and the same restore point. The pattern is now written down in
+[migrations.md](migrations.md), with a checklist for any PR that touches a
+persisted type.
 
 
 ### 6. Agent Access has mileage, and its refusals hold
