@@ -9,6 +9,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Agents can wait on commands in `sh`, `ash` and `dash` containers too.** With "Set up directory tracking on connect" on, a container or pod whose shell has no command hook (Alpine, BusyBox, Debian slim) now gets a prompt that reports each command's exit status and marks where it ends. `last` and `send --wait` return the exit code and output, with the line typed after the prompt as the command, marked `"integration": "prompt-only"` for agents. Nothing is written into the container. bash and zsh keep the full integration.
 
+**Reporting a bug fills in the details for you.** Help ▸ Report an Issue… now opens the bug form with your Portside version, macOS version and library shape already filled in, plus which behaviour switches are on (directory tracking, session logging, Agent Access and Don't Ask). It's counts and on/off only: no hostnames, users, folder names, paths or repositories, and you see it all before submitting. Help ▸ Copy Diagnostics copies the same text.
+
 ## 0.35.0
 
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.

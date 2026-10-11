@@ -60,3 +60,11 @@ body:
         appear at scale. **Please don't paste your library**: it contains
         hostnames and usernames.
       placeholder: ~800 hosts, 40 folders, 3 credential profiles
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: >
+        Filled in when you report from Portside's Help menu (Help ▸ Report an
+        Issue…): which of the switches that change behaviour are on. Help ▸
+        Copy Diagnostics copies the same thing.
