@@ -73,22 +73,33 @@ final class LoggingTerminalView: LocalProcessTerminalView {
     /// it said so long before anyone asks. The command capture can't answer
     /// this: it only exists while typing is on, and starts blind each time.
     private(set) var sawShellIntegration = false
+    /// The letter of the last OSC 133 marker (`A`, `B`, `C`, `D`…), or 0.
+    /// Kept for the same reason: a capture switched on mid-session starts
+    /// blind, and a prompt-only shell sitting at a prompt has already sent
+    /// the `B` that the capture needs to read the next line as a command.
+    private(set) var lastMarker: UInt8 = 0
     private var markerMatched = 0
     private static let markerIntroducer: [UInt8] = Array("\u{1B}]133;".utf8)
 
-    /// Matched across reads, since an introducer can straddle two; stops
-    /// looking once found.
+    /// Matched across reads, since an introducer can straddle two.
     private func noteShellIntegration(_ slice: ArraySlice<UInt8>) {
-        guard !sawShellIntegration else { return }
         let needle = Self.markerIntroducer
         for byte in slice {
-            if byte == needle[markerMatched] {
+            if markerMatched == needle.count {
+                lastMarker = byte
+                sawShellIntegration = true
+                markerMatched = 0
+            } else if byte == needle[markerMatched] {
                 markerMatched += 1
-                if markerMatched == needle.count { sawShellIntegration = true; return }
             } else {
                 markerMatched = byte == needle[0] ? 1 : 0
             }
         }
+    }
+
+    /// A capture for this session as it stands now.
+    func makeOutputCapture() -> CommandOutputCapture {
+        CommandOutputCapture(atPrompt: lastMarker == UInt8(ascii: "B"))
     }
     /// Fires when the shell reports a completed command via OSC 133. Sits on
     /// the raw byte tap because SwiftTerm doesn't parse OSC 133 -- it sees the
@@ -1097,7 +1108,7 @@ final class SessionManager: ObservableObject {
         didSet {
             guard capturesCommandOutput != oldValue else { return }
             for leaf in tabs.flatMap(\.leaves) {
-                leaf.terminalView.outputCapture = capturesCommandOutput ? CommandOutputCapture() : nil
+                leaf.terminalView.outputCapture = capturesCommandOutput ? leaf.terminalView.makeOutputCapture() : nil
             }
         }
     }
@@ -2838,7 +2849,7 @@ final class SessionManager: ObservableObject {
             guard let self, let session else { return true }
             return self.confirmPasteIfNeeded(text, from: session)
         }
-        if capturesCommandOutput { session.terminalView.outputCapture = CommandOutputCapture() }
+        if capturesCommandOutput { session.terminalView.outputCapture = session.terminalView.makeOutputCapture() }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {

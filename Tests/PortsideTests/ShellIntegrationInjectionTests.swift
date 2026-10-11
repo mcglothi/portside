@@ -124,12 +124,16 @@ final class ShellIntegrationInjectionTests: XCTestCase {
 
     /// Every scratch variable the lines set is unset at the end.
     func testCommandCleansUpItsScratchVariables() {
-        let last = ShellIntegrationInjection.lines.last ?? ""
-        let unset = last.components(separatedBy: "unset ").last?.split(separator: " ").map(String.init) ?? []
-        let set = ShellIntegrationInjection.lines.dropLast().compactMap {
+        let lines = ShellIntegrationInjection.lines
+        let assembler = try? XCTUnwrap(lines.first { $0.contains("eval") })
+        let unset = assembler?.components(separatedBy: "unset ").last?.split(separator: " ").map(String.init) ?? []
+        let set = lines.filter { $0.hasPrefix(" __p_") }.compactMap {
             $0.trimmingCharacters(in: .whitespaces).split(separator: "=").first.map(String.init)
         }
         XCTAssertEqual(Set(unset), Set(set + ["__p"]))
+        // The prompt-only line's own two.
+        XCTAssertTrue(ShellIntegrationInjection.promptOnlyLine.hasSuffix("unset __e __a;; esac"))
+        XCTAssertEqual(lines.last, ShellIntegrationInjection.promptOnlyLine)
     }
 
     /// The single quotes around each payload are what keep the shell from
