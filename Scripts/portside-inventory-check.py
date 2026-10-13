@@ -141,7 +141,8 @@ def verdict(entry):
 
 
 PERSONAL = [("runOnConnect", "run-on-connect"), ("forwardAgent", "agent forwarding"),
-            ("forwardX11", "X11 forwarding"), ("credentialProfileID", "credential profile"),
+            ("forwardX11", "X11 forwarding"), ("forwardX11Untrusted", "X11 trust"),
+            ("credentialProfileID", "credential profile"),
             ("savePassword", "saved password"), ("isFavorite", "favourite")]
 
 

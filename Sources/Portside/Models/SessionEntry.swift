@@ -268,6 +268,15 @@ struct SessionEntry: Identifiable, Hashable {
     /// carries neither forwarding, and keepalive is moot on it.
     var forwardAgent: Bool?
     var forwardX11: Bool?
+    /// With X11 on: `-X` (untrusted) instead of `-Y` (trusted). Trusted is
+    /// the default because untrusted forwarding refuses ordinary requests —
+    /// even `xterm`'s bell — and real X apps (installers, Java GUIs) fail
+    /// under it. But a trusted host can read every X client on this Mac's
+    /// display, keystrokes included, so this is for hosts you don't fully
+    /// trust. Stored as the exception so "On" from before it existed means
+    /// trusted without rewriting anything; a downgrade drops it, which turns
+    /// an untrusted host trusted (said in the release notes).
+    var forwardX11Untrusted = false
     /// `ServerAliveInterval`, in seconds. Also applied to tunnels through this
     /// host, where it's what makes a dead link end the ssh process instead of
     /// it sitting on "Running" indefinitely.
@@ -344,8 +353,44 @@ struct SessionEntry: Identifiable, Hashable {
     var sshOptionArgs: [String] {
         var args: [String] = []
         if let forwardAgent { args.append(forwardAgent ? "-A" : "-a") }
-        if let forwardX11 { args.append(forwardX11 ? "-X" : "-x") }
+        switch forwardX11 {
+        case true?:
+            // No XAuthLocation: macOS's ssh already looks for xauth where
+            // XQuartz installs it (/opt/X11/bin), PATH or not.
+            // `-X` alone leaves trust to ~/.ssh/config, where
+            // `ForwardX11Trusted yes` would make "untrusted" trusted after all;
+            // `-Y` already overrides it the other way.
+            args += forwardX11Untrusted ? ["-X", "-o", "ForwardX11Trusted=no"] : ["-Y"]
+        case false?:
+            args.append("-x")
+        case nil:
+            break
+        }
         return args + keepAliveArgs
+    }
+
+    /// The editor's single choice over `forwardX11` and its trust.
+    enum X11Mode: Hashable, CaseIterable {
+        case sshConfig, off, trusted, untrusted
+    }
+
+    var x11Mode: X11Mode {
+        get {
+            switch forwardX11 {
+            case nil: return .sshConfig
+            case false?: return .off
+            case true?: return forwardX11Untrusted ? .untrusted : .trusted
+            }
+        }
+        set {
+            switch newValue {
+            case .sshConfig: forwardX11 = nil
+            case .off: forwardX11 = false
+            case .trusted: forwardX11 = true
+            case .untrusted: forwardX11 = true
+            }
+            forwardX11Untrusted = newValue == .untrusted
+        }
     }
 
     /// Three missed replies and ssh gives up, which is ssh's own default count.
@@ -441,7 +486,7 @@ extension SessionEntry: Codable {
         case id, name, folder, hostname, user, port, sshAlias, identityFile, savePassword
         case source, environment, isProtected, runOnConnect
         case kind, container, kubernetes, serial, telnet, preferMosh, credentialProfileID
-        case isFavorite, forwardAgent, forwardX11, keepAliveSeconds
+        case isFavorite, forwardAgent, forwardX11, forwardX11Untrusted, keepAliveSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -469,6 +514,7 @@ extension SessionEntry: Codable {
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent)
         forwardX11 = try c.decodeIfPresent(Bool.self, forKey: .forwardX11)
+        forwardX11Untrusted = try c.decodeIfPresent(Bool.self, forKey: .forwardX11Untrusted) ?? false
         keepAliveSeconds = try c.decodeIfPresent(Int.self, forKey: .keepAliveSeconds)
     }
 }

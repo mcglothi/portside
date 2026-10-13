@@ -1,19 +1,24 @@
 import Foundation
 
-/// Whether this Mac can show windows forwarded with `ssh -X`.
+/// Whether this Mac can show windows forwarded with `ssh -Y`/`-X`.
 ///
 /// Only consulted for hosts that turn X11 forwarding on, so nobody who doesn't
 /// use it is told to install anything. Two things have to be true: an X server
-/// (XQuartz) is installed, and Portside was launched with `DISPLAY` set —
-/// XQuartz puts it into the login session, so a fresh install needs a log out
-/// and back in before apps started afterwards see it. Without `DISPLAY`, ssh
-/// skips the X11 request without a word, which is why this is worth saying.
+/// (XQuartz) is installed, and ssh has a `DISPLAY` to forward to. Without
+/// one, ssh skips the X11 request without a word, which is why this is worth
+/// saying.
+///
+/// `DISPLAY` used to mean Portside's own: XQuartz puts it into the login
+/// session, so a fresh install needed a log out and back in before Portside
+/// saw it. It doesn't need to. A running XQuartz listens on
+/// `/tmp/.X11-unix/X0`, which `DISPLAY=:0` reaches, so ssh children get that
+/// when Portside has no `DISPLAY` of its own (`displayEnvironment`).
 enum X11Support {
     enum Status: Equatable {
         case ready
         case notInstalled
-        /// Installed, but Portside's environment has no DISPLAY yet.
-        case noDisplay
+        /// Installed, but no X server is running and Portside has no DISPLAY.
+        case notRunning
     }
 
     static let installHint = "brew install --cask xquartz"
@@ -24,11 +29,22 @@ enum X11Support {
         "/opt/X11/bin/Xquartz",
     ]
 
+    /// The socket a running XQuartz serves display :0 on.
+    static let displaySocket = "/tmp/.X11-unix/X0"
+
     static func status(environment: [String: String] = ProcessInfo.processInfo.environment,
                        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> Status {
         guard serverPaths.contains(where: exists) else { return .notInstalled }
-        guard let display = environment["DISPLAY"], !display.isEmpty else { return .noDisplay }
-        return .ready
+        if let display = environment["DISPLAY"], !display.isEmpty { return .ready }
+        return exists(displaySocket) ? .ready : .notRunning
+    }
+
+    /// `DISPLAY` for an ssh child when Portside has none and XQuartz is
+    /// running: the case a fresh install is in until the next login.
+    static func displayEnvironment(environment: [String: String] = ProcessInfo.processInfo.environment,
+                                   exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> String? {
+        if let display = environment["DISPLAY"], !display.isEmpty { return nil }
+        return exists(displaySocket) ? "DISPLAY=:0" : nil
     }
 
     /// What's missing, in a sentence, or nil when X11 will work.
@@ -38,8 +54,8 @@ enum X11Support {
             return nil
         case .notInstalled:
             return "X11 forwarding needs XQuartz, which isn't installed. Install it with: \(installHint)"
-        case .noDisplay:
-            return "XQuartz is installed but hasn't started for this login yet. Log out and back in, then reopen Portside."
+        case .notRunning:
+            return "XQuartz is installed but not running. Open XQuartz, then connect again."
         }
     }
 
