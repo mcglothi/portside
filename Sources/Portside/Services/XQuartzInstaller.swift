@@ -32,10 +32,14 @@ enum XQuartzInstaller {
         brewPaths.first(where: exists)
     }
 
-    /// What the Homebrew route types, run by the person's login shell so
-    /// brew finds its PATH. Says how it went before the tab ends.
+    /// What the Homebrew route runs, under `/bin/sh` rather than the
+    /// person's login shell (fish or tcsh wouldn't parse it), with PATH set
+    /// here since Portside's tabs don't inherit one. Says how it went before
+    /// the tab ends.
+    static let shell = "/bin/sh"
     static func brewCommand(brew: String) -> String {
-        "'\(brew)' install --cask xquartz; s=$?; echo; "
+        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; export PATH; "
+            + "'\(brew)' install --cask xquartz; s=$?; echo; "
             + "if [ $s -eq 0 ]; then echo 'XQuartz is installed. Back in Portside, click Start XQuartz.'; "
             + "else echo \"brew stopped with status $s.\"; fi"
     }

@@ -84,7 +84,9 @@ final class XQuartzInstallerTests: XCTestCase {
         XCTAssertEqual(XQuartzInstaller.brew(exists: { _ in true }), "/opt/homebrew/bin/brew")
         XCTAssertNil(XQuartzInstaller.brew(exists: { _ in false }))
         let command = XQuartzInstaller.brewCommand(brew: "/opt/homebrew/bin/brew")
-        XCTAssertTrue(command.hasPrefix("'/opt/homebrew/bin/brew' install --cask xquartz;"))
+        XCTAssertTrue(command.contains("'/opt/homebrew/bin/brew' install --cask xquartz;"))
+        XCTAssertTrue(command.hasPrefix("PATH="), "the tab inherits no PATH")
+        XCTAssertEqual(XQuartzInstaller.shell, "/bin/sh", "not the login shell, which may be fish or tcsh")
         XCTAssertFalse(command.contains("install.sh"), "never installs Homebrew itself")
     }
 
@@ -92,7 +94,7 @@ final class XQuartzInstallerTests: XCTestCase {
     /// shell (checked with `sh -n`, nothing installed).
     func testTheBrewCommandIsValidShell() throws {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.executableURL = URL(fileURLWithPath: XQuartzInstaller.shell)
         p.arguments = ["-n", "-c", XQuartzInstaller.brewCommand(brew: "/opt/homebrew/bin/brew")]
         try p.run()
         p.waitUntilExit()

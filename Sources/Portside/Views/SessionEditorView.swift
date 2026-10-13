@@ -590,10 +590,15 @@ private struct X11StatusRow: View {
     @EnvironmentObject private var sessions: SessionManager
     @State private var working: String?
     @State private var fallback: String?
+    /// The Homebrew tab, watched so a brew that stops without installing
+    /// doesn't leave "Installing…" up and the button disabled for good.
+    @State private var brewTab: TerminalSession?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { _ in
             let status = X11Support.status()
+            let brewEnded = brewTab.map { !$0.isRunning } ?? false
+            let busy = working != nil && !brewEnded
             VStack(alignment: .leading, spacing: 6) {
                 if status == .ready {
                     Label("X11 ready", systemImage: "checkmark.circle.fill")
@@ -606,12 +611,15 @@ private struct X11StatusRow: View {
                         .textSelection(.enabled)
                     HStack {
                         if status == .notInstalled {
-                            Button("Install XQuartz", action: install).disabled(working != nil)
+                            Button("Install XQuartz", action: install).disabled(busy)
                         } else if status == .notRunning {
                             Button("Start XQuartz") { XQuartzInstaller.start() }
                         }
-                        if let working, status == .notInstalled {
+                        if let working, busy, status == .notInstalled {
                             Text(working).font(.caption).foregroundStyle(.secondary)
+                        } else if brewEnded, status == .notInstalled {
+                            Text("Homebrew didn\u{2019}t install it \u{2014} see its tab, then try again.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -625,8 +633,8 @@ private struct X11StatusRow: View {
     private func install() {
         fallback = nil
         if let brew = XQuartzInstaller.brew() {
-            sessions.runLocalCommand(title: "Install XQuartz", executable: sessions.localShell.path,
-                                     args: ["-l", "-c", XQuartzInstaller.brewCommand(brew: brew)])
+            brewTab = sessions.runLocalCommand(title: "Install XQuartz", executable: XQuartzInstaller.shell,
+                                               args: ["-c", XQuartzInstaller.brewCommand(brew: brew)])
             working = "Installing in a new tab…"
             return
         }
