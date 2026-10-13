@@ -71,6 +71,12 @@ struct TerminalImageGuard {
     /// Bytes held back from the end of the last read: the start of a UTF-8
     /// character that a read split, inside an OSC or APC.
     private var held: [UInt8] = []
+    /// Continuation bytes still due for a UTF-8 character begun inside an
+    /// OSC or APC. Those bytes (0x80–0xBF) overlap C1 controls — `Ü` is
+    /// `C3 9C`, and 9C is ST — but SwiftTerm reads them as text when they
+    /// follow their lead byte in the same read, which holding back split
+    /// characters guarantees. So they're text here too.
+    private var continuationsDue = 0
 
     private var state = State.ground
 
@@ -108,6 +114,20 @@ struct TerminalImageGuard {
         return input[..<end]
     }
 
+    /// A UTF-8 continuation byte inside a string: content to the string's
+    /// own parser, never a control.
+    private mutating func stringContent(_ byte: UInt8) -> UInt8? {
+        switch state {
+        case .osc:
+            return nil
+        case .apc:
+            state = .apc(previous: byte, key: .none)
+            return nil
+        default:
+            return nil
+        }
+    }
+
     private var inString: Bool {
         switch state {
         case .osc, .apc: return true
@@ -128,6 +148,14 @@ struct TerminalImageGuard {
 
     /// Advances over one byte; returns its replacement when it must change.
     private mutating func consume(_ byte: UInt8) -> UInt8? {
+        if continuationsDue > 0 {
+            if byte & 0xC0 == 0x80 {
+                continuationsDue -= 1
+                return stringContent(byte)
+            }
+            continuationsDue = 0
+        }
+        if inString, let length = Self.utf8Length(byte) { continuationsDue = length - 1 }
         switch byte {
         case 0x1B:                          // ESC: ends a sequence, may start one
             state = .escape
