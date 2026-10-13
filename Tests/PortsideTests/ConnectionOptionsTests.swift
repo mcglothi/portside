@@ -19,7 +19,8 @@ final class ConnectionOptionsTests: XCTestCase {
         e.forwardX11 = true
         XCTAssertEqual(e.sshOptionArgs, ["-a", "-Y"], "On means trusted")
         e.forwardX11Untrusted = true
-        XCTAssertEqual(e.sshOptionArgs, ["-a", "-X"])
+        XCTAssertEqual(e.sshOptionArgs, ["-a", "-X", "-o", "ForwardX11Trusted=no"],
+                       "untrusted even when ~/.ssh/config says ForwardX11Trusted yes")
         e.forwardX11 = false
         XCTAssertEqual(e.sshOptionArgs, ["-a", "-x"], "off ignores the trust setting")
     }
@@ -103,5 +104,30 @@ final class ConnectionOptionsTests: XCTestCase {
         let published = SharedManifest.sanitized(mine, sourceID: UUID())
         XCTAssertEqual(published?.x11Mode, SessionEntry.X11Mode.sshConfig, "X11 settings aren't published")
         XCTAssertEqual(published?.forwardX11Untrusted, false)
+    }
+
+    /// What ssh itself makes of each mode against a config that says the
+    /// opposite: `ssh -G` with a throwaway `-F`, nothing dialled.
+    func testSshAgreesWithEachModeWhateverTheConfigSays() throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("x11-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: config) }
+        func trusted(_ mode: SessionEntry.X11Mode, config value: String) throws -> String? {
+            try "Host *\n  ForwardX11Trusted \(value)\n".write(to: config, atomically: true, encoding: .utf8)
+            var e = host()
+            e.x11Mode = mode
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            p.arguments = ["-F", config.path, "-G"] + e.sshOptionArgs + ["x11.invalid"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+            return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .split(separator: "\n").first { $0.hasPrefix("forwardx11trusted ") }
+                .map { String($0.dropFirst("forwardx11trusted ".count)) }
+        }
+        XCTAssertEqual(try trusted(.untrusted, config: "yes"), "no")
+        XCTAssertEqual(try trusted(.trusted, config: "no"), "yes")
     }
 }
