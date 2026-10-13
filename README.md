@@ -162,8 +162,10 @@ exists to fill that gap without giving up native speed and macOS polish.
   re-upload. The browser shows exactly what's checked out and when it last
   saved, and a protected host asks before the file is opened.
 - **Per-host connection options** — agent forwarding, X11 forwarding and
-  keepalive, each deferring to `~/.ssh/config` until a host sets it. X11 needs
-  XQuartz (`brew install --cask xquartz`); hosts with X11 on say so if it's missing.
+  keepalive, each deferring to `~/.ssh/config` until a host sets it. X11 is
+  trusted (`-Y`) or untrusted (`-X`) per host, and needs XQuartz
+  (`brew install --cask xquartz`); hosts with X11 on say so if it's missing or
+  not running.
 - **Port forwarding** — saved `-L` / `-R` / SOCKS tunnels with live status,
   start/stop, and launch-at-startup, tunneled through any host in the library.
   Best-effort by design: the status tracks the `ssh` process, not whether

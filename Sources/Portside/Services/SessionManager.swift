@@ -1346,6 +1346,11 @@ final class SessionManager: ObservableObject {
             // password but never assigned or set one of their own — the
             // common case for a batch of imported hosts sharing one login.
             var environment = SwiftTerm.Terminal.getEnvironmentVariables()
+            // A running XQuartz that this login hasn't exported DISPLAY for
+            // yet is still reachable as :0 (see `X11Support`).
+            if executable == SSHInvocation.executable, let display = X11Support.displayEnvironment() {
+                environment.append(display)
+            }
             var expireSecret: (() -> Void)?
             var cleanup: (() -> Void)?
             if let password = CredentialResolver.password(for: entry, defaultProfileID: defaultProfileID),

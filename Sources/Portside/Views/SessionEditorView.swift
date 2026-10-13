@@ -233,10 +233,11 @@ struct SessionEditorView: View {
                 Text("On").tag(Bool?.some(true))
                 Text("Off").tag(Bool?.some(false))
             }
-            Picker("X11 forwarding", selection: $draft.forwardX11) {
-                Text("Use ssh config").tag(Bool?.none)
-                Text("On").tag(Bool?.some(true))
-                Text("Off").tag(Bool?.some(false))
+            Picker("X11 forwarding", selection: $draft.x11Mode) {
+                Text("Use ssh config").tag(SessionEntry.X11Mode.sshConfig)
+                Text("Off").tag(SessionEntry.X11Mode.off)
+                Text("On (trusted, -Y)").tag(SessionEntry.X11Mode.trusted)
+                Text("On (untrusted, -X)").tag(SessionEntry.X11Mode.untrusted)
             }
             if draft.forwardX11 == true, let problem = X11Support.problem(X11Support.status()) {
                 Text(problem)
@@ -245,7 +246,7 @@ struct SessionEditorView: View {
                     .textSelection(.enabled)
             }
             TextField("Keepalive (seconds)", text: keepAliveBinding, prompt: Text("ssh config — e.g. 30"))
-            Text("Keepalive probes the link so a dead connection or tunnel ends instead of hanging. Agent forwarding lets the host use your local keys — only turn it on for hosts you trust. X11 needs XQuartz. None of these apply to mosh sessions.")
+            Text("Keepalive probes the link so a dead connection or tunnel ends instead of hanging. Agent forwarding lets the host use your local keys — only turn it on for hosts you trust. X11 needs XQuartz. Trusted X11 is what most X apps need, but it lets the host see every X window on this Mac, keystrokes included; untrusted is safer for hosts you don\u{2019}t fully trust, and some apps fail under it. None of these apply to mosh sessions.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

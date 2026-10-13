@@ -1725,6 +1725,7 @@ final class SessionStore: ObservableObject {
             overlay.runOnConnect = (command?.isEmpty ?? true) ? nil : edited.runOnConnect
             overlay.forwardAgent = edited.forwardAgent
             overlay.forwardX11 = edited.forwardX11
+            overlay.forwardX11Untrusted = edited.forwardX11Untrusted
         }
     }
 

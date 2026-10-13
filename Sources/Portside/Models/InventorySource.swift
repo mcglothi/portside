@@ -112,6 +112,7 @@ struct SharedOverlay: Codable, Equatable {
     var runOnConnect: String?
     var forwardAgent: Bool?
     var forwardX11: Bool?
+    var forwardX11Untrusted = false
     /// The source the host came from. The entry id alone can't say once the
     /// host leaves the manifest, and removing the source has to find these
     /// settings — a saved password among them — to clean them up.
@@ -127,7 +128,7 @@ struct SharedOverlay: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case entryID, environment, isProtected, isFavorite, credentialProfileID
-        case savePassword, runOnConnect, forwardAgent, forwardX11, sourceID
+        case savePassword, runOnConnect, forwardAgent, forwardX11, forwardX11Untrusted, sourceID
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +142,7 @@ struct SharedOverlay: Codable, Equatable {
         runOnConnect = try c.decodeIfPresent(String.self, forKey: .runOnConnect)
         forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent)
         forwardX11 = try c.decodeIfPresent(Bool.self, forKey: .forwardX11)
+        forwardX11Untrusted = try c.decodeIfPresent(Bool.self, forKey: .forwardX11Untrusted) ?? false
         sourceID = try c.decodeIfPresent(UUID.self, forKey: .sourceID)
     }
 
@@ -155,6 +157,7 @@ struct SharedOverlay: Codable, Equatable {
         e.runOnConnect = runOnConnect
         e.forwardAgent = forwardAgent
         e.forwardX11 = forwardX11
+        e.forwardX11Untrusted = forwardX11Untrusted
         return e
     }
 }

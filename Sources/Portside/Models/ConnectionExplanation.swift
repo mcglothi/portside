@@ -118,6 +118,24 @@ struct ConnectionExplanation: Equatable {
             ))
         }
 
+        // What X11 forwarding resolved to, whoever set it: the host's own
+        // switch, or a Host block in ~/.ssh/config — which a short hostname
+        // can fail to match (`Host *.example.com` vs `ssh db1`) with no other
+        // sign that it didn't apply.
+        if let x11 = values["forwardx11"]?.first?.lowercased() {
+            let trusted = values["forwardx11trusted"]?.first?.lowercased() == "yes"
+            let on = x11 == "yes"
+            items.append(Item(
+                label: "X11 forwarding",
+                value: on ? (trusted ? "on, trusted" : "on, untrusted") : "off",
+                note: on
+                    ? (trusted
+                        ? "The host can see every X window on this Mac, keystrokes included."
+                        : "The X SECURITY extension refuses some requests; many X apps fail this way.")
+                    : nil
+            ))
+        }
+
         items.append(Item(
             label: "Stored password",
             value: describe(credentialSource),
