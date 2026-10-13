@@ -64,8 +64,18 @@ struct TerminalImageGuard {
         case sixel(Sixel)
         case otherDCS
         /// Inside an OSC (`ESC ]`): titles, OSC 7, OSC 8, OSC 133 and the
-        /// like. Tracked for UTF-8 split across reads (see `filtered`).
-        case osc
+        /// like. Tracked for UTF-8 split across reads (see `filtered`), and
+        /// for iTerm2 inline images (`OSC 1337 ; File=… : <base64>`), whose
+        /// size is checked before SwiftTerm decodes them.
+        case osc(InlineImage)
+    }
+
+    /// Where an OSC is in `1337 ; File = <args> : <payload>`.
+    fileprivate struct InlineImage {
+        enum Phase { case number(Int), key([UInt8]), args, payload, other }
+        var phase = Phase.number(0)
+        var base64 = StreamingBase64()
+        var sniffer = ImageHeaderSniffer()
     }
 
     /// Bytes held back from the end of the last read: the start of a UTF-8
@@ -142,7 +152,7 @@ struct TerminalImageGuard {
             state = .apc(previous: 0, key: .none)
             return nil
         case 0x9D:                          // C1 OSC
-            state = .osc
+            state = .osc(InlineImage())
             return nil
         case 0x90:                          // C1 DCS
             state = .dcsEntry
@@ -152,8 +162,12 @@ struct TerminalImageGuard {
         }
 
         switch state {
-        case .ground, .otherDCS, .osc:
+        case .ground, .otherDCS:
             return nil
+
+        case .osc(var image):
+            defer { state = .osc(image) }
+            return image.consume(byte)
 
         case .escape:
             // SwiftTerm executes C0 controls and ignores DEL without leaving
@@ -162,7 +176,7 @@ struct TerminalImageGuard {
             switch byte {
             case UInt8(ascii: "_"): state = .apc(previous: 0, key: .none)
             case UInt8(ascii: "P"): state = .dcsEntry
-            case UInt8(ascii: "]"): state = .osc
+            case UInt8(ascii: "]"): state = .osc(InlineImage())
             default: state = .ground
             }
             return nil
@@ -245,6 +259,45 @@ private extension TerminalImageGuard.Sixel {
             reps = 1
             if x > TerminalImageGuard.maxSixelWidth { cropped = true; return 0 }
         default:
+            break
+        }
+        return nil
+    }
+}
+
+private extension TerminalImageGuard.InlineImage {
+    static let refused = UInt8(ascii: "=")
+
+    /// Follows SwiftTerm's own reading: the OSC number before the first `;`,
+    /// the key before the first `=`, the payload after the first `:`. C0
+    /// controls inside an OSC are dropped by SwiftTerm, so they're skipped
+    /// here too. Once the sniffer refuses, the byte that decided it becomes
+    /// `=` — padding in the middle, which SwiftTerm's strict base64 decode
+    /// rejects, so the image is never built.
+    mutating func consume(_ byte: UInt8) -> UInt8? {
+        guard byte >= 0x20 else { return nil }
+        switch phase {
+        case .number(let n):
+            if (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) {
+                phase = .number(min(n * 10 + Int(byte - UInt8(ascii: "0")), 1_000_000))
+            } else {
+                phase = byte == UInt8(ascii: ";") && n == 1337 ? .key([]) : .other
+            }
+        case .key(var key):
+            if byte == UInt8(ascii: "=") {
+                phase = key == Array("File".utf8) ? .args : .other
+            } else if key.count < 16 {
+                key.append(byte)
+                phase = .key(key)
+            } else {
+                phase = .other
+            }
+        case .args:
+            if byte == UInt8(ascii: ":") { phase = .payload }
+        case .payload:
+            guard sniffer.verdict == .undecided, let decoded = base64.feed(byte) else { return nil }
+            if sniffer.feed(decoded) == .refuse { return Self.refused }
+        case .other:
             break
         }
         return nil

@@ -79,6 +79,8 @@ final class TerminalHarness {
     var bells: Int { sink.bells }
     /// Size of each sixel image decoded, in order.
     var bitmaps: [(width: Int, height: Int)] { sink.bitmaps }
+    /// Encoded images handed over for display (iTerm2 inline, Kitty PNG).
+    var images: Int { sink.images }
 
     // MARK: -
 
@@ -91,6 +93,7 @@ final class TerminalHarness {
         var replies: [UInt8] = []
         var bells = 0
         var bitmaps: [(width: Int, height: Int)] = []
+        var images = 0
 
         func setTerminalTitle(source: Terminal, title: String) { titles.append(title) }
         func send(source: Terminal, data: ArraySlice<UInt8>) { replies.append(contentsOf: data) }
@@ -128,6 +131,6 @@ final class TerminalHarness {
             bitmaps.append((width, height))
         }
         func createImage(source: Terminal, data: Data, width: ImageSizeRequest,
-                         height: ImageSizeRequest, preserveAspectRatio: Bool) {}
+                         height: ImageSizeRequest, preserveAspectRatio: Bool) { images += 1 }
     }
 }

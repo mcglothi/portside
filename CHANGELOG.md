@@ -21,6 +21,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Emoji in window titles no longer depend on how the bytes arrived.** If a read from the host happened to end partway through an emoji in a title (or any other escape-sequence text), the terminal took the rest for a control code, garbling the title or moving the cursor. Portside now passes the whole character through together.
 
+**Inline images are limited to 4096 pixels a side.** An iTerm2 inline image (`imgcat`) was drawn at whatever size it said it was, so a small file claiming a huge size could make Portside use gigabytes of memory. Portside now reads the size from the image's header as it arrives, and shows PNG, GIF and JPEG images up to 4096 × 4096, the same limit SwiftTerm already puts on requested sizes and Portside puts on Sixel. Larger images and other formats aren't shown. Kitty images aren't affected yet.
+
 ## 0.35.0
 
 **Security: a remote program can no longer read your clipboard.** Any program on a host you were connected to — or a file you `cat`, or a log you `tail` — could print a short escape sequence (OSC 52 with `?`) and Portside answered by typing your Mac's clipboard back to it, base64-encoded. That's where a password manager leaves a password you just copied. Portside now never answers a clipboard read. Programs can still *copy* to your clipboard the usual way (tmux, vim and neovim over ssh), up to 1 MB.
