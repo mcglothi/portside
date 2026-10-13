@@ -20,6 +20,9 @@ struct HostOutlineView: NSViewRepresentable {
     /// match expand automatically so matches aren't hidden behind a manual
     /// disclosure triangle.
     var matches: SidebarMatches? = nil
+    /// Every matched host, flat, for the Results section pinned above the
+    /// tree (#56). Nil when there's no filter; empty shows "No matches".
+    var results: [SidebarResult]? = nil
     /// Bumped by the filter field's first arrow-key press to hand keyboard
     /// focus to the outline, so subsequent arrow keys navigate rows natively
     /// (NSOutlineView already handles that once it's first responder) instead
@@ -204,28 +207,36 @@ struct HostOutlineView: NSViewRepresentable {
 
         // MARK: Tree building
 
-        /// The user's own tree first, then each subscribed source as a root of
-        /// its own — below, so "my hosts" stay where they always were.
-        private static func rootNodes(_ tree: SidebarTree) -> [SidebarNode] {
-            tree.folders.map(SidebarNode.folder)
+        /// While filtering, the Results section first — every match in one
+        /// place, not wherever it sits in a long dimmed tree. Then the user's
+        /// own tree, then each subscribed source as a root of its own — below,
+        /// so "my hosts" stay where they always were.
+        private static func rootNodes(_ tree: SidebarTree, results: [SidebarResult]?) -> [SidebarNode] {
+            (results.map { [SidebarNode.results($0)] } ?? [])
+                + tree.folders.map(SidebarNode.folder)
                 + tree.rootGroups.map(SidebarNode.group)
                 + tree.root.map(SidebarNode.entry)
                 + tree.sources.map(SidebarNode.folder)
         }
 
+        private static func signature(_ tree: SidebarTree, results: [SidebarResult]?) -> String {
+            guard let results else { return tree.signature }
+            return tree.signature + "|results:" + results.map { "\($0.entry.id)\($0.location)" }.joined(separator: ",")
+        }
+
         func rebuild(from tree: SidebarTree) {
-            roots = Self.rootNodes(tree)
-            lastSignature = tree.signature
+            roots = Self.rootNodes(tree, results: parent.results)
+            lastSignature = Self.signature(tree, results: parent.results)
             outline?.reloadData()
             expandAfterReload()
         }
 
         /// Reload only when the tree actually changed; always reconcile selection.
         func sync(tree: SidebarTree, selection: Set<UUID>) {
-            let signature = tree.signature
+            let signature = Self.signature(tree, results: parent.results)
             if signature != lastSignature {
                 let previouslyExpanded = expandedPaths
-                roots = Self.rootNodes(tree)
+                roots = Self.rootNodes(tree, results: parent.results)
                 lastSignature = signature
                 outline?.reloadData()
                 expandedPaths = previouslyExpanded
@@ -240,6 +251,7 @@ struct HostOutlineView: NSViewRepresentable {
             guard let outline else { return }
             if let matches = parent.matches {
                 isAutoExpanding = true
+                for node in roots where node.isResults { outline.expandItem(node) }
                 func apply(_ nodes: [SidebarNode]) {
                     for node in nodes {
                         guard let path = node.folderPath else { continue }
@@ -277,11 +289,12 @@ struct HostOutlineView: NSViewRepresentable {
         }
 
         private func isDimmed(_ node: SidebarNode) -> Bool {
-            guard let matches = parent.matches else { return false }
+            guard let matches = parent.matches, !node.isResults, node.resultLocation == nil else { return false }
             switch node.kind {
             case .folder(let folder): return !matches.folders.contains(folder.path)
             case .entry(let entry): return !matches.ids.contains(entry.id)
             case .group(let group): return !matches.ids.contains(group.id)
+            case .results: return false
             }
         }
 
@@ -300,6 +313,12 @@ struct HostOutlineView: NSViewRepresentable {
 
         private func applySelection(_ selection: Set<UUID>) {
             guard let outline else { return }
+            // A host can be on screen twice while filtering — in Results and
+            // in the tree. Whichever copy the user picked stays picked.
+            let selectedIDs = Set(outline.selectedRowIndexes.compactMap {
+                (outline.item(atRow: $0) as? SidebarNode)?.entryID
+            })
+            if selectedIDs == selection { return }
             var rows = IndexSet(selection.compactMap { id in
                 let row = outline.row(forItem: nodesByEntryID[id])
                 return row >= 0 ? row : nil
@@ -324,7 +343,9 @@ struct HostOutlineView: NSViewRepresentable {
             var map: [UUID: SidebarNode] = [:]
             func walk(_ nodes: [SidebarNode]) {
                 for node in nodes {
-                    if case .entry(let entry) = node.kind { map[entry.id] = node }
+                    // First wins, and Results come first: selecting a match
+                    // from the filter field lands on its Results row.
+                    if case .entry(let entry) = node.kind, map[entry.id] == nil { map[entry.id] = node }
                     walk(node.children)
                 }
             }
@@ -348,7 +369,8 @@ struct HostOutlineView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-            (item as? SidebarNode)?.isFolder ?? false
+            guard let node = item as? SidebarNode else { return false }
+            return node.isFolder || node.isResults
         }
 
         // MARK: NSOutlineViewDelegate
@@ -524,6 +546,9 @@ struct HostOutlineView: NSViewRepresentable {
             let node = item as? SidebarNode
             // A source is read-only; nothing of the user's can be filed in it.
             if let node, node.isSharedRow(in: parent.store) { return [] }
+            // Results is a view of matches, not a place: dropping there would
+            // file hosts into whichever folder the row under the pointer is in.
+            if let node, node.isResults || node.resultLocation != nil { return [] }
             if let node, node.isFolder {
                 outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .move
@@ -600,6 +625,7 @@ struct HostOutlineView: NSViewRepresentable {
             case .entry(let entry): buildEntryMenu(menu, clicked: entry)
             case .folder(let folder): buildFolderMenu(menu, folder: folder)
             case .group(let group): buildGroupMenu(menu, group: group)
+            case .results: break
             }
         }
 
@@ -1000,14 +1026,29 @@ final class SidebarNode {
         case folder(FolderNode)
         case entry(SessionEntry)
         case group(SessionGroup)
+        /// The Results heading while filtering, with how many it holds.
+        case results(count: Int)
     }
     let kind: Kind
     let children: [SidebarNode]
+    /// Set on a host listed under Results: where it lives in the tree.
+    let resultLocation: String?
 
-    private init(kind: Kind, children: [SidebarNode]) {
+    private init(kind: Kind, children: [SidebarNode], resultLocation: String? = nil) {
         self.kind = kind
         self.children = children
+        self.resultLocation = resultLocation
     }
+
+    /// Results rows are ordinary host rows — so connecting, Return, the
+    /// context menu and dragging all work on them — that also say where the
+    /// host lives.
+    static func results(_ results: [SidebarResult]) -> SidebarNode {
+        SidebarNode(kind: .results(count: results.count),
+                    children: results.map { SidebarNode(kind: .entry($0.entry), children: [], resultLocation: $0.location) })
+    }
+
+    var isResults: Bool { if case .results = kind { return true }; return false }
 
     static func folder(_ node: FolderNode) -> SidebarNode {
         // Groups first: a group opens several of the hosts below it, so it
@@ -1037,7 +1078,7 @@ final class SidebarNode {
         switch kind {
         case .folder(let folder): return folder.isShared
         case .entry(let entry): return store.isShared(entry.id)
-        case .group: return false
+        case .group, .results: return false
         }
     }
 }
@@ -1147,11 +1188,19 @@ private struct SidebarRowLabel: View {
             case .entry(let entry): entryRow(entry)
             case .folder(let folder): folderRow(folder)
             case .group(let group): groupRow(group)
+            case .results(let count): resultsHeader(count)
             case .none: EmptyView()
             }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 4)
+        // Results read as one tinted block — the same accent as the filter
+        // field — so it's plain these are the hits.
+        .background {
+            if isInResults && !model.emphasized {
+                RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.12))
+            }
+        }
         // A selected row stays legible even when it doesn't match.
         .opacity(model.dimmed && !model.emphasized ? 0.35 : 1)
         // Never let a row be compressed below the height its text needs. The
@@ -1174,15 +1223,34 @@ private struct SidebarRowLabel: View {
     private var primary: Color { model.emphasized ? .white : .primary }
     private var secondary: Color { model.emphasized ? .white.opacity(0.85) : .secondary }
 
+    private var isInResults: Bool {
+        guard let node = model.node else { return false }
+        return node.isResults || node.resultLocation != nil
+    }
+
+    private func resultsHeader(_ count: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.tint)
+            Text(count == 0 ? "No matches" : "Results").font(.body.weight(.semibold))
+            Spacer(minLength: 4)
+            if count > 0 {
+                Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.tint)
+            }
+        }
+    }
+
     private func entryRow(_ entry: SessionEntry) -> some View {
-        HStack(spacing: 8) {
+        // Under Results, where the host lives comes first: two hosts in
+        // different folders can share a name.
+        let subtitle = model.node?.resultLocation.map { "\($0)  \u{00B7}  \(entry.subtitle)" } ?? entry.subtitle
+        return HStack(spacing: 8) {
             Image(systemName: entry.icon).foregroundStyle(model.emphasized ? .white : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 MarqueeText(text: entry.name, font: .body, color: primary, isActive: hoveringEntry)
-                MarqueeText(text: entry.subtitle, font: .caption, color: secondary, isActive: hoveringEntry)
+                MarqueeText(text: subtitle, font: .caption, color: secondary, isActive: hoveringEntry)
             }
             .layoutPriority(1)
-            .help("\(entry.name)\n\(entry.subtitle)")
+            .help("\(entry.name)\n\(subtitle)")
             Spacer(minLength: 4)
             // Fixed at their own size: the text beside them is the thing that
             // gives way on a narrow sidebar, never the badges.
@@ -1424,6 +1492,30 @@ struct MarqueeText: View {
             Color.black
             LinearGradient(colors: [.black, hiddenRight ? .clear : .black], startPoint: .leading, endPoint: .trailing)
                 .frame(width: edge)
+        }
+    }
+}
+
+/// A matched host for the Results section, with where it lives: its folder
+/// path, prefixed by the shared inventory's name for a shared host.
+struct SidebarResult: Equatable {
+    var entry: SessionEntry
+    var location: String
+
+    /// Sorted by name, then location — the order the section lists them in,
+    /// and the one the filter field's arrow keys step through.
+    static func build(matches: SidebarMatches, own: [SessionEntry],
+                      shared: [(sourceName: String, entries: [SessionEntry])]) -> [SidebarResult] {
+        var out = own.filter { matches.ids.contains($0.id) }
+            .map { SidebarResult(entry: $0, location: $0.folder.isEmpty ? "Top level" : $0.folder) }
+        for source in shared {
+            out += source.entries.filter { matches.ids.contains($0.id) }.map {
+                SidebarResult(entry: $0, location: $0.folder.isEmpty ? source.sourceName : "\(source.sourceName)/\($0.folder)")
+            }
+        }
+        return out.sorted {
+            let byName = $0.entry.name.localizedStandardCompare($1.entry.name)
+            return byName == .orderedSame ? $0.location < $1.location : byName == .orderedAscending
         }
     }
 }

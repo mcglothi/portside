@@ -127,6 +127,15 @@ struct SidebarView: View {
         return result
     }
 
+    /// Every matched host, flat and sorted, for the Results section above
+    /// the tree; nil without a filter.
+    private func searchResults(_ matches: SidebarMatches?) -> [SidebarResult]? {
+        guard let matches else { return nil }
+        return SidebarResult.build(
+            matches: matches, own: store.entries,
+            shared: store.activeInventorySources.map { ($0.name, store.sharedEntries(inSource: $0.id)) })
+    }
+
     private var savedFilters: [String] {
         savedFiltersRaw.split(separator: "\n").map(String.init)
     }
@@ -422,6 +431,7 @@ struct SidebarView: View {
     private var hostsList: some View {
         let tree = hostsTree
         let matches = searchMatches
+        let results = searchResults(matches)
         let invalidPatterns = HostQuery(filter).invalidPatterns
         let completions = filterCompletions
         // The hosts list is an NSOutlineView (HostOutlineView) so selection and
@@ -434,6 +444,17 @@ struct SidebarView: View {
                     .font(.caption)
                 TextField("Filter hosts  (env:prod, kind:k8s\u{2026})", text: $filter)
                     .textFieldStyle(.plain)
+                    // One match: Return connects to it. More: Return goes to
+                    // the first, as the down arrow does.
+                    .onSubmit {
+                        guard let results, !results.isEmpty else { return }
+                        if results.count == 1 { connect(results[0].entry) }
+                        else { moveFocusToResults(selectFirst: true) }
+                    }
+                    .onChange(of: results?.map(\.entry.id)) { _, ids in
+                        // A lone match is selected, so it's one keypress away.
+                        if let ids, ids.count == 1 { selection = [ids[0]] }
+                    }
                     .onKeyPress(.downArrow) {
                         guard !filter.isEmpty else { return .ignored }
                         moveFocusToResults(selectFirst: true)
@@ -511,6 +532,7 @@ struct SidebarView: View {
                 selection: $selection,
                 store: store,
                 matches: matches,
+                results: results,
                 focusRequest: sidebarFocusRequest,
                 expandAllRequest: expandAllRequest,
                 collapseAllRequest: collapseAllRequest,
@@ -664,29 +686,15 @@ struct SidebarView: View {
     /// to the host list so further arrow keys navigate it directly (native
     /// NSOutlineView row navigation once it's first responder).
     private func moveFocusToResults(selectFirst: Bool) {
-        guard let matches = searchMatches else { return }
-        let ids = flattenedEntryIDs(from: hostsTree).filter { matches.ids.contains($0) }
-        guard !ids.isEmpty else { return }
-        if selection.isEmpty {
-            selection = [selectFirst ? ids.first! : ids.last!]
-        }
+        // The Results section's order: it's at the top, so that's where the
+        // first arrow press goes.
+        guard let ids = searchResults(searchMatches)?.map(\.entry.id), !ids.isEmpty else { return }
+        // Down and Return start at the first result, Up at the last —
+        // whatever was selected before. (A lone match is both.)
+        selection = [selectFirst ? ids.first! : ids.last!]
         sidebarFocusRequest += 1
     }
 
-    /// Entry ids in the same depth-first order `HostOutlineView` renders them
-    /// (folders then their entries, root entries last). Matching ones are all
-    /// visible while searching, since folders holding a match auto-expand.
-    private func flattenedEntryIDs(from tree: SidebarTree) -> [UUID] {
-        var ids: [UUID] = []
-        func walk(_ nodes: [SidebarNode]) {
-            for node in nodes {
-                if let id = node.entryID { ids.append(id) }
-                walk(node.children)
-            }
-        }
-        walk(tree.folders.map(SidebarNode.folder) + tree.root.map(SidebarNode.entry))
-        return ids
-    }
 
     /// Opens every currently selected host (in sidebar order).
     private func openSelected(multiExec: Bool) {
