@@ -249,14 +249,16 @@ final class TerminalImageGuardTests: XCTestCase {
     /// title and the same screen as all at once. Unguarded, a read starting
     /// on the emoji's second byte was taken for a C1 control.
     func testAnEmojiTitleSurvivesAnySplit() {
-        let bytes = Array("\u{1b}]0;\u{1F680} deploy \u{1F467}\u{07}after".utf8)
+        // Ü is C3 9C: its second byte is also C1 ST, which mustn't end the
+        // title before the emoji after it.
+        let bytes = Array("\u{1b}]0;\u{DC} \u{1F680} deploy \u{1F467}\u{07}after".utf8)
         let whole = guarded(bytes)
         for split in 1..<bytes.count {
             var filter = TerminalImageGuard()
             let h = TerminalHarness()
             h.feed(Array(filter.filtered(bytes[..<split])))
             h.feed(Array(filter.filtered(bytes[split...])))
-            XCTAssertEqual(h.titles.last, "\u{1F680} deploy \u{1F467}", "split at \(split)")
+            XCTAssertEqual(h.titles.last, "\u{DC} \u{1F680} deploy \u{1F467}", "split at \(split)")
             XCTAssertEqual(h.screen, whole.screen, "split at \(split)")
             XCTAssertEqual(h.cursor.x, whole.cursor.x, "split at \(split)")
         }
