@@ -181,6 +181,14 @@ is a PR like any other, so it runs them all before it can merge, and
   bytes to the real parser, split at every chunk size, with each rule
   falsified by removing it.
 
+- **Seeded fuzzing** (`TerminalFuzzTests`): 400 streams built from a
+  grammar of real sequences, mangled and cut, fed through the same guard
+  the app uses. Properties: read boundaries don't change the screen,
+  nothing crashes, and nothing swallows what comes after. On its first run
+  it found a crash (a malformed status request) and a read-boundary bug (a
+  UTF-8 character split inside an OSC), both now handled in
+  `TerminalImageGuard`.
+
 Still to cover: the rest of vttest (character sets, double-size characters,
 terminal reports, VT52, the VT220/xterm menu), ncurses beyond tmux, iTerm2 inline images
 (decoded by `NSImage`, so an image claiming huge dimensions is the case to

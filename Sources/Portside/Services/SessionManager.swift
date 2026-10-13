@@ -324,8 +324,9 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         }
         // The one exception, and only for the terminal: image sequences may not
         // read files on the Mac or crash the decoder (see
-        // `TerminalImageGuard`). Same length, so nothing that counts
-        // bytes moves.
+        // `TerminalImageGuard`). Same bytes in the same order apart from
+        // rewritten ones, though a split UTF-8 character in an OSC can wait
+        // for the next read; the log above counts what arrived.
         let forTerminal = imageGuard.filtered(slice)
         onTerminalBytes?(forTerminal)
         super.dataReceived(slice: forTerminal)

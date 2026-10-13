@@ -227,4 +227,53 @@ final class TerminalImageGuardTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: logger.fileURL), try Data(contentsOf: control.fileURL),
                        "the log records the bytes as they arrived")
     }
+
+    /// A status request (DECRQSS) carrying a non-ASCII byte crashed SwiftTerm.
+    /// Every byte value, through the guard: if one still crashes, the test
+    /// run dies here.
+    func testAStatusRequestWithAnyByteDoesNotCrash() {
+        for byte in UInt8(0x80)...UInt8(0xFF) {
+            for chunk in [1, .max] {
+                let bytes = Array("\u{1b}P$q".utf8) + [byte] + Array("m\u{1b}\\".utf8)
+                _ = guarded(bytes, chunk: chunk)
+            }
+        }
+    }
+
+    func testAnOrdinaryStatusRequestStillGetsItsReply() {
+        let reply = String(decoding: guarded(Array("\u{1b}P$qm\u{1b}\\".utf8)).replies, as: UTF8.self)
+        XCTAssertTrue(reply.contains("$r"), reply.debugDescription)
+    }
+
+    /// An emoji in a window title, split at every possible byte: the same
+    /// title and the same screen as all at once. Unguarded, a read starting
+    /// on the emoji's second byte was taken for a C1 control.
+    func testAnEmojiTitleSurvivesAnySplit() {
+        let bytes = Array("\u{1b}]0;\u{1F680} deploy \u{1F467}\u{07}after".utf8)
+        let whole = guarded(bytes)
+        for split in 1..<bytes.count {
+            var filter = TerminalImageGuard()
+            let h = TerminalHarness()
+            h.feed(Array(filter.filtered(bytes[..<split])))
+            h.feed(Array(filter.filtered(bytes[split...])))
+            XCTAssertEqual(h.titles.last, "\u{1F680} deploy \u{1F467}", "split at \(split)")
+            XCTAssertEqual(h.screen, whole.screen, "split at \(split)")
+            XCTAssertEqual(h.cursor.x, whole.cursor.x, "split at \(split)")
+        }
+    }
+
+    /// Held bytes are only ever delayed: everything fed comes out, in order.
+    func testNothingIsLostOrReordered() {
+        let bytes = Array("x\u{1b}]0;\u{65E5}\u{672C}\u{1F680}\u{07}y\u{1b}_Ga=q;\u{00E9}\u{1b}\\z".utf8)
+        for size in 1...7 {
+            var filter = TerminalImageGuard()
+            var out: [UInt8] = []
+            var i = 0
+            while i < bytes.count {
+                out += filter.filtered(bytes[i..<min(i + size, bytes.count)])
+                i += size
+            }
+            XCTAssertEqual(out, bytes, "chunks of \(size)")
+        }
+    }
 }

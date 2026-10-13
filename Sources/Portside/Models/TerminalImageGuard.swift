@@ -27,8 +27,9 @@ import Foundation
 /// terminator, becomes NUL, which the decoder skips: the image is cropped
 /// rather than refused.
 ///
-/// Both rewrite bytes in place, so the length never changes and nothing that
-/// counts bytes moves.
+/// Both rewrite bytes in place, so the total length never changes; the only
+/// other thing it does is hold back a UTF-8 character a read split inside an
+/// OSC or APC until the next read (see `filtered`).
 ///
 /// Errs towards rewriting. It tracks SwiftTerm's parser loosely — "an APC
 /// (or DCS) might be open" from its introducer until a byte that ends one —
@@ -62,20 +63,67 @@ struct TerminalImageGuard {
         case dcsEntry
         case sixel(Sixel)
         case otherDCS
+        /// Inside an OSC (`ESC ]`): titles, OSC 7, OSC 8, OSC 133 and the
+        /// like. Tracked for UTF-8 split across reads (see `filtered`).
+        case osc
     }
+
+    /// Bytes held back from the end of the last read: the start of a UTF-8
+    /// character that a read split, inside an OSC or APC.
+    private var held: [UInt8] = []
 
     private var state = State.ground
 
     /// The filtered bytes, or `slice` itself when nothing needed changing.
+    ///
+    /// One thing besides rewriting: inside an OSC or APC, a UTF-8 character
+    /// that a read cut in two is held back and sent with the next read.
+    /// SwiftTerm reads a continuation byte that *starts* a read there as a C1
+    /// control rather than as text, so an emoji in a window title came out
+    /// differently depending on where the pty's reads happened to split — a
+    /// garbled title, a moved cursor. Nothing is changed or dropped; at most
+    /// three bytes wait for the next read, which an OSC still in progress
+    /// will send.
     mutating func filtered(_ slice: ArraySlice<UInt8>) -> ArraySlice<UInt8> {
+        var input = slice
+        if !held.isEmpty {
+            input = (held + slice)[...]
+            held = []
+        }
         var copy: [UInt8]?
-        for i in slice.indices {
-            if let rewritten = consume(slice[i]) {
-                if copy == nil { copy = Array(slice) }
-                copy![i - slice.startIndex] = rewritten
+        var end = input.endIndex
+        for i in input.indices {
+            if inString, let need = Self.utf8Length(input[i]), input.endIndex - i < need,
+               input[(i + 1)...].allSatisfy({ $0 & 0xC0 == 0x80 }) {
+                held = Array(input[i...])
+                end = i
+                break
+            }
+            if let rewritten = consume(input[i]) {
+                if copy == nil { copy = Array(input) }
+                copy![i - input.startIndex] = rewritten
             }
         }
-        return copy.map { $0[...] } ?? slice
+        if let copy { return copy[..<(end - input.startIndex)] }
+        return input[..<end]
+    }
+
+    private var inString: Bool {
+        switch state {
+        case .osc, .apc: return true
+        default: return false
+        }
+    }
+
+    /// Bytes in the UTF-8 character `lead` starts, or nil if it doesn't
+    /// start one of two or more.
+    private static func utf8Length(_ lead: UInt8) -> Int? {
+        switch lead {
+        case 0xC2...0xDF: return 2
+        case 0xE0...0xEF: return 3
+        case 0xF0...0xF4: return 4
+        default: return nil
+        }
     }
 
     /// Advances over one byte; returns its replacement when it must change.
@@ -84,14 +132,17 @@ struct TerminalImageGuard {
         case 0x1B:                          // ESC: ends a sequence, may start one
             state = .escape
             return nil
-        case 0x07:                          // BEL ends an APC; a DCS stores it
-            if case .apc = state { state = .ground }
+        case 0x07:                          // BEL ends an APC or OSC; a DCS stores it
+            if inString { state = .ground }
             return nil
         case 0x18, 0x1A, 0x9C:              // CAN, SUB, ST
             state = .ground
             return nil
         case 0x9F:                          // C1 APC
             state = .apc(previous: 0, key: .none)
+            return nil
+        case 0x9D:                          // C1 OSC
+            state = .osc
             return nil
         case 0x90:                          // C1 DCS
             state = .dcsEntry
@@ -101,7 +152,7 @@ struct TerminalImageGuard {
         }
 
         switch state {
-        case .ground, .otherDCS:
+        case .ground, .otherDCS, .osc:
             return nil
 
         case .escape:
@@ -111,6 +162,7 @@ struct TerminalImageGuard {
             switch byte {
             case UInt8(ascii: "_"): state = .apc(previous: 0, key: .none)
             case UInt8(ascii: "P"): state = .dcsEntry
+            case UInt8(ascii: "]"): state = .osc
             default: state = .ground
             }
             return nil
@@ -156,6 +208,10 @@ private extension TerminalImageGuard.Sixel {
     /// doubt upwards.
     mutating func consume(_ byte: UInt8) -> UInt8? {
         if cropped { return 0 }
+        // The same DCS final carries a status request (DECRQSS, `$q`), whose
+        // handler reads its text as ASCII and crashed on anything else. Nothing
+        // legitimate in either is non-ASCII, so it becomes NUL, which both skip.
+        if byte >= 0xA0 { return 0 }
         // Only printable ASCII is certainly stored and certainly not a digit.
         // C0 controls are stored but DEL is dropped, and C1 or UTF-8 bytes
         // may leave the sequence; none of them is trusted to end a number.
