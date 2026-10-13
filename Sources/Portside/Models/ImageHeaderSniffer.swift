@@ -23,6 +23,13 @@ struct ImageHeaderSniffer {
     static let jpegScanLimit = 1 << 20
 
     private(set) var verdict = Verdict.undecided
+
+    /// A sniffer that has already refused.
+    static var refused: ImageHeaderSniffer {
+        var s = ImageHeaderSniffer()
+        s.verdict = .refuse
+        return s
+    }
     private var header: [UInt8] = []
     private var count = 0
     private var jpeg = JPEGWalk()
@@ -112,9 +119,16 @@ struct ImageHeaderSniffer {
 struct StreamingBase64 {
     private var bits: UInt32 = 0
     private var bitCount = 0
-    /// Set at `=` or any character outside the alphabet: SwiftTerm's decoder
-    /// refuses such a payload whole, so nothing after it matters.
+    /// Set at `=`, or at any character outside the alphabet when those
+    /// aren't skipped: a strict decoder refuses such a payload whole, so
+    /// nothing after it matters.
     private(set) var ended = false
+    /// Kitty's payload is decoded ignoring characters outside the alphabet,
+    /// so they're skipped here too — otherwise one stray byte would end the
+    /// check while SwiftTerm went on decoding. iTerm2's decode is strict.
+    var skipsUnknown = false
+
+    init(skipsUnknown: Bool = false) { self.skipsUnknown = skipsUnknown }
 
     /// The byte this character completes, if any.
     mutating func feed(_ c: UInt8) -> UInt8? {
@@ -126,8 +140,11 @@ struct StreamingBase64 {
         case UInt8(ascii: "0")...UInt8(ascii: "9"): value = UInt32(c - UInt8(ascii: "0")) + 52
         case UInt8(ascii: "+"): value = 62
         case UInt8(ascii: "/"): value = 63
-        default:
+        case UInt8(ascii: "="):
             ended = true
+            return nil
+        default:
+            if !skipsUnknown { ended = true }
             return nil
         }
         bits = (bits << 6) | value
