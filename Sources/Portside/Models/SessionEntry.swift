@@ -357,7 +357,10 @@ struct SessionEntry: Identifiable, Hashable {
         case true?:
             // No XAuthLocation: macOS's ssh already looks for xauth where
             // XQuartz installs it (/opt/X11/bin), PATH or not.
-            args.append(forwardX11Untrusted ? "-X" : "-Y")
+            // `-X` alone leaves trust to ~/.ssh/config, where
+            // `ForwardX11Trusted yes` would make "untrusted" trusted after all;
+            // `-Y` already overrides it the other way.
+            args += forwardX11Untrusted ? ["-X", "-o", "ForwardX11Trusted=no"] : ["-Y"]
         case false?:
             args.append("-x")
         case nil:
