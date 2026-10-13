@@ -1649,6 +1649,19 @@ final class SessionManager: ObservableObject {
         add(makeLocalShellSession())
     }
 
+    /// Opens a tab running one local command — a `brew install`, say —
+    /// where the person can watch it and answer any password prompt itself.
+    @discardableResult
+    func runLocalCommand(title: String, executable: String, args: [String]) -> TerminalSession {
+        let logger = LogManager.makeLogger(hostKey: "local", title: title,
+                                           subtitle: ([executable] + args).joined(separator: " "),
+                                           settings: loggingSettings)
+        let session = TerminalSession(title: title, executable: executable, args: args,
+                                      appearance: appearance, logger: logger)
+        add(session)
+        return session
+    }
+
     /// Opens a local shell into an existing (start-page) tab instead of
     /// opening a new one — the welcome screen's "New Local Shell" button.
     func openLocalShell(replacing tab: Tab) {

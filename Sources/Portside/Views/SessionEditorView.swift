@@ -239,11 +239,8 @@ struct SessionEditorView: View {
                 Text("On (trusted, -Y)").tag(SessionEntry.X11Mode.trusted)
                 Text("On (untrusted, -X)").tag(SessionEntry.X11Mode.untrusted)
             }
-            if draft.forwardX11 == true, let problem = X11Support.problem(X11Support.status()) {
-                Text(problem)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
+            if draft.forwardX11 == true {
+                X11StatusRow()
             }
             TextField("Keepalive (seconds)", text: keepAliveBinding, prompt: Text("ssh config — e.g. 30"))
             Text("Keepalive probes the link so a dead connection or tunnel ends instead of hanging. Agent forwarding lets the host use your local keys — only turn it on for hosts you trust. X11 needs XQuartz. Trusted X11 is what most X apps need, but it lets the host see every X window on this Mac, keystrokes included; untrusted is safer for hosts you don\u{2019}t fully trust, and some apps fail under it. None of these apply to mosh sessions.")
@@ -582,5 +579,74 @@ struct MacroEditorView: View {
         }
         .padding(20)
         .frame(width: 440)
+    }
+}
+
+/// Whether this Mac can show the host's X windows, with the fix one click
+/// away: install XQuartz (#57), or start it. Rechecked every couple of
+/// seconds, so an install finishing or XQuartz starting turns it green where
+/// the problem was shown.
+private struct X11StatusRow: View {
+    @EnvironmentObject private var sessions: SessionManager
+    @State private var working: String?
+    @State private var fallback: String?
+    /// The Homebrew tab, watched so a brew that stops without installing
+    /// doesn't leave "Installing…" up and the button disabled for good.
+    @State private var brewTab: TerminalSession?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { _ in
+            let status = X11Support.status()
+            let brewEnded = brewTab.map { !$0.isRunning } ?? false
+            let busy = working != nil && !brewEnded
+            VStack(alignment: .leading, spacing: 6) {
+                if status == .ready {
+                    Label("X11 ready", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else if let problem = X11Support.problem(status) {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                    HStack {
+                        if status == .notInstalled {
+                            Button("Install XQuartz", action: install).disabled(busy)
+                        } else if status == .notRunning {
+                            Button("Start XQuartz") { XQuartzInstaller.start() }
+                        }
+                        if let working, busy, status == .notInstalled {
+                            Text(working).font(.caption).foregroundStyle(.secondary)
+                        } else if brewEnded, status == .notInstalled {
+                            Text("Homebrew didn\u{2019}t install it \u{2014} see its tab, then try again.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let fallback {
+                    Text(fallback).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func install() {
+        fallback = nil
+        if let brew = XQuartzInstaller.brew() {
+            brewTab = sessions.runLocalCommand(title: "Install XQuartz", executable: XQuartzInstaller.shell,
+                                               args: ["-c", XQuartzInstaller.brewCommand(brew: brew)])
+            working = "Installing in a new tab…"
+            return
+        }
+        Task { @MainActor in
+            let outcome = await XQuartzInstaller.installPackage { working = $0 }
+            working = nil
+            switch outcome {
+            case .openedInstaller(let version):
+                fallback = "Installer is open with \(version). Finish it there; this turns green when XQuartz is running."
+            case .openedWebsite(let reason):
+                fallback = "Opened xquartz.org instead: \(reason)."
+            }
+        }
     }
 }
