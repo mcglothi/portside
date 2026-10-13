@@ -128,8 +128,9 @@ struct TerminalImageGuard {
     /// own parser, never a control.
     private mutating func stringContent(_ byte: UInt8) -> UInt8? {
         switch state {
-        case .osc:
-            return nil
+        case .osc(var image):
+            defer { state = .osc(image) }
+            return image.consume(byte)
         case .apc:
             state = .apc(previous: byte, key: .none)
             return nil

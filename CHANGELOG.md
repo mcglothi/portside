@@ -21,7 +21,7 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 **Emoji in window titles no longer depend on how the bytes arrived.** If a read from the host happened to end partway through an emoji in a title (or any other escape-sequence text), the terminal took the rest for a control code, garbling the title or moving the cursor. Portside now passes the whole character through together.
 
-**Inline images are limited to 4096 pixels a side.** An iTerm2 inline image (`imgcat`) was drawn at whatever size it said it was, so a small file claiming a huge size could make Portside use gigabytes of memory. Portside now reads the size from the image's header as it arrives, and shows PNG, GIF and JPEG images up to 4096 × 4096, the same limit SwiftTerm already puts on requested sizes and Portside puts on Sixel. Larger images and other formats aren't shown. Kitty images aren't affected yet.
+**Inline images are limited to 4096 pixels a side.** An iTerm2 inline image (`imgcat`) was drawn at whatever size it said it was, so a small file claiming a huge size could make Portside use gigabytes of memory. Portside now reads the size from the image's header as it arrives, and shows PNG and JPEG images up to 4096 × 4096, the same limit SwiftTerm already puts on requested sizes and Portside puts on Sixel. Larger images and other formats aren't shown, and that includes GIF for now, because each GIF frame carries its own size beyond the header. Kitty images aren't affected yet.
 
 ## 0.35.0
 

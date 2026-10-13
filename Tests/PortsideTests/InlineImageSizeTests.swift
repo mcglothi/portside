@@ -3,7 +3,7 @@ import XCTest
 @testable import Portside
 
 /// iTerm2 inline images are shown at their own size, so the guard checks the
-/// size in the image's header as it arrives: PNG, GIF and JPEG up to 4096
+/// size in the image's header as it arrives: PNG and JPEG up to 4096
 /// pixels a side are shown, anything else isn't.
 final class InlineImageSizeTests: XCTestCase {
     private func image(_ type: NSBitmapImageRep.FileType, width: Int, height: Int) -> Data {
@@ -35,7 +35,6 @@ final class InlineImageSizeTests: XCTestCase {
 
     func testOrdinaryImagesAreAllowed() {
         XCTAssertEqual(verdict(image(.png, width: 64, height: 48)), .allow)
-        XCTAssertEqual(verdict(image(.gif, width: 64, height: 48)), .allow)
         XCTAssertEqual(verdict(image(.jpeg, width: 64, height: 48)), .allow)
         XCTAssertEqual(verdict(image(.png, width: 4096, height: 1)), .allow, "the limit itself is fine")
     }
@@ -45,6 +44,8 @@ final class InlineImageSizeTests: XCTestCase {
         XCTAssertEqual(verdict(image(.jpeg, width: 1, height: 4097)), .refuse)
         XCTAssertEqual(verdict(image(.tiff, width: 8, height: 8)), .refuse)
         XCTAssertEqual(verdict(image(.bmp, width: 8, height: 8)), .refuse)
+        XCTAssertEqual(verdict(image(.gif, width: 8, height: 8)), .refuse,
+                       "a GIF's frames carry their own sizes past the header")
     }
 
     func testTheGuardShowsSmallImagesAndNotOthers() {

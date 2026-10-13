@@ -10,7 +10,7 @@ import Foundation
 /// Explicit size requests are already capped by SwiftTerm at about 4096
 /// pixels; this applies the same bound to the image itself.
 ///
-/// Allowed: PNG, GIF and JPEG, whose sizes sit in their headers, up to
+/// Allowed: PNG and JPEG, whose image sizes sit in their headers, up to
 /// `maxDimension` a side. Everything else is refused: `NSImage` decodes many
 /// more formats than anyone sends to a terminal, and each is more decoder
 /// surface reachable from a remote host.
@@ -47,10 +47,10 @@ struct ImageHeaderSniffer {
         if header.starts(with: [0x89, 0x50, 0x4E, 0x47]) {             // PNG: IHDR width, height
             guard header.count >= 24 else { return verdict }
             verdict = Self.within((Self.be32(header, 16), Self.be32(header, 20)))
-        } else if header.starts(with: Array("GIF8".utf8)) {             // GIF: logical screen
-            guard header.count >= 10 else { return verdict }
-            verdict = Self.within((Int(header[6]) | Int(header[7]) << 8, Int(header[8]) | Int(header[9]) << 8))
         } else {
+            // GIF included: its header gives only the canvas, and each frame
+            // carries its own size further in, so the first bytes can't
+            // bound it.
             verdict = .refuse
         }
         return verdict
