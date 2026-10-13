@@ -98,10 +98,12 @@ written by whatever build each member runs. An older build reads a newer
 team file fine and ignores the fields it doesn't know. If it **publishes**,
 it writes the file from what it knows, so those fields are gone for
 everyone. Its publish review can't warn about this, since it compares only
-the fields it knows. Until publishing preserves fields it doesn't
-recognise, members of a team should publish from the same release or a
-newer one. A field added to shared entries should say in the changelog that
-older publishers drop it.
+the fields it knows. Since 0.37, every published file records the release that wrote it
+(`writtenBy`), and Publish Changes refuses when the team's file came from a
+newer release than the one publishing, asking for an update instead.
+Releases before 0.37 don't check, so on a team still running them, anyone on
+an old build should update before publishing. A field added to shared entries
+should still say in the changelog that pre-0.37 publishers drop it.
 
 ## Checklist for a PR that touches a persisted type
 

@@ -1847,7 +1847,10 @@ final class SessionStore: ObservableObject {
 
     /// Fetches the team's latest and lines it up against the folder.
     @MainActor
-    func planPublish(sourceID: UUID) async -> Result<InventoryPublishing.Plan, InventoryGit.Failure> {
+    /// `appVersion`: this build's release, checked against the one that last
+    /// wrote the team's file (nil, for a development build, skips the check).
+    func planPublish(sourceID: UUID, appVersion: String? = AppVersion.current)
+        async -> Result<InventoryPublishing.Plan, InventoryGit.Failure> {
         guard let source = inventorySource(id: sourceID), let link = publishLink(forSource: sourceID) else {
             return .failure(.init(message: "That source has no linked folder."))
         }
@@ -1878,13 +1881,22 @@ final class SessionStore: ObservableObject {
         } else {
             theirs = SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
         }
+        // An older Portside writes only the fields it knows, so publishing
+        // from one would drop newer fields for the whole team, and its review
+        // couldn't show it: it doesn't know they exist.
+        if let mine = appVersion, let newer = theirs.writtenBy, AppVersion.isNewer(newer, than: mine) {
+            return .failure(.init(message: "\u{201C}\(source.name)\u{201D} was last published by Portside \(newer), "
+                + "newer than this one (\(mine)). Update Portside to publish to it \u{2014} an older version "
+                + "would drop anything it doesn\u{2019}t know about."))
+        }
         let base = storedBase(for: sourceID) ?? SharedManifest.Parsed(entries: [], folders: [], skipped: 0)
         let mine = InventoryPublishing.prepare(entries: entries, folders: folders, root: link.folder,
                                                manifestIDs: link.manifestIDs)
         return .success(InventoryPublishing.Plan(source: source, link: link,
                                                  base: base.entries, baseFolders: base.folders,
                                                  mine: mine, theirs: theirs.entries, theirFolders: theirs.folders,
-                                                 remoteBranchExists: exists, reviewedTip: tip))
+                                                 remoteBranchExists: exists, reviewedTip: tip,
+                                                 appVersion: appVersion))
     }
 
     /// Sends a planned publish.
@@ -1906,7 +1918,8 @@ final class SessionStore: ObservableObject {
             return .failure(.init(message: "Not published: \(secret.host) \u{2014} \(secret.text). Remove it and try again."))
         }
         guard let data = try? LibraryTransfer.encodeSessions(entries: merge.hosts, folders: merge.folders,
-                                                             credentialProfiles: []) else {
+                                                             credentialProfiles: [],
+                                                             writtenBy: plan.appVersion) else {
             return .failure(.init(message: "Couldn't write the manifest."))
         }
         let source = plan.source

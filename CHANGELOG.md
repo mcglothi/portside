@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**An older Portside can't publish over a newer one's shared inventory.** Each publish now records which Portside release wrote the team's file. If a teammate's Portside is older than the one that last published, Publish Changes asks them to update instead of publishing, because an older version writes only the fields it knows and would silently drop newer ones for everyone. Releases before this one don't check, so update everyone who publishes.
+
 ## 0.36.0
 
 **Security: a remote program can no longer probe files on your Mac or crash Portside with an image.** Two image protocols trusted the host on the other end. Kitty graphics lets a program name a *file* or shared-memory object for the terminal to load the image from, and SwiftTerm loaded it from the Mac: its replies told the remote program whether any path existed and how big the file was, and it would read up to 400 MB per request or delete a shared-memory object by name. Portside now answers those requests "unsupported", the same as a terminal without the feature, and images sent inline (what `kitten icat` falls back to over ssh) still display. Sixel images were decoded without limits: about 30 bytes could crash Portside with every session in it, and 20 bytes could make it allocate gigabytes and hang. Numbers in a sixel image are now capped, and images are cropped at 4096 × 4096 pixels. A third sequence, a malformed terminal status request, could also crash Portside, and is now made harmless the same way. Session logs still record the bytes exactly as they arrived.
