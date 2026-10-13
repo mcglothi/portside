@@ -689,11 +689,9 @@ struct SidebarView: View {
         // The Results section's order: it's at the top, so that's where the
         // first arrow press goes.
         guard let ids = searchResults(searchMatches)?.map(\.entry.id), !ids.isEmpty else { return }
-        // Keep a selection that's already among the results (the lone match
-        // picked for you, say); otherwise start at the first or last.
-        if selection.isDisjoint(with: ids) {
-            selection = [selectFirst ? ids.first! : ids.last!]
-        }
+        // Down and Return start at the first result, Up at the last —
+        // whatever was selected before. (A lone match is both.)
+        selection = [selectFirst ? ids.first! : ids.last!]
         sidebarFocusRequest += 1
     }
 
