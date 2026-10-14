@@ -70,6 +70,22 @@ final class KittyImageSizeTests: XCTestCase {
         XCTAssertFalse(accepted(send([("a=t,f=100,i=7", b64)])))
     }
 
+    /// A chunk that ends in padding before the header is complete (`iVA=` is
+    /// a PNG's first two bytes), with the rest of a larger PNG in the next
+    /// chunk. SwiftTerm joins the chunks and decodes once, and Foundation's
+    /// lenient decode stops at the first padding, so all it gets is those two
+    /// bytes: no image. Pinned so a SwiftTerm that decoded per chunk would
+    /// show up here.
+    func testPaddingInAnEarlyChunkDoesntLetALargerImageThrough() {
+        let big = image(.png, width: 4097, height: 1)
+        XCTAssertEqual(big.prefix(2).base64EncodedString(), "iVA=")
+        let rest = big.dropFirst(2).base64EncodedString()
+        XCTAssertFalse(accepted(send([("a=t,f=100,i=7,m=1", "iVA="), ("m=0", rest)])))
+        let small = image(.png, width: 32, height: 32)
+        XCTAssertFalse(accepted(send([("a=t,f=100,i=7,m=1", "iVA="), ("m=0", small.dropFirst(2).base64EncodedString())])),
+                       "not even a small one: the decode stops at the padding")
+    }
+
     func testACompressedPNGIsRefused() {
         XCTAssertFalse(accepted(send([("a=t,f=100,o=z,i=7", image(.png, width: 8, height: 8).base64EncodedString())])))
     }

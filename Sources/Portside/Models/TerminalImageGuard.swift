@@ -401,8 +401,18 @@ fileprivate struct KittyCommand {
                     checks[i].sniffer = ImageHeaderSniffer.refused
                     return Self.refusedPayload
                 }
-                guard checks[i].sniffer.verdict == .undecided, !checks[i].base64.ended,
-                      let decoded = checks[i].base64.feed(byte) else { continue }
+                guard checks[i].sniffer.verdict == .undecided, !checks[i].base64.ended else { continue }
+                guard let decoded = checks[i].base64.feed(byte) else {
+                    // Padding before the header is complete: SwiftTerm's
+                    // decode stops there today, so nothing larger can follow
+                    // — but if it ever decoded chunk by chunk, it could. So
+                    // it's a refusal, and the next payload byte says so.
+                    if checks[i].base64.ended {
+                        checks[i].sniffer = ImageHeaderSniffer.refused
+                        checks[i].poisonNext = true
+                    }
+                    continue
+                }
                 if checks[i].sniffer.feed(decoded) == .refuse { return Self.refusedPayload }
             }
             return nil
@@ -458,7 +468,8 @@ fileprivate struct KittyCommand {
 
     /// The command ended: anything still undecided carries over.
     func end(carry: inout Check?) {
-        if let open = checks.last(where: { !$0.decided && $0.sniffer.verdict != .refuse }) {
+        // Still undecided, or refused with the refusal not yet written.
+        if let open = checks.last(where: { $0.poisonNext || $0.sniffer.verdict == .undecided }) {
             carry = open
         }
     }
