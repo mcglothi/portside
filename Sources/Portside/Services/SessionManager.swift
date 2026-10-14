@@ -876,15 +876,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
                 DispatchQueue.main.async {
                     guard let self, self.isRunning else { return }
                     if let message {
-                        self.terminalView.showLocally( "\r\n[portside: \(message)]\r\n")
+                        self.terminalView.showLocally("\r\n[portside: \(message)]\r\n")
                     }
                     self.logger?.close()
                     self.isRunning = false
                 }
             }
-            terminalView.showLocally( "[connected to \(target.deviceName) at \(target.summary)]\r\n")
+            terminalView.showLocally("[connected to \(target.deviceName) at \(target.summary)]\r\n")
         } catch {
-            terminalView.showLocally( "portside: \(error.localizedDescription)\r\n")
+            terminalView.showLocally("portside: \(error.localizedDescription)\r\n")
             isRunning = false
         }
     }
@@ -915,14 +915,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
         }
         port.onConnected = { [weak self] in
             DispatchQueue.main.async {
-                self?.terminalView.showLocally( "[connected to \(target.host):\(target.port) via telnet]\r\n")
+                self?.terminalView.showLocally("[connected to \(target.host):\(target.port) via telnet]\r\n")
             }
         }
         port.onClosed = { [weak self] message in
             DispatchQueue.main.async {
                 guard let self, self.isRunning else { return }
                 if let message {
-                    self.terminalView.showLocally( "\r\n[portside: \(message)]\r\n")
+                    self.terminalView.showLocally("\r\n[portside: \(message)]\r\n")
                 }
                 self.logger?.close()
                 self.isRunning = false
@@ -1420,7 +1420,7 @@ final class SessionManager: ObservableObject {
             // ssh drops an X11 request silently when there's no DISPLAY, so
             // say why no windows will appear rather than leave it a mystery.
             if executable == SSHInvocation.executable, let notice = X11Support.connectNotice(for: entry) {
-                session.terminalView.showLocally( "[portside: \(notice)]\r\n")
+                session.terminalView.showLocally("[portside: \(notice)]\r\n")
             }
             return session
         }
