@@ -20,16 +20,46 @@ final class KittyImageSizeTests: XCTestCase {
         return sendBytes(bytes, chunk: chunk)
     }
 
-    private func sendBytes(_ bytes: [UInt8], chunk: Int = .max) -> String {
-        var filter = TerminalImageGuard()
-        let h = TerminalHarness()
-        var i = 0
-        while i < bytes.count {
-            let end = i + min(max(chunk, 1), bytes.count - i)
-            h.feed(Array(filter.filtered(bytes[i..<end])))
-            i = end
+    private func sendBytes(_ bytes: [UInt8], chunk: Int = .max,
+                           file: StaticString = #filePath, line: UInt = #line) -> String {
+        Self.watched("\(name), chunks of \(chunk)", file: file, line: line) {
+            var filter = TerminalImageGuard()
+            let h = TerminalHarness()
+            var i = 0
+            while i < bytes.count {
+                let end = i + min(max(chunk, 1), bytes.count - i)
+                h.feed(Array(filter.filtered(bytes[i..<end])))
+                i = end
+            }
+            return String(decoding: h.replies, as: UTF8.self)
+        } ?? ""
+    }
+
+    /// Runs `work` with a deadline. An image the guard should have refused
+    /// can leave SwiftTerm decoding for minutes; on CI that stalled the whole
+    /// run with nothing in the log. Past the deadline the test fails, named,
+    /// and the suite moves on (the stuck thread is left behind).
+    static func watched<T>(_ what: String, seconds: Int = 20,
+                           file: StaticString = #filePath, line: UInt = #line,
+                           _ work: @escaping () -> T) -> T? {
+        let box = WatchBox<T>()
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            box.value = work()
+            done.signal()
         }
-        return String(decoding: h.replies, as: UTF8.self)
+        guard done.wait(timeout: .now() + .seconds(seconds)) == .success else {
+            XCTFail("SwiftTerm didn't return within \(seconds)s: \(what)", file: file, line: line)
+            return nil
+        }
+        return box.value
+    }
+
+    override func setUp() {
+        super.setUp()
+        // stderr isn't buffered: if anything here stalls, the CI log says
+        // which test it was.
+        FileHandle.standardError.write(Data("KittyImageSizeTests: \(name)\n".utf8))
     }
 
     private func accepted(_ reply: String) -> Bool { reply.contains("i=7;OK") }
@@ -252,11 +282,20 @@ final class KittyImageSizeTests: XCTestCase {
                     }
                     var recovered = guardedPayload.filter { $0 != "=" }
                     recovered += String(repeating: "=", count: (4 - recovered.utf8.count % 4) % 4)
-                    let h = TerminalHarness()
-                    h.feed("\u{1b}_Gf=100,i=7;\(recovered)\u{1b}\\")
-                    XCTAssertFalse(accepted(String(decoding: h.replies, as: UTF8.self)))
+                    let reply = Self.watched("\(name), permissive decode") {
+                        let h = TerminalHarness()
+                        h.feed("\u{1b}_Gf=100,i=7;\(recovered)\u{1b}\\")
+                        return String(decoding: h.replies, as: UTF8.self)
+                    } ?? ""
+                    XCTAssertFalse(accepted(reply))
                 }
             }
         }
     }
+}
+
+/// Hands a result back from the watchdog's thread.
+private final class WatchBox<T>: @unchecked Sendable {
+    var value: T?
+    init() {}
 }
