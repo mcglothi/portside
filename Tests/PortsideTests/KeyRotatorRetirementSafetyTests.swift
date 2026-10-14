@@ -266,7 +266,7 @@ final class KeepKeyGuardTests: XCTestCase {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [script.path]
-        p.standardOutput = Pipe(); p.standardError = Pipe()
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try p.run(); p.waitUntilExit()
         return p.terminationStatus == 0
     }
@@ -334,7 +334,7 @@ final class KeepKeyGuardTests: XCTestCase {
         p.arguments = [script.path]
         p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         let err = Pipe()
-        p.standardOutput = Pipe(); p.standardError = err
+        p.standardOutput = FileHandle.nullDevice; p.standardError = err
         try p.run()
         let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
                              as: UTF8.self)
