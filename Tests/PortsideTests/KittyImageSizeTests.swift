@@ -303,12 +303,13 @@ final class KittyImageSizeTests: XCTestCase {
         // SwiftTerm makes of the result, the guard agrees with it, and an
         // oversized image is still refused.
         for c1: UInt8 in [0x9B, 0x9D, 0x90, 0x9F, 0x98, 0x9E, 0x9C] {
-            let interrupted = Array("\u{1b}_Gf=100,m=1;iVBO".utf8) + [c1] + Array("\u{1b}\\".utf8)
+            let interrupted: [UInt8] = Array("\u{1b}_Gf=100,m=1;iVBO".utf8) + [c1] + Array("\u{1b}\\".utf8)
             for payload in [small, large] {
-                let first = Array("\u{1b}_Gf=100,i=7,m=1;\(payload.prefix(4))\u{1b}\\".utf8)
-                let last = Array("\u{1b}_Gm=0;\(payload.dropFirst(4))\u{1b}\\".utf8)
-                for bytes in [interrupted + Array("\u{1b}_Gf=100,i=7;\(payload)\u{1b}\\".utf8),
-                              first + interrupted + last, first + [c1] + last] {
+                let first: [UInt8] = Array("\u{1b}_Gf=100,i=7,m=1;\(payload.prefix(4))\u{1b}\\".utf8)
+                let last: [UInt8] = Array("\u{1b}_Gm=0;\(payload.dropFirst(4))\u{1b}\\".utf8)
+                let whole: [UInt8] = Array("\u{1b}_Gf=100,i=7;\(payload)\u{1b}\\".utf8)
+                let streams: [[UInt8]] = [interrupted + whole, first + interrupted + last, first + [c1] + last]
+                for bytes in streams {
                     let guarded = accepted(sendBytes(bytes, chunk: 1))
                     if payload == small {
                         XCTAssertEqual(guarded, accepted(sendBytes(bytes, guarded: false)), "C1 \(c1)")
