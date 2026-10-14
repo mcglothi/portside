@@ -27,8 +27,29 @@ jobs:
         run: |
           git config --global user.name "Portside CI"
           git config --global user.email "ci@portside.invalid"
+      # Restores the last build for this toolchain and dependency set, so a
+      # run recompiles what changed instead of everything, dependencies
+      # (SwiftTerm and the rest) included. Keyed on the compiler, so a new
+      # Xcode on the runner image starts clean rather than mixing modules
+      # from two compilers. A PR can read main's cache; main's own runs keep
+      # it current.
+      - name: Toolchain fingerprint
+        id: toolchain
+        run: echo "hash=$(swift --version 2>&1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.resolved') }}-
+      # Under `script`, so the tests see a terminal and their output is line
+      # buffered. Piped, XCTest's output is block buffered: a run that hung
+      # showed a log ending somewhere before the test that was stuck, and
+      # three runs were spent guessing which. `script` passes the exit
+      # status through, so failures still fail the step.
       - name: Build and test
-        run: swift test
+        run: script -q /dev/null swift test < /dev/null
       # Per-file ratchet on the Swift 6 migration. The package is still on
       # swift-tools 5.9, so these are warnings rather than errors — the gate
       # is that the count must not grow while the migration is pending.
