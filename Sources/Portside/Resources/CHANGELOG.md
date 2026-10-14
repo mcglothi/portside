@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## Unreleased
+
+**Every Settings tab is visible.** The Settings window was too narrow for its eight tabs, so "Updates" was pushed into the toolbar's overflow menu, where it couldn't be chosen; reaching it meant dragging the window wider. The window now opens wide enough for all of them, and can't be dragged narrow enough to hide one. On a screen too narrow for that, the tabs show as icons only, so they all still fit.
+
 ## 0.37.0
 
 **Kitty image limits also cover signed and zero-padded format numbers.** Cancelled or incomplete images no longer interfere with the next image, and refused images stay refused through the rest of a chunked transfer.
