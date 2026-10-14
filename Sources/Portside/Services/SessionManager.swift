@@ -109,6 +109,37 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// Recent commands' output, for agents. Nil unless agents may read
     /// sessions — see `SessionManager.capturesCommandOutput`.
     var outputCapture: CommandOutputCapture?
+    /// Portside's own copy of the screen and scrollback, for agent reads
+    /// (`ShadowScreen`). Kept alongside `outputCapture`.
+    private(set) var shadowScreen: ShadowScreen?
+
+    /// Starts or drops the shadow. One started before any output has seen
+    /// the whole session; one started later hasn't, and says so.
+    func setShadowScreen(_ on: Bool) {
+        guard on else { shadowScreen = nil; return }
+        guard shadowScreen == nil else { return }
+        let t = getTerminal()
+        shadowScreen = ShadowScreen(cols: t.cols, rows: t.rows, scrollback: t.options.scrollback ?? 500,
+                              complete: !sawOutput)
+    }
+
+    /// Scrollback depth for the view and, so they stay alike, its shadow.
+    func applyScrollback(_ lines: Int) {
+        getTerminal().changeScrollback(lines)
+        shadowScreen?.changeScrollback(lines)
+    }
+
+    /// The terminal agents read: the shadow when it has seen the whole
+    /// session, otherwise the view's own.
+    var screenSource: Terminal {
+        if let shadowScreen, shadowScreen.complete { return shadowScreen.terminal }
+        return getTerminal()
+    }
+
+    override func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        super.sizeChanged(source: source, newCols: newCols, newRows: newRows)
+        shadowScreen?.resize(cols: newCols, rows: newRows)
+    }
     /// When set, input bytes go here instead of the child pty. Sits below the
     /// mirror hook, so MultiExec broadcast works for direct transports too.
     var transportWriter: ((ArraySlice<UInt8>) -> Void)?
@@ -328,6 +359,7 @@ final class LoggingTerminalView: ProcessTerminalView {
         // rewritten ones, though a split UTF-8 character in an OSC can wait
         // for the next read; the log above counts what arrived.
         let forTerminal = imageGuard.filtered(slice)
+        shadowScreen?.feed(forTerminal)
         onTerminalBytes?(forTerminal)
         super.dataReceived(slice: forTerminal)
     }
@@ -994,7 +1026,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// Sets this terminal's scrollback (history) depth. The view is built with
     /// SwiftTerm's default (500), so we resize the live buffer after the fact.
     func apply(scrollback lines: Int) {
-        terminalView.getTerminal().changeScrollback(lines)
+        terminalView.applyScrollback(lines)
     }
 
     /// Whether this session should render via Metal. Applied lazily once the
@@ -1110,6 +1142,7 @@ final class SessionManager: ObservableObject {
             guard capturesCommandOutput != oldValue else { return }
             for leaf in tabs.flatMap(\.leaves) {
                 leaf.terminalView.outputCapture = capturesCommandOutput ? leaf.terminalView.makeOutputCapture() : nil
+                leaf.terminalView.setShadowScreen(capturesCommandOutput)
             }
         }
     }
@@ -2868,7 +2901,10 @@ final class SessionManager: ObservableObject {
             guard let self, let session else { return true }
             return self.confirmPasteIfNeeded(text, from: session)
         }
-        if capturesCommandOutput { session.terminalView.outputCapture = session.terminalView.makeOutputCapture() }
+        if capturesCommandOutput {
+            session.terminalView.outputCapture = session.terminalView.makeOutputCapture()
+            session.terminalView.setShadowScreen(true)
+        }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {

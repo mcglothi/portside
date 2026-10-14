@@ -690,7 +690,7 @@ final class AgentController: ObservableObject {
             // tty (it stays raw), so the last line on screen is checked too.
             // Matching text is a heuristic, which is fine *here*: a false
             // positive only means refusing to type.
-            let screen = Self.screenLines(pane.terminalView.getTerminal())
+            let screen = Self.screenLines(pane.terminalView.screenSource)
             if AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(screen, lines: 1)) {
                 return .failure(.denied("\(paneName(pane)) looks like it\u{2019}s asking for a password; "
                                         + "an agent can\u{2019}t type there."))
@@ -716,7 +716,7 @@ final class AgentController: ObservableObject {
                 // The pane may have ended, or reached a password prompt, while
                 // the question was up — including a remote one, which only the
                 // screen shows.
-                let now = Self.screenLines(pane.terminalView.getTerminal())
+                let now = Self.screenLines(pane.terminalView.screenSource)
                 guard pane.isRunning, !pane.isReadingSecret,
                       !AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(now, lines: 1)) else {
                     return .failure(.badRequest("\(paneName(pane)) changed while waiting; nothing was typed."))
@@ -1068,7 +1068,7 @@ final class AgentController: ObservableObject {
     }
 
     private func screenRow(_ pane: TerminalSession, lines: Int?) -> JSONValue {
-        let terminal = pane.terminalView.getTerminal()
+        let terminal = pane.terminalView.screenSource
         let raw = Self.screenLines(terminal)
         let limit = min(max(lines ?? terminal.rows, 1), 500)
         return .object([
