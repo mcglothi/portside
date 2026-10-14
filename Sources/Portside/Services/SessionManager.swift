@@ -859,6 +859,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// device fd through SerialPort. Output still tees through the logger
     /// (dataReceived) and input through the MultiExec mirror (send), because
     /// both hooks live on the view, not the process.
+    @MainActor
     init(title: String, serial target: SerialTarget, entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
          logger: SessionLogger? = nil) {
@@ -1039,6 +1040,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// reset primitive is a full VT reset rather than a surgical scrollback
     /// trim, so this also resets modes/colors set by escape sequences — the
     /// same tradeoff a shell's own `reset` command makes.
+    @MainActor
     func clearBuffer() {
         terminalView.clearBuffer()
     }

@@ -134,7 +134,7 @@ final class ShadowScreenTests: XCTestCase {
         v.showLocally("[portside: connection closed]\r\n")
         let shadow = try XCTUnwrap(v.shadowScreen)
         XCTAssertTrue(AgentController.screenLines(shadow.terminal).contains("[portside: connection closed]"))
-        XCTAssertEqual(AgentController.screenLines(shadow.terminal), AgentController.screenLines(v.getTerminal()))
+        XCTAssertEqual(Self.visible(shadow.terminal), Self.viewVisible(v))
         XCTAssertFalse(v.sawOutput, "a local notice isn't the host answering")
     }
 
@@ -154,6 +154,7 @@ final class ShadowScreenTests: XCTestCase {
         v.clearBuffer()
         let shadow = try XCTUnwrap(v.shadowScreen)
         XCTAssertFalse(AgentController.screenLines(shadow.terminal).contains("secret-"))
-        XCTAssertTrue(v.screenSource === shadow.terminal, "still complete: it saw the clear")
+        XCTAssertEqual(v.agentScreen().text, AgentController.screenLines(shadow.terminal),
+                       "still read from the shadow: it saw the clear")
     }
 }
