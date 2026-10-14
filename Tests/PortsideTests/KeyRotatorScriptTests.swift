@@ -79,9 +79,23 @@ final class KeyRotatorScriptTests: XCTestCase {
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        // Never the test runner's stdin: a script that reads it would wait
+        // forever on CI. This test hung twice there without saying where.
+        process.standardInput = FileHandle.nullDevice
         try process.run()
+        // Both pipes drained at once: reading stdout to the end first
+        // deadlocks if the script fills stderr's buffer meanwhile.
+        var errData = Data()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            drained.signal()
+        }
         let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        if drained.wait(timeout: .now() + 60) == .timedOut {
+            process.terminate()
+            XCTFail("\(shell) didn't finish within 60s; stdout so far: \(String(decoding: outData, as: UTF8.self))")
+        }
         process.waitUntilExit()
 
         let o = String(decoding: outData, as: UTF8.self)

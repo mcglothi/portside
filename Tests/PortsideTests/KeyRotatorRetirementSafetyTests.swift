@@ -68,11 +68,22 @@ final class KeyRotatorRetirementSafetyTests: XCTestCase {
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        process.standardInput = FileHandle.nullDevice
         try process.run()
+        // Both drained at once; see KeyRotatorScriptTests.runScript.
+        var errData = Data()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            drained.signal()
+        }
         let output = String(
             decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let errors = String(
-            decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        if drained.wait(timeout: .now() + 60) == .timedOut {
+            process.terminate()
+            XCTFail("the script didn't finish within 60s")
+        }
+        let errors = String(decoding: errData, as: UTF8.self)
         process.waitUntilExit()
         return Run(
             status: process.terminationStatus, out: output, err: errors,
@@ -267,6 +278,7 @@ final class KeepKeyGuardTests: XCTestCase {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [script.path]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
         try p.run(); p.waitUntilExit()
         return p.terminationStatus == 0
     }
@@ -335,6 +347,7 @@ final class KeepKeyGuardTests: XCTestCase {
         p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         let err = Pipe()
         p.standardOutput = FileHandle.nullDevice; p.standardError = err
+        p.standardInput = FileHandle.nullDevice
         try p.run()
         let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
                              as: UTF8.self)
