@@ -85,7 +85,20 @@ final class LiveTerminalHarness {
 
     // MARK: Driving
 
-    func send(_ text: String) { headless.send(text) }
+    /// Writes what a user would type. Each write's outcome is kept for the
+    /// failure dump: a program that "didn't respond" may never have been sent
+    /// anything.
+    func send(_ text: String) {
+        let log = writes
+        let bytes = Array(text.utf8)
+        headless.process.send(data: bytes[...]) { result in
+            switch result {
+            case .success(let n): log.add("wrote \(n)/\(bytes.count)")
+            case .failure(let error): log.add("write failed: \(error)")
+            }
+        }
+    }
+    private let writes = WriteLog()
 
     /// Resizes the way a window does: the terminal reflows, then the pty's
     /// size changes, which is what sends the program SIGWINCH.
@@ -167,6 +180,8 @@ final class LiveTerminalHarness {
     /// something was drawn is unreadable without seeing what *was* drawn.
     var dump: String {
         screen.enumerated().map { String(format: "%2d|", $0.offset) + $0.element }.joined(separator: "\n")
+            + "\nwrites: \(writes.entries.joined(separator: ", "))"
+            + "\nrunning: \(headless.process.running)"
     }
 
     // MARK: Waiting
@@ -205,6 +220,13 @@ final class LiveTerminalHarness {
         }
         XCTFail("process didn't exit\n\(dump)", file: file, line: line)
         return nil
+    }
+
+    private final class WriteLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var list: [String] = []
+        var entries: [String] { lock.lock(); defer { lock.unlock() }; return list }
+        func add(_ s: String) { lock.lock(); list.append(s); lock.unlock() }
     }
 
     private final class ExitBox: @unchecked Sendable {
