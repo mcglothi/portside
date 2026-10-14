@@ -1059,7 +1059,12 @@ final class AgentController: ObservableObject {
         var text = ""
         for (i, row) in rows.enumerated() {
             if i > 0 && !row.isWrapped { text += "\n" }
-            text += row.text
+            // The text runs to the end of the stored line, which outlives a
+            // shrink: after a pane narrows, cells past its right edge are kept
+            // but never drawn, so vim's old ruler read as a second one (#76).
+            // `cellWidths` covers exactly the visible columns, one character
+            // per cell that isn't a wide character's placeholder.
+            text += row.text.prefix(row.cellWidths.filter { $0 != 0 }.count)
         }
         return text
     }
@@ -1076,7 +1081,8 @@ final class AgentController: ObservableObject {
             // text drops, so a row drawn with cursor movement would lose its
             // columns. Spaces, as on screen and in the snapshot fallback; the
             // placeholder after a wide character is skipped, not spaced.
-            text += line.translateToString(trimRight: !wraps, skipNullCellsFollowingWide: true)
+            // Up to the right edge only: see the snapshot version above.
+            text += line.translateToString(trimRight: !wraps, endCol: terminal.cols, skipNullCellsFollowingWide: true)
                 .replacingOccurrences(of: "\0", with: " ")
             row += 1
         }

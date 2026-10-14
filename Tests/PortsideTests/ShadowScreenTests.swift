@@ -62,6 +62,29 @@ final class ShadowScreenTests: XCTestCase {
         XCTAssertEqual(words(viewText), words(shadowText), "the text itself is the same")
     }
 
+    /// After a pane narrows — a tab joining a grid — cells past the new right
+    /// edge are kept in the line but never drawn. vim's ruler, drawn at the
+    /// old width and again at the new one, read as two rulers (#76). Both
+    /// sources of an agent read stop at the edge.
+    func testANarrowedPaneReadsOnlyWhatIsDrawn() throws {
+        for shadowed in [true, false] {
+            let v = LoggingTerminalView(frame: NSRect(x: 0, y: 0, width: 1200, height: 400))
+            if shadowed { v.setShadowScreen(true) }
+            func ruler() -> String {
+                let d = v.terminalStateSnapshot().dimensions
+                return "\u{1b}[2J\u{1b}[\(d.rows);\(d.cols - 17)H0,0-1         All"
+            }
+            feed(v, Array("\u{1b}[?1049h\(ruler())".utf8))
+            v.setFrameSize(NSSize(width: 600, height: 400))
+            feed(v, Array(ruler().utf8))
+
+            let last = v.agentScreen().text.components(separatedBy: "\n").last ?? ""
+            XCTAssertEqual(last.components(separatedBy: "All").count - 1, 1,
+                           "\(shadowed ? "shadow" : "snapshot"): one ruler, not the stale one past the edge: [\(last)]")
+            XCTAssertLessThanOrEqual(last.count, v.terminalStateSnapshot().dimensions.cols)
+        }
+    }
+
     /// The view's visible screen, a line per row, trailing blanks dropped.
     /// Under SwiftTerm v2 that's all of the view there is to compare with.
     static func viewVisible(_ v: LoggingTerminalView) -> [String] {
