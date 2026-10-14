@@ -86,10 +86,10 @@ struct TerminalImageGuard {
     /// follow their lead byte in the same read, which holding back split
     /// characters guarantees. So they're text here too.
     private var continuationsDue = 0
-    /// A Kitty PNG still being checked when its chunk ended: the header can
-    /// arrive in a later chunk (`m=1`). Kept until it's decided, whatever
-    /// comes in between, so no reading of the chunks can skip the check.
-    fileprivate var kittyCarry: KittyCommand.Check?
+    /// The transfer SwiftTerm is holding between dispatched `m=1` commands.
+    /// Even a raw or already accepted image needs a marker: continuation keys
+    /// do not start a new image. Aborted APCs leave this state untouched.
+    fileprivate var kittyCarry: KittyCommand.Pending?
     private var apcCount = 0
 
     private var state = State.ground
@@ -137,7 +137,7 @@ struct TerminalImageGuard {
             return image.consume(byte)
         case .apc(var command):
             defer { state = .apc(command) }
-            return command.consume(byte, carry: &kittyCarry)
+            return command.consume(byte, carry: kittyCarry)
         default:
             return nil
         }
@@ -166,9 +166,10 @@ struct TerminalImageGuard {
         var leaving: KittyCommand?
         if case .apc(let command) = state { leaving = command }
         let result = step(byte)
-        if let leaving {
+        if var leaving {
             if case .apc(let now) = state, now.serial == leaving.serial { return result }
-            leaving.end(carry: &kittyCarry)
+            leaving.end(dispatched: byte == 0x1B || byte == 0x07 || byte == 0x9C,
+                        carry: &kittyCarry)
         }
         return result
     }
@@ -206,6 +207,9 @@ struct TerminalImageGuard {
         case 0x90:                          // C1 DCS
             state = .dcsEntry
             return nil
+        case 0x80...0x9F:                   // other C1 transitions abort an APC
+            if case .apc = state { state = .ground }
+            return nil
         default:
             break
         }
@@ -241,7 +245,7 @@ struct TerminalImageGuard {
         case .apc(var command):
             guard byte >= 0x20 else { return nil }   // SwiftTerm drops C0 inside an APC
             defer { state = .apc(command) }
-            return command.consume(byte, carry: &kittyCarry)
+            return command.consume(byte, carry: kittyCarry)
 
         case .sixel(var sixel):
             defer { state = .sixel(sixel) }
@@ -337,140 +341,157 @@ private extension TerminalImageGuard.InlineImage {
     }
 }
 
-/// One Kitty graphics command (`ESC _ G <key=value,…> ; <payload>`), read the
-/// way SwiftTerm reads it: the command is the first byte, keys and values
-/// split on `,` and `=`, the last value of a repeated key wins, the payload
-/// follows the first `;`.
-///
-/// What it changes, each in place:
-/// - `t` (where the image comes from) other than `d` becomes `X`: no files or
-///   shared memory on the Mac (see the type above).
-/// - `s` or `v` (a raw image's width and height) past `maxDimension`: the
-///   digit that crosses it becomes `X`, so SwiftTerm reads no number and
-///   refuses the image.
-/// - A PNG (`f=100`) whose header says it's larger, or that isn't PNG or
-///   JPEG, or is compressed (`o=`, which hides the header): the deciding
-///   payload byte becomes `=`, padding in the middle, which SwiftTerm's
-///   base64 decode rejects.
+/// One Kitty command. Values are committed at a delimiter, just as SwiftTerm's
+/// ASCII dictionary parser does: the last ASCII value wins, including empty or
+/// invalid numbers, while a non-ASCII value does not replace an earlier entry.
+/// No key/value or image payload is buffered here.
 fileprivate struct KittyCommand {
-    /// A payload's header check, possibly spanning chunks.
     struct Check {
         var base64 = StreamingBase64(skipsUnknown: true)
         var sniffer = ImageHeaderSniffer()
-        var poisonNext = false
-        var decided: Bool { poisonNext == false && sniffer.verdict != .undecided }
+        var refusing = false
+
+        mutating func consume(_ byte: UInt8) -> UInt8? {
+            if refusing { return UInt8(ascii: "=") }
+            guard sniffer.verdict == .undecided else { return nil }
+            if let decoded = base64.feed(byte) {
+                refusing = sniffer.feed(decoded) == .refuse
+            } else if base64.ended {
+                refusing = true
+            }
+            // Remove the entire suffix, including subsequent chunks. A decoder
+            // that ignores internal padding still cannot recover that suffix.
+            // The retained prefix ends before the deciding header byte.
+            return refusing ? UInt8(ascii: "=") : nil
+        }
     }
 
-    enum Phase { case command, key([UInt8]), value(key: [UInt8], first: Bool, number: Int), payload, other }
+    struct Pending {
+        var check: Check?
+    }
 
+    /// Constant-space equivalent of Int(raw) for an ASCII decimal value.
+    /// Accumulate negatively so Int.min is representable, and keep scanning
+    /// after overflow so a later non-ASCII byte can discard the whole value.
+    struct Value {
+        var first: UInt8?
+        var ascii = true
+        var negative = false
+        var digits = false
+        var valid = true
+        var number = 0
+
+        mutating func feed(_ byte: UInt8) {
+            let isFirst = first == nil
+            if isFirst { first = byte }
+            ascii = ascii && byte < 0x80
+            if isFirst && (byte == UInt8(ascii: "+") || byte == UInt8(ascii: "-")) {
+                negative = byte == UInt8(ascii: "-")
+                return
+            }
+            guard valid, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) else { valid = false; return }
+            digits = true
+            let (scaled, mulOverflow) = number.multipliedReportingOverflow(by: 10)
+            let (next, subOverflow) = scaled.subtractingReportingOverflow(Int(byte - UInt8(ascii: "0")))
+            number = next
+            valid = !mulOverflow && !subOverflow
+        }
+
+        var integer: Int? {
+            guard valid, digits, negative || number != Int.min else { return nil }
+            return negative ? number : -number
+        }
+    }
+
+    enum Phase { case command, key([UInt8]), value(key: [UInt8], raw: Value, size: Int), payload, other }
     let serial: Int
     var phase = Phase.command
-    var format: [UInt8] = Array("32".utf8)
+    var format = 32
+    var more = 0
+    var action = UInt8(ascii: "t")
+    var medium = UInt8(ascii: "d")
     var compressed = false
-    var checks: [Check] = []
+    var transfer = Pending()
 
     init(serial: Int) { self.serial = serial }
 
-    static let maxDimension = ImageHeaderSniffer.maxDimension
-    static let refusedMedium = UInt8(ascii: "X")
-    static let refusedPayload = UInt8(ascii: "=")
-
-    mutating func consume(_ byte: UInt8, carry: inout Check?) -> UInt8? {
+    mutating func consume(_ byte: UInt8, carry: Pending?) -> UInt8? {
         switch phase {
         case .command:
             phase = byte == UInt8(ascii: "G") ? .key([]) : .other
-            return nil
         case .key(var key):
             switch byte {
-            case UInt8(ascii: "="): phase = .value(key: key, first: true, number: 0)
+            case UInt8(ascii: "="): phase = .value(key: key, raw: Value(), size: 0)
             case UInt8(ascii: ","): phase = .key([])
-            case UInt8(ascii: ";"): startPayload(carry: &carry)
+            case UInt8(ascii: ";"): startPayload(carry: carry)
             default:
-                if key.count < 8 { key.append(byte) }
+                // All interesting keys have length one. Retain a second byte
+                // only to distinguish an unknown longer key, however long.
+                if key.count < 2 { key.append(byte) }
                 phase = .key(key)
             }
-            return nil
-        case .value(let key, let first, let number):
-            if byte == UInt8(ascii: ",") { phase = .key([]); return nil }
-            if byte == UInt8(ascii: ";") { startPayload(carry: &carry); return nil }
-            return value(byte, key: key, first: first, number: number)
+        case .value(let key, var raw, var size):
+            if byte == UInt8(ascii: ",") || byte == UInt8(ascii: ";") {
+                finishValue(key, raw)
+                if byte == UInt8(ascii: ",") { phase = .key([]) } else { startPayload(carry: carry) }
+                return nil
+            }
+            var replacement: UInt8?
+            if key == [UInt8(ascii: "t")], raw.first == nil, byte != UInt8(ascii: "d") { replacement = UInt8(ascii: "X") }
+            if key == [UInt8(ascii: "s")] || key == [UInt8(ascii: "v")], (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte), size >= 0 {
+                size = size * 10 + Int(byte - UInt8(ascii: "0"))
+                if size > ImageHeaderSniffer.maxDimension { replacement = UInt8(ascii: "X"); size = -1 }
+            }
+            // Track what SwiftTerm receives, including the existing t=X refusal.
+            raw.feed(replacement ?? byte)
+            phase = .value(key: key, raw: raw, size: size)
+            return replacement
         case .payload:
-            for i in checks.indices {
-                if checks[i].poisonNext {
-                    checks[i].poisonNext = false
-                    checks[i].sniffer = ImageHeaderSniffer.refused
-                    return Self.refusedPayload
-                }
-                guard checks[i].sniffer.verdict == .undecided, !checks[i].base64.ended else { continue }
-                guard let decoded = checks[i].base64.feed(byte) else {
-                    // Padding before the header is complete: SwiftTerm's
-                    // decode stops there today, so nothing larger can follow
-                    // — but if it ever decoded chunk by chunk, it could. So
-                    // it's a refusal, and the next payload byte says so.
-                    if checks[i].base64.ended {
-                        checks[i].sniffer = ImageHeaderSniffer.refused
-                        checks[i].poisonNext = true
-                    }
-                    continue
-                }
-                if checks[i].sniffer.feed(decoded) == .refuse { return Self.refusedPayload }
-            }
-            return nil
+            return transfer.check?.consume(byte)
         case .other:
-            return nil
-        }
-    }
-
-    private mutating func value(_ byte: UInt8, key: [UInt8], first: Bool, number: Int) -> UInt8? {
-        var replacement: UInt8?
-        var number = number
-        switch key {
-        case [UInt8(ascii: "t")] where first:
-            if byte != UInt8(ascii: "d") { replacement = Self.refusedMedium }
-        case [UInt8(ascii: "s")], [UInt8(ascii: "v")]:
-            // Only digits add up, so a sign or anything else in the value
-            // (Swift's Int() takes "+5000") can't hide one past the limit.
-            if (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte), number >= 0 {
-                number = number * 10 + Int(byte - UInt8(ascii: "0"))
-                if number > Self.maxDimension {
-                    replacement = Self.refusedMedium
-                    number = -1                  // already unreadable
-                }
-            }
-        case [UInt8(ascii: "f")]:
-            if first { format = [] }
-            if format.count < 8 { format.append(byte) }
-        case [UInt8(ascii: "o")]:
-            compressed = true
-        default:
             break
         }
-        phase = .value(key: key, first: false, number: number)
-        return replacement
+        return nil
     }
 
-    /// The payload starts. A PNG chunk still being checked continues here
-    /// whatever this command's own keys say: SwiftTerm ignores the keys of a
-    /// continuation chunk. A command that says `f=100` starts a check of
-    /// its own as well, in case it's a new image.
-    private mutating func startPayload(carry: inout Check?) {
+    private mutating func finishValue(_ key: [UInt8], _ value: Value) {
+        guard value.ascii else { return }
+        switch key {
+        case [UInt8(ascii: "f")]: format = value.integer ?? 32  // f
+        case [UInt8(ascii: "m")]: more = value.integer ?? 0     // m
+        case [UInt8(ascii: "a")]: action = value.first ?? UInt8(ascii: "t")    // a, default t
+        case [UInt8(ascii: "t")]: medium = value.first ?? UInt8(ascii: "d")   // t, default d
+        case [UInt8(ascii: "o")]: compressed = value.first != nil // o
+        default: break
+        }
+    }
+
+    private mutating func startPayload(carry: Pending?) {
         phase = .payload
-        if let pending = carry {
-            checks.append(pending)
-            carry = nil
-        }
-        if format == Array("100".utf8) {
+        let deleting = action == UInt8(ascii: "d") || action == UInt8(ascii: "D")
+        if let carry, !deleting {
+            transfer = carry
+        } else if format == 100 && medium == UInt8(ascii: "d") {
             var check = Check()
-            if compressed { check.poisonNext = true }
-            checks.append(check)
+            check.refusing = compressed
+            transfer = Pending(check: check)
         }
     }
 
-    /// The command ended: anything still undecided carries over.
-    func end(carry: inout Check?) {
-        // Still undecided, or refused with the refusal not yet written.
-        if let open = checks.last(where: { $0.poisonNext || $0.sniffer.verdict == .undecided }) {
-            carry = open
+    mutating func end(dispatched: Bool, carry: inout Pending?) {
+        // CAN/SUB and other APC aborts never reach handleKittyGraphics.
+        guard dispatched else { return }
+        switch phase {
+        case .command, .other: return
+        case .value(let key, let raw, _):
+            finishValue(key, raw)
+            startPayload(carry: carry)
+        case .key:
+            startPayload(carry: carry) // no semicolon: an empty payload
+        case .payload: break
         }
+        // SwiftTerm first clears pending on a=d/D, then appends/starts only
+        // for m=1 with t=d. Every other dispatched Kitty command finishes it.
+        carry = more == 1 && medium == UInt8(ascii: "d") ? transfer : nil
     }
 }

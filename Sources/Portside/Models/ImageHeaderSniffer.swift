@@ -24,12 +24,6 @@ struct ImageHeaderSniffer {
 
     private(set) var verdict = Verdict.undecided
 
-    /// A sniffer that has already refused.
-    static var refused: ImageHeaderSniffer {
-        var s = ImageHeaderSniffer()
-        s.verdict = .refuse
-        return s
-    }
     private var header: [UInt8] = []
     private var count = 0
     private var jpeg = JPEGWalk()
