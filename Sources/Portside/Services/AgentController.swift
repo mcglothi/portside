@@ -1072,7 +1072,12 @@ final class AgentController: ObservableObject {
             // A row that wraps is full to the edge; trimming it would drop a
             // space that sits in the last column.
             let wraps = terminal.getScrollInvariantLine(row: row + 1)?.isWrapped == true
-            text += line.translateToString(trimRight: !wraps)
+            // A cell nothing was written to reads as NUL, which the agent
+            // text drops, so a row drawn with cursor movement would lose its
+            // columns. Spaces, as on screen and in the snapshot fallback; the
+            // placeholder after a wide character is skipped, not spaced.
+            text += line.translateToString(trimRight: !wraps, skipNullCellsFollowingWide: true)
+                .replacingOccurrences(of: "\0", with: " ")
             row += 1
         }
         return text

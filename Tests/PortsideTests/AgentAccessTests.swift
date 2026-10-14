@@ -349,6 +349,17 @@ final class AgentAccessTests: XCTestCase {
                        "the wrapped row joins its line, the space at the edge kept; real newlines stay")
     }
 
+    /// Cells the cursor skipped over are blanks, not nothing: a column
+    /// layout drawn with cursor movement keeps its columns, and a wide
+    /// character isn't followed by an extra space.
+    @MainActor
+    func testScreenReadKeepsSkippedCellsAsSpaces() {
+        let h = TerminalHarness(cols: 20, rows: 3)
+        h.feed("\u{1b}[5Cabc\r\n日本語x")
+        let text = AgentPolicy.screenText(AgentController.screenLines(h.terminal), lines: 10)
+        XCTAssertEqual(text, "     abc\n日本語x")
+    }
+
     func testTypingIsRefusedUntilItsOwnSwitchIsOn() async {
         let (agent, _, _) = controller([host("web1")])
         agent.setEnabled(true)

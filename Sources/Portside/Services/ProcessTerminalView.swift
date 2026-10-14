@@ -73,7 +73,7 @@ public protocol ProcessTerminalViewDelegate: AnyObject {
  * If you want additional control over the delegate methods implemented in this class, you can
  * subclass this and override the methods
  */
-open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelegate, @preconcurrency LocalProcessDelegate {
+open class ProcessTerminalView: TerminalView, TerminalViewDelegate, @preconcurrency LocalProcessDelegate {
     
     public internal(set) var process: LocalProcess!
 

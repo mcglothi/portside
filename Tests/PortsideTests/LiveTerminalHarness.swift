@@ -34,6 +34,12 @@ final class LiveTerminalHarness {
         options.rows = rows
         let box = exited
         headless = HeadlessTerminal(queue: queue, options: options) { code in box.set(code) }
+        // A view always knows its cell size; give the headless terminal one
+        // too. SwiftTerm 2 sends the in-band size report (mode 2048) only
+        // when it has pixel geometry, and neovim, once it sees 2048 is
+        // supported, takes its size from that report instead of SIGWINCH.
+        let terminal = headless.terminal!
+        terminal.terminalLock.withLock { terminal.updatePixelGeometry(cellWidth: 8, cellHeight: 16) }
         var env = [
             "TERM": "xterm-256color",
             "LANG": "en_US.UTF-8",
@@ -87,7 +93,8 @@ final class LiveTerminalHarness {
         queue.sync {
             headless.terminal.resize(cols: cols, rows: rows)
             var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
-            _ = PseudoTerminalHelpers.setWinSize(masterPtyDescriptor: headless.process.childfd, windowSize: &size)
+            let applied = headless.process.updateWindowSize(&size)
+            precondition(applied, "the pty refused the new size")
         }
     }
 

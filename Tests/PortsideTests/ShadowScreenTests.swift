@@ -75,8 +75,10 @@ final class ShadowScreenTests: XCTestCase {
         }
     }
 
+    /// An unwritten cell is a NUL in a headless terminal's lines and a space
+    /// in the view's snapshot; the same blank either way.
     static func trimmed(_ s: String) -> String {
-        var s = s
+        var s = s.replacingOccurrences(of: "\0", with: " ")
         while s.last == " " || s.last == "\0" { s.removeLast() }
         return s
     }
