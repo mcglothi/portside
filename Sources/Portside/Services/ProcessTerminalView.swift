@@ -110,7 +110,7 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
     /**
      * This method is invoked to notify the client of the new columsn and rows that have been set by the UI
      */
-    public func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+    open func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         guard process.running else {
             return
         }
