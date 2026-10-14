@@ -5,6 +5,10 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**New terminal engine: SwiftTerm 2.** Portside's terminal is now built on SwiftTerm 1.99, the rewrite that becomes SwiftTerm 2, replacing 1.20. Everything should look and behave as before; this is the change most worth reporting a problem with. Neovim takes its size from the terminal's in-band resize reports, so it redraws at the right size as soon as a window or split changes. Kitty graphics are stored and placed by the terminal itself, and Portside's size and file-access limits on Sixel, iTerm2 and Kitty images were checked against the new engine's parser. Portside now writes your typing to the session itself, because on macOS 15 the new engine's own writes never arrived and keystrokes went nowhere.
+
+**Agents read the screen from Portside's own copy of it.** What `portside screen` and the MCP tools return now comes from a second terminal Portside keeps in step with each pane, rather than from the view you're looking at, so the answer doesn't depend on what the view happens to be drawing. Clear Buffer clears it too, and the notices Portside writes into a pane itself (a serial or telnet connection opening or closing, a missing X11 display) are included.
+
 **Every Settings tab is visible.** The Settings window was too narrow for its eight tabs, so "Updates" was pushed into the toolbar's overflow menu, where it couldn't be chosen; reaching it meant dragging the window wider. The window now opens wide enough for all of them, and can't be dragged narrow enough to hide one. On a screen too narrow for that, the tabs show as icons only, so they all still fit.
 
 ## 0.37.0
