@@ -68,12 +68,13 @@ final class KeyRotatorRetirementSafetyTests: XCTestCase {
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        process.standardInput = FileHandle.nullDevice
         try process.run()
-        let output = String(
-            decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let errors = String(
-            decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        process.waitUntilExit()
+        // Both drained in the background under one bound; see
+        // KeyRotatorScriptTests.drain.
+        let (outData, errData) = KeyRotatorScriptTests.drain(out, err, process: process, label: "the script")
+        let output = String(decoding: outData, as: UTF8.self)
+        let errors = String(decoding: errData, as: UTF8.self)
         return Run(
             status: process.terminationStatus, out: output, err: errors,
             outcome: KeyRotator.retireOutcome(
@@ -267,6 +268,7 @@ final class KeepKeyGuardTests: XCTestCase {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [script.path]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
         try p.run(); p.waitUntilExit()
         return p.terminationStatus == 0
     }
@@ -335,6 +337,7 @@ final class KeepKeyGuardTests: XCTestCase {
         p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         let err = Pipe()
         p.standardOutput = FileHandle.nullDevice; p.standardError = err
+        p.standardInput = FileHandle.nullDevice
         try p.run()
         let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
                              as: UTF8.self)
