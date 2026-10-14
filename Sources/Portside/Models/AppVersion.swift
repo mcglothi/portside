@@ -15,9 +15,14 @@ enum AppVersion {
     /// (`0.36.0` < `0.36.1` < `0.37.0`). Anything unreadable compares as
     /// not newer, so a malformed stamp can't block a publish.
     static func isNewer(_ a: String, than b: String) -> Bool {
+        // Every part a plain unsigned number: `split` would drop the empty
+        // part of ".40" and Int() would take "-1", turning a mangled stamp
+        // into a version that blocks a publish.
         func parts(_ v: String) -> [Int]? {
-            let p = v.split(separator: ".").map { Int($0) }
-            return p.contains(nil) || p.isEmpty ? nil : p.compactMap { $0 }
+            let p = v.split(separator: ".", omittingEmptySubsequences: false)
+            guard !p.isEmpty, p.allSatisfy({ !$0.isEmpty && $0.count <= 9 && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+            else { return nil }
+            return p.compactMap { Int($0) }
         }
         guard let x = parts(a), let y = parts(b) else { return false }
         for i in 0..<max(x.count, y.count) {
