@@ -438,6 +438,13 @@ fileprivate struct KittyCommand {
             }
             var replacement: UInt8?
             if key == [UInt8(ascii: "t")], raw.first == nil, byte != UInt8(ascii: "d") { replacement = UInt8(ascii: "X") }
+            // Compression: SwiftTerm decompresses before anything can be
+            // checked, and on macOS 15 that step could stall on a refused
+            // payload (CI, testACompressedPNGIsRefused). Any compression is
+            // turned away in the key itself, so SwiftTerm answers "bad
+            // payload" without trying. Compressed transfers of every format go
+            // with it; clients send plain data when it's refused.
+            if key == [UInt8(ascii: "o")], raw.first == nil { replacement = UInt8(ascii: "X") }
             if key == [UInt8(ascii: "s")] || key == [UInt8(ascii: "v")], (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte), size >= 0 {
                 size = size * 10 + Int(byte - UInt8(ascii: "0"))
                 if size > ImageHeaderSniffer.maxDimension { replacement = UInt8(ascii: "X"); size = -1 }

@@ -122,6 +122,28 @@ final class KittyImageSizeTests: XCTestCase {
         XCTAssertFalse(accepted(send([("a=t,f=100,o=z,i=7", image(.png, width: 8, height: 8).base64EncodedString())])))
     }
 
+    /// Refused in the key, before SwiftTerm's decompression runs: on macOS 15
+    /// that step stalled on a refused payload. Whatever order the keys come
+    /// in, and for raw pixels too.
+    func testCompressionIsTurnedAwayBeforeDecompressing() {
+        let png = image(.png, width: 8, height: 8).base64EncodedString()
+        for control in ["a=t,o=z,f=100,i=7", "a=t,f=100,o=z,i=7", "a=t,o=z,o=z,f=100,i=7"] {
+            let reply = send([(control, png)])
+            XCTAssertFalse(accepted(reply), control)
+            XCTAssertTrue(reply.contains("i=7;"), "\(control): SwiftTerm answered (\(reply))")
+        }
+        // What SwiftTerm is handed: the compression key no longer says z.
+        for control in ["o=z,f=100", "f=100,o=z", "f=32,o=z"] {
+            var filter = TerminalImageGuard()
+            let bytes = Array("\u{1b}_G\(control);AAAA\u{1b}\\".utf8)
+            let handed = String(decoding: Array(filter.filtered(bytes[...])), as: UTF8.self)
+            XCTAssertTrue(handed.contains("o=X") && !handed.contains("o=z"), "\(control): \(handed.debugDescription)")
+        }
+        let raw = Data(repeating: 0, count: 16).base64EncodedString()
+        XCTAssertFalse(accepted(send([("a=t,f=32,s=2,v=2,o=z,i=7", raw)])), "compressed raw pixels too")
+        XCTAssertTrue(accepted(send([("a=t,f=32,s=2,v=2,i=7", raw)])), "uncompressed still fine")
+    }
+
     /// Raw pixels: the size is in the keys.
     func testRawPixelsAreBoundedBySAndV() {
         let small = Data(repeating: 0, count: 2 * 2 * 4).base64EncodedString()
