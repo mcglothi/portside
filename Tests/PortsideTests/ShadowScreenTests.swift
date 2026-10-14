@@ -103,4 +103,35 @@ final class ShadowScreenTests: XCTestCase {
         XCTAssertNil(v.shadowScreen)
         XCTAssertTrue(v.screenSource === v.getTerminal())
     }
+
+    /// Portside's own notices are on the screen the user sees, so they're in
+    /// the shadow too, without counting as output from the host.
+    func testLocalNoticesReachTheShadow() throws {
+        let v = view()
+        v.setShadowScreen(true)
+        v.showLocally("[portside: connection closed]\r\n")
+        let shadow = try XCTUnwrap(v.shadowScreen)
+        XCTAssertTrue(AgentController.screenLines(shadow.terminal).contains("[portside: connection closed]"))
+        XCTAssertEqual(AgentController.screenLines(shadow.terminal), AgentController.screenLines(v.getTerminal()))
+        XCTAssertFalse(v.sawOutput, "a local notice isn't the host answering")
+    }
+
+    /// A notice drawn before the shadow started is something it never saw.
+    func testAShadowStartedAfterANoticeIsNotComplete() {
+        let v = view()
+        v.showLocally("[connected to /dev/cu.usbserial at 9600 8N1]\r\n")
+        v.setShadowScreen(true)
+        XCTAssertEqual(v.shadowScreen?.complete, false)
+    }
+
+    /// Clear Buffer clears what agents read as well as what's on screen.
+    func testClearBufferClearsTheShadow() throws {
+        let v = view()
+        v.setShadowScreen(true)
+        feed(v, Array((1...60).map { "secret-\($0)\r\n" }.joined().utf8))
+        v.clearBuffer()
+        let shadow = try XCTUnwrap(v.shadowScreen)
+        XCTAssertFalse(AgentController.screenLines(shadow.terminal).contains("secret-"))
+        XCTAssertTrue(v.screenSource === shadow.terminal, "still complete: it saw the clear")
+    }
 }

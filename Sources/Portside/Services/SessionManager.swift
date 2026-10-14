@@ -68,6 +68,9 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// dialling a host that will never answer stays alive but silent, so
     /// "still running" alone can't distinguish connecting from connected.
     private(set) var sawOutput = false
+    /// Whether anything has been drawn at all, Portside's own notices
+    /// included: a shadow started after that hasn't seen the whole screen.
+    private var drewAnything = false
     /// Whether this session has *ever* sent an OSC 133 marker, since its first
     /// byte. A shell with the integration marks every prompt, so one that has
     /// it said so long before anyone asks. The command capture can't answer
@@ -120,7 +123,23 @@ final class LoggingTerminalView: ProcessTerminalView {
         guard shadowScreen == nil else { return }
         let t = getTerminal()
         shadowScreen = ShadowScreen(cols: t.cols, rows: t.rows, scrollback: t.options.scrollback ?? 500,
-                              complete: !sawOutput)
+                              complete: !drewAnything)
+    }
+
+    /// Text Portside writes to the screen itself — connection notices and
+    /// diagnostics. It goes to the shadow too, so agents read what the user
+    /// sees. Not output from the host: `sawOutput` is left alone.
+    func showLocally(_ text: String) {
+        drewAnything = true
+        feed(text: text)
+        shadowScreen?.feed(Array(text.utf8)[...])
+    }
+
+    /// Clear Buffer, for the view and its shadow alike: what was cleared
+    /// mustn't still be readable by an agent.
+    func clearBuffer() {
+        getTerminal().resetToInitialState()
+        shadowScreen?.reset()
     }
 
     /// Scrollback depth for the view and, so they stay alike, its shadow.
@@ -327,6 +346,7 @@ final class LoggingTerminalView: ProcessTerminalView {
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
         sawOutput = true
+        drewAnything = true
         noteShellIntegration(slice)
         // The log and the command timeline get the bytes as they actually
         // arrived. Nothing in this path may rewrite them: transcript offsets
@@ -856,15 +876,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
                 DispatchQueue.main.async {
                     guard let self, self.isRunning else { return }
                     if let message {
-                        self.terminalView.feed(text: "\r\n[portside: \(message)]\r\n")
+                        self.terminalView.showLocally( "\r\n[portside: \(message)]\r\n")
                     }
                     self.logger?.close()
                     self.isRunning = false
                 }
             }
-            terminalView.feed(text: "[connected to \(target.deviceName) at \(target.summary)]\r\n")
+            terminalView.showLocally( "[connected to \(target.deviceName) at \(target.summary)]\r\n")
         } catch {
-            terminalView.feed(text: "portside: \(error.localizedDescription)\r\n")
+            terminalView.showLocally( "portside: \(error.localizedDescription)\r\n")
             isRunning = false
         }
     }
@@ -895,14 +915,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
         }
         port.onConnected = { [weak self] in
             DispatchQueue.main.async {
-                self?.terminalView.feed(text: "[connected to \(target.host):\(target.port) via telnet]\r\n")
+                self?.terminalView.showLocally( "[connected to \(target.host):\(target.port) via telnet]\r\n")
             }
         }
         port.onClosed = { [weak self] message in
             DispatchQueue.main.async {
                 guard let self, self.isRunning else { return }
                 if let message {
-                    self.terminalView.feed(text: "\r\n[portside: \(message)]\r\n")
+                    self.terminalView.showLocally( "\r\n[portside: \(message)]\r\n")
                 }
                 self.logger?.close()
                 self.isRunning = false
@@ -1010,7 +1030,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// trim, so this also resets modes/colors set by escape sequences — the
     /// same tradeoff a shell's own `reset` command makes.
     func clearBuffer() {
-        terminalView.getTerminal().resetToInitialState()
+        terminalView.clearBuffer()
     }
 
     /// Applies the global look to this terminal's view.
@@ -1400,7 +1420,7 @@ final class SessionManager: ObservableObject {
             // ssh drops an X11 request silently when there's no DISPLAY, so
             // say why no windows will appear rather than leave it a mystery.
             if executable == SSHInvocation.executable, let notice = X11Support.connectNotice(for: entry) {
-                session.terminalView.feed(text: "[portside: \(notice)]\r\n")
+                session.terminalView.showLocally( "[portside: \(notice)]\r\n")
             }
             return session
         }

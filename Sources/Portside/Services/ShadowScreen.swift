@@ -40,6 +40,11 @@ final class ShadowScreen {
     func changeScrollback(_ lines: Int) {
         terminal.changeScrollback(lines)
     }
+
+    /// Clear Buffer: the screen and scrollback start over, as the view's do.
+    func reset() {
+        terminal.resetToInitialState()
+    }
 }
 
 /// The shadow's delegate. Above all it must not answer the host: the view
