@@ -89,14 +89,23 @@ final class LiveTerminalHarness {
     /// failure dump: a program that "didn't respond" may never have been sent
     /// anything.
     func send(_ text: String) {
-        let log = writes
-        let bytes = Array(text.utf8)
-        headless.process.send(data: bytes[...]) { result in
-            switch result {
-            case .success(let n): log.add("wrote \(n)/\(bytes.count)")
-            case .failure(let error): log.add("write failed: \(error)")
+        // Straight to the pty with write(2), not LocalProcess.send: on the
+        // macOS 15 CI runner SwiftTerm 2's DispatchIO write channel never
+        // completed, so programs never saw a key (#73).
+        let fd = headless.process.childfd
+        var bytes = Array(text.utf8)[...]
+        while !bytes.isEmpty {
+            let n = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if n > 0 { bytes = bytes.dropFirst(n); continue }
+            if n < 0 && (errno == EAGAIN || errno == EINTR) {
+                var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                _ = poll(&p, 1, 1000)
+                continue
             }
+            writes.add("write failed: errno \(errno)")
+            return
         }
+        writes.add("wrote \(text.utf8.count)")
     }
     private let writes = WriteLog()
 
