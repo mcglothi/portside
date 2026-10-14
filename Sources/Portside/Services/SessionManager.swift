@@ -36,7 +36,7 @@ final class OutputTail: @unchecked Sendable {
 
 /// A terminal view that tees the child process's output to a session log
 /// before feeding it to the terminal.
-final class LoggingTerminalView: LocalProcessTerminalView {
+final class LoggingTerminalView: ProcessTerminalView {
     /// Stands in as the terminal's delegate so OSC 52 goes through Portside's
     /// rules rather than SwiftTerm's defaults, which hand the clipboard to
     /// any program that asks (see `ClipboardPolicy`). Held strongly here:
@@ -542,7 +542,7 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 
 /// One live terminal tab: owns the SwiftTerm view and the child process
 /// (either `ssh` or a local login shell) running inside it.
-final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
+final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTerminalViewDelegate {
     let id = UUID()
     let terminalView: LoggingTerminalView
     let entry: SessionEntry?
@@ -1052,11 +1052,11 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         }
     }
 
-    // MARK: - LocalProcessTerminalViewDelegate
+    // MARK: - ProcessTerminalViewDelegate
 
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    func sizeChanged(source: ProcessTerminalView, newCols: Int, newRows: Int) {}
 
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+    func setTerminalTitle(source: ProcessTerminalView, title: String) {
         DispatchQueue.main.async { self.title = title }
     }
 
@@ -1174,7 +1174,7 @@ final class SessionManager: ObservableObject {
             let isReturn = event.keyCode == 36 || event.keyCode == 76
             let isCtrlD = event.keyCode == 2 && mods == .control   // keyCode 2 == "d"
             let isPlainR = mods.isEmpty && event.charactersIgnoringModifiers?.lowercased() == "r"
-            if let focused = event.window?.firstResponder as? LocalProcessTerminalView,
+            if let focused = event.window?.firstResponder as? ProcessTerminalView,
                let dead = self.sessions.first(where: { $0.terminalView === focused && !$0.isRunning }) {
                 if isReturn || isCtrlD {
                     DispatchQueue.main.async { self.close(dead) }
