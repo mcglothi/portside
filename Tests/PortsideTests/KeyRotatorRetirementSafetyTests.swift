@@ -70,21 +70,11 @@ final class KeyRotatorRetirementSafetyTests: XCTestCase {
         process.standardError = err
         process.standardInput = FileHandle.nullDevice
         try process.run()
-        // Both drained at once; see KeyRotatorScriptTests.runScript.
-        var errData = Data()
-        let drained = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            errData = err.fileHandleForReading.readDataToEndOfFile()
-            drained.signal()
-        }
-        let output = String(
-            decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        if drained.wait(timeout: .now() + 60) == .timedOut {
-            process.terminate()
-            XCTFail("the script didn't finish within 60s")
-        }
+        // Both drained in the background under one bound; see
+        // KeyRotatorScriptTests.drain.
+        let (outData, errData) = KeyRotatorScriptTests.drain(out, err, process: process, label: "the script")
+        let output = String(decoding: outData, as: UTF8.self)
         let errors = String(decoding: errData, as: UTF8.self)
-        process.waitUntilExit()
         return Run(
             status: process.terminationStatus, out: output, err: errors,
             outcome: KeyRotator.retireOutcome(

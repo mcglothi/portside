@@ -65,6 +65,26 @@ final class KeyRotatorScriptTests: XCTestCase {
         var outcome: KeyRetireOutcome
     }
 
+    /// Reads both pipes to the end while waiting at most `seconds` for the
+    /// process; past that it's terminated and the test fails, naming it.
+    static func drain(_ out: Pipe, _ err: Pipe, process: Process, label: String,
+                      seconds: Int = 60) -> (Data, Data) {
+        final class Box: @unchecked Sendable { var out = Data(), err = Data() }
+        let box = Box()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async { box.out = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        group.enter()
+        DispatchQueue.global().async { box.err = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        if group.wait(timeout: .now() + .seconds(seconds)) == .timedOut {
+            process.terminate()
+            _ = group.wait(timeout: .now() + 5)
+            XCTFail("\(label) didn't finish within \(seconds)s")
+        }
+        process.waitUntilExit()
+        return (box.out, box.err)
+    }
+
     @discardableResult
     private func runScript(shell: String = "/bin/sh", home overrideHome: URL? = nil) throws -> Run {
         let root = overrideHome ?? home!
@@ -83,20 +103,10 @@ final class KeyRotatorScriptTests: XCTestCase {
         // forever on CI. This test hung twice there without saying where.
         process.standardInput = FileHandle.nullDevice
         try process.run()
-        // Both pipes drained at once: reading stdout to the end first
-        // deadlocks if the script fills stderr's buffer meanwhile.
-        var errData = Data()
-        let drained = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            errData = err.fileHandleForReading.readDataToEndOfFile()
-            drained.signal()
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        if drained.wait(timeout: .now() + 60) == .timedOut {
-            process.terminate()
-            XCTFail("\(shell) didn't finish within 60s; stdout so far: \(String(decoding: outData, as: UTF8.self))")
-        }
-        process.waitUntilExit()
+        // Both pipes drained in the background, and the clock started at
+        // once: reading either to the end on this thread first would block
+        // past any bound on a script that hangs with its output open.
+        let (outData, errData) = Self.drain(out, err, process: process, label: shell)
 
         let o = String(decoding: outData, as: UTF8.self)
         let e = String(decoding: errData, as: UTF8.self)
@@ -434,5 +444,23 @@ final class KeyRotatorScriptTests: XCTestCase {
             }
             XCTAssertEqual(try contents(), original, "\(shell): the file was touched anyway")
         }
+    }
+
+    /// The bound holds for a script that hangs with its output still open —
+    /// the case where reading a pipe to the end first used to block forever.
+    func testAHangingScriptIsStoppedWithinTheBound() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "echo started; sleep 30"]
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        let started = Date()
+        XCTExpectFailure("drain reports the timeout as a failure") {
+            _ = Self.drain(out, err, process: process, label: "sleep", seconds: 2)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "the bound didn't hold")
     }
 }
