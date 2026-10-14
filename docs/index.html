@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Portside — a native macOS remote terminal workbench</title>
-<meta name="description" content="Portside is a fast, native macOS remote terminal workbench for SSH, mosh, serial consoles, telnet, containers, and Kubernetes — with MultiExec guardrails, SFTP, and port forwarding.">
+<meta name="description" content="Portside is a fast, native macOS remote terminal workbench for SSH, mosh, serial consoles, telnet, containers, and Kubernetes — with MultiExec guardrails, SFTP, port forwarding, shared team inventories, and fleet-wide SSH key rotation.">
 <meta property="og:title" content="Portside — native macOS remote terminal workbench">
 <meta property="og:description" content="SSH, mosh, serial, and telnet sessions in one local-first library, with MultiExec safety UX, SFTP, containers, and Kubernetes.">
 <meta property="og:image" content="https://mcglothi.github.io/portside/screenshots/library.png">
@@ -120,7 +120,9 @@
     <p class="sub">
       A native macOS workbench for SSH, mosh, serial consoles, and telnet.
       Keep hosts, containers, and Kubernetes pods in one foldered library,
-      with MultiExec guardrails, SFTP, and port forwarding close at hand.
+      with MultiExec guardrails, SFTP, and port forwarding close at hand —
+      share it with your team, rotate keys across it, and let an AI agent
+      drive it when you say so.
     </p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/mcglothi/portside/releases/latest">Download for macOS</a>
@@ -144,7 +146,7 @@
       <div class="card">
         <span class="glyph">📡</span>
         <h3>MultiExec with guardrails</h3>
-        <p>Broadcast keystrokes across a fleet with a loud armed banner counting what's live, and protected hosts that refuse to join uninvited. Drop a host out for a single command and put it back without disarming (<code>⌥⌘M</code>), or sweep the whole grid with Include All, Exclude All and Invert Selection. Arming it is one step — it gathers separate tabs into Grid View automatically.</p>
+        <p>Broadcast keystrokes across a fleet with a loud armed banner counting what's live, and protected hosts that refuse to join uninvited. Drop a host out for a single command and put it back without disarming (<code>⌥⌘M</code>), or sweep the whole grid with Include All, Exclude All and Invert Selection. Arming it is one step — it gathers separate tabs into Grid View automatically. Afterwards it lists what each host did: finished with its exit status, still running, or not observable.</p>
       </div>
       <div class="card">
         <span class="glyph">🔲</span>
@@ -154,7 +156,7 @@
       <div class="card">
         <span class="glyph">📦</span>
         <h3>Containers &amp; K8s, first-class</h3>
-        <p>Save a docker/podman container or a kubectl pod like any host — browse live <code>docker ps</code> / <code>get pods</code> instead of remembering churning names.</p>
+        <p>Save a docker/podman container or a Kubernetes pod like any host. Browse the cluster for the context, workload and container instead of remembering churning pod names — point an entry at <code>deploy/web</code> and it survives rollouts. Per-entry kubeconfig, <code>oc</code> for OpenShift, and when kubectl fails the pane says why and offers to sign you in.</p>
       </div>
       <div class="card">
         <span class="glyph">🔁</span>
@@ -179,12 +181,47 @@
       <div class="card">
         <span class="glyph">🖼️</span>
         <h3>Images, right in the terminal</h3>
-        <p><code>imgcat</code> a screenshot, a Grafana export or a plot from a remote host and look at it where you are, instead of copying it back first. Sixel, iTerm2 and Kitty graphics protocols all render.</p>
+        <p><code>imgcat</code> a screenshot, a Grafana export or a plot from a remote host and look at it where you are, instead of copying it back first. Sixel, iTerm2 and Kitty graphics protocols all render — size-checked as they arrive, and never allowed to read files on your Mac.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🤖</span>
+        <h3>Let an agent drive — when you say so</h3>
+        <p>Tell Claude Code or Codex <em>"log me in to every Splunk box in prod"</em> and watch it happen in the window you're already using. The <code>portside</code> command and its MCP tools list hosts and open sessions; typing into a pane is a separate switch, staged at your prompt, and every program asks by name first. Off until you turn it on.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">👥</span>
+        <h3>Shared team inventories</h3>
+        <p>Subscribe to hosts your team publishes in any git repository, and they appear read-only beside your own. Publish from a folder after a field-by-field review: what teammates changed, what you're sending, conflicts to settle, and personal settings that stay on your Mac. Anything that looks like a secret blocks the publish. No account and no service: just your own <code>git</code>.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🗝️</span>
+        <h3>Push and rotate SSH keys</h3>
+        <p>Copy a public key to twenty hosts at once with the passwords Portside already holds, or rotate one key for another across a fleet: add, verify each host really authenticates the new key, then retire the old one — only where verification just passed.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔍</span>
+        <h3>Explain This Connection</h3>
+        <p>See where a session really goes — resolved address, user, port, jump host, the identity files in the order ssh offers them, and which stored credential applies (<code>⇧⌘E</code>). When a session ends, the pane says why — bad password, changed host key, unresolvable name — and quotes the line it read that from.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔎</span>
+        <h3>Filter like a query</h3>
+        <p>Narrow the sidebar with <code>env:prod</code>, <code>kind:k8s</code>, <code>folder:lab</code>, <code>-env:prod</code> or a <code>/regex/</code>. Matches gather in a Results section at the top, showing where each one lives; arrow down to pick one, or press Return when there's a single match.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔗</span>
+        <h3><code>ssh://</code> links that open Portside</h3>
+        <p>Make Portside the handler for <code>ssh://</code> links from a wiki or dashboard, or use <code>portside://connect/&lt;name&gt;</code>. A link opens the saved host it names; an unknown or protected host asks first, and malformed hosts are refused rather than handed to ssh.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🪟</span>
+        <h3>X11 that just works</h3>
+        <p>Per-host X11 forwarding, trusted or untrusted, plus agent forwarding and keepalive. If XQuartz is missing, the host editor installs it — through Homebrew, or the official package once its checksum, signature and notarization check out — and points ssh at it the moment it's running.</p>
       </div>
       <div class="card">
         <span class="glyph">🔒</span>
         <h3>Local-first and trustworthy</h3>
-        <p>Your library is a JSON file on your disk. Passwords live in the macOS Keychain. Signed, notarized, auto-updating — and MIT-licensed open source.</p>
+        <p>Your library is a JSON file on your disk. Passwords live in the macOS Keychain. A remote program can copy to your clipboard but never read it. Signed, notarized, auto-updating — and MIT-licensed open source.</p>
       </div>
       <div class="card">
         <span class="glyph">🔑</span>
@@ -296,6 +333,21 @@
         <span class="glyph">🗝️</span>
         <h3><a href="https://github.com/mcglothi/portside/blob/main/docs/key-distribution.md">Key distribution</a></h3>
         <p>Push a public key to a selection of hosts at once — and the rules that keep a fleet push from locking the account: one password attempt per host, ever, and no retries.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🤖</span>
+        <h3><a href="https://github.com/mcglothi/portside/blob/main/docs/agent-api.md">Agent Access</a></h3>
+        <p>The <code>portside</code> command and MCP tools: what an agent can do, what it has to ask for, and what it can never do — arm MultiExec, or type at a password prompt.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">👥</span>
+        <h3><a href="https://github.com/mcglothi/portside/blob/main/docs/shared-inventory.md">Shared inventory</a></h3>
+        <p>Subscribing to and publishing a team's hosts through a git repository you already have — and what stays on your Mac.</p>
+      </div>
+      <div class="card">
+        <span class="glyph">🔄</span>
+        <h3><a href="https://github.com/mcglothi/portside/blob/main/docs/key-rotation.md">Key rotation</a></h3>
+        <p>Add, verify, retire — and the rule it's built around: the old key never leaves a host that hasn't just proved the new one works.</p>
       </div>
       <div class="card">
         <span class="glyph">🖥️</span>
