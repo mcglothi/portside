@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    # A normal run takes about 7 minutes. A test that deadlocks should fail
+    # the build quickly, not hold the runner for GitHub's 6-hour default.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       # The live terminal suite (TerminalLive*Tests) runs real tmux and skips

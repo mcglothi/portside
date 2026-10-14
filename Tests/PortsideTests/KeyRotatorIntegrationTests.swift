@@ -66,8 +66,8 @@ final class KeyRotatorIntegrationTests: XCTestCase {
         keygen.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         keygen.arguments = ["-t", "ed25519", "-f", path.path, "-N", "", "-q",
                             "-C", "portside-rotation-itest"]
-        keygen.standardOutput = Pipe()
-        keygen.standardError = Pipe()
+        keygen.standardOutput = FileHandle.nullDevice
+        keygen.standardError = FileHandle.nullDevice
         try keygen.run()
         keygen.waitUntilExit()
         XCTAssertEqual(keygen.terminationStatus, 0, "ssh-keygen failed")
@@ -203,16 +203,16 @@ final class KeyRotatorIntegrationTests: XCTestCase {
         master.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         master.arguments = ["-M", "-N", "-f", "-o", "ControlPath=\(controlPath)",
                             "-o", "BatchMode=yes", host]
-        master.standardOutput = Pipe()
-        master.standardError = Pipe()
+        master.standardOutput = FileHandle.nullDevice
+        master.standardError = FileHandle.nullDevice
         try master.run()
         master.waitUntilExit()
         defer {
             let stop = Process()
             stop.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             stop.arguments = ["-O", "exit", "-o", "ControlPath=\(controlPath)", host]
-            stop.standardOutput = Pipe()
-            stop.standardError = Pipe()
+            stop.standardOutput = FileHandle.nullDevice
+            stop.standardError = FileHandle.nullDevice
             try? stop.run()
             stop.waitUntilExit()
         }

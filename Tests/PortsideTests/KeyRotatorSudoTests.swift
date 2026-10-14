@@ -190,8 +190,8 @@ final class KeyRotatorSudoTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         let stdin = Pipe()
         process.standardInput = stdin
         try process.run()

@@ -308,7 +308,7 @@ final class KeyDistributorScriptTests: XCTestCase {
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         let out = Pipe()
         process.standardOutput = out
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         try process.run()
         let data = out.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -564,7 +564,7 @@ final class KeyDistributorScriptTests: XCTestCase {
         process.environment = ["HOME": spaced.path, "PATH": "/usr/bin:/bin"]
         let out = Pipe()
         process.standardOutput = out
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         try process.run()
         let data = out.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -944,8 +944,8 @@ final class KeyDistributorSudoExecutionTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         let stdin = Pipe()
         process.standardInput = stdin
         try process.run()
@@ -970,7 +970,7 @@ final class KeyDistributorSudoExecutionTests: XCTestCase {
         process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
         let out = Pipe()
         process.standardOutput = out
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         let stdin = Pipe()
         process.standardInput = stdin
         try process.run()
@@ -1152,8 +1152,8 @@ final class KeyDistributorAccountPushTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.environment = ["HOME": home.path, "PATH": "\(bin.path):/usr/bin:/bin"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         let stdin = Pipe()
         process.standardInput = stdin
         try process.run()
@@ -1197,8 +1197,8 @@ final class AuthorizedKeysMatchingTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
         process.arguments = [script.path]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
         return process.terminationStatus == 0
