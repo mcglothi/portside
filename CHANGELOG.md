@@ -3,7 +3,7 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.37.0
 
 **Kitty image limits also cover signed and zero-padded format numbers.** Cancelled or incomplete images no longer interfere with the next image, and refused images stay refused through the rest of a chunked transfer.
 
