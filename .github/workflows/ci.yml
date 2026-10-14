@@ -43,8 +43,13 @@ jobs:
           key: build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
           restore-keys: |
             build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.resolved') }}-
+      # Under `script`, so the tests see a terminal and their output is line
+      # buffered. Piped, XCTest's output is block buffered: a run that hung
+      # showed a log ending somewhere before the test that was stuck, and
+      # three runs were spent guessing which. `script` passes the exit
+      # status through, so failures still fail the step.
       - name: Build and test
-        run: swift test
+        run: script -q /dev/null swift test < /dev/null
       # Per-file ratchet on the Swift 6 migration. The package is still on
       # swift-tools 5.9, so these are warnings rather than errors — the gate
       # is that the count must not grow while the migration is pending.
