@@ -5,6 +5,10 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Kitty image limits also cover signed and zero-padded format numbers.** Cancelled or incomplete images no longer interfere with the next image, and refused images stay refused through the rest of a chunked transfer.
+
+**Kitty images are limited to 4096 pixels a side too.** Kitty graphics images (`kitten icat` and others) now get the same limit as iTerm2's. PNG and JPEG are checked by the size in their header, even when the image arrives in chunks; raw-pixel images are checked by the width and height they declare. Larger images, compressed PNGs and other formats aren't shown. Compressed Kitty transfers (`o=z`) aren't accepted at all for now, because SwiftTerm decompresses before anything can be checked and could stall doing so; clients send the image uncompressed instead.
+
 **An older Portside can't publish over a newer one's shared inventory.** Each publish now records which Portside release wrote the team's file. If a teammate's Portside is older than the one that last published, Publish Changes asks them to update instead of publishing, because an older version writes only the fields it knows and would silently drop newer ones for everyone. Releases before this one don't check, so update everyone who publishes.
 
 ## 0.36.0
