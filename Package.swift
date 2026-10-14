@@ -5,7 +5,12 @@ let package = Package(
     name: "Portside",
     platforms: [.macOS(.v14)],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.16.0"),
+        // Held to 1.20.x on purpose. 1.20 is the last release with the API
+        // Portside uses (getTerminal, direct buffer access); 1.99 is SwiftTerm
+        // v2, which moves parsing off the main thread and only exposes state
+        // through snapshots, and needs a planned migration. A plain `from:`
+        // would let a routine package update pull it in.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", "1.20.0"..<"1.21.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
