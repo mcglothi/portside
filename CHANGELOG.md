@@ -5,6 +5,8 @@ also feeds the in-app update changelog — see `Scripts/release.sh`.
 
 ## Unreleased
 
+**Start Fresh sticks.** With Previous sessions set to ask, choosing Start Fresh and then quitting without opening a tab brought the same prompt back at the next launch, and the one after, because the saved tab list was only rewritten when a tab changed. Start Fresh now records that nothing from last time is wanted.
+
 **Every Settings tab is visible.** The Settings window was too narrow for its eight tabs, so "Updates" was pushed into the toolbar's overflow menu, where it couldn't be chosen; reaching it meant dragging the window wider. The window now opens wide enough for all of them, and can't be dragged narrow enough to hide one. On a screen too narrow for that, the tabs show as icons only, so they all still fit.
 
 ## 0.37.0

@@ -35,7 +35,7 @@ struct ContentView: View {
                 if let plan = sessions.pendingRestore { sessions.restore(plan) }
                 sessions.pendingRestore = nil
             }
-            Button("Start Fresh", role: .cancel) { sessions.pendingRestore = nil }
+            Button("Start Fresh", role: .cancel) { sessions.declineRestore() }
         }
         .modifier(AgentPrompts())
         // Unconditional, with the indicator hiding itself, so ContentView needn't
