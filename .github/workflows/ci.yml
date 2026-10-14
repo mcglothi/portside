@@ -17,6 +17,14 @@ jobs:
       # without it; vim ships with macOS. Installed so CI runs it rather than
       # skipping it — the suite is the thing standing between a SwiftTerm bump
       # and a regression nobody notices.
+      # SwiftTerm 2 needs Swift 6.2 (swift-tools-version 6.2), newer than
+      # the image's default Xcode. Pick the newest Xcode 26 installed.
+      - name: Select Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode"
+          swift --version
       - name: Install tmux and neovim
         run: brew install tmux neovim vttest
       # Publishing commits with the user's own git identity and refuses to
