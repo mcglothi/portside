@@ -6,11 +6,25 @@
 #   Scripts/release.sh <version> [release notes]
 #   e.g. Scripts/release.sh 0.2.1 "Fix SFTP drag-out filename"
 #
+#   Scripts/release.sh --beta <version>-beta.<n> [release notes]
+#   e.g. Scripts/release.sh --beta 0.38.0-beta.1
+#
+# A beta is a GitHub pre-release, built from the branch you're on. Installed
+# apps never see it: their feed is releases/latest/download/appcast.xml, and
+# GitHub never makes a pre-release "latest". The Homebrew tap isn't touched.
+# Testers download the DMG by hand; when the final release ships with a
+# higher build number, Sparkle moves them onto it.
+#
 # Prereqs: `gh auth login` done; EdDSA key present (Scripts/generate_keys once).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${1:?usage: release.sh <version> [notes]}"
+BETA=""
+if [ "${1:-}" = "--beta" ]; then
+    BETA=1
+    shift
+fi
+VERSION="${1:?usage: release.sh [--beta] <version> [notes]}"
 NOTES="${2:-Portside $VERSION}"
 BUILD="$(git rev-list --count HEAD)"          # monotonic build number
 REPO="mcglothi/portside"
@@ -36,6 +50,16 @@ fi
 # ---------------------------------------------------------------------------
 UNSAFE="${PORTSIDE_ALLOW_UNSAFE_RELEASE:-}"
 
+# A beta's version says so, and a release's doesn't, so neither can be cut
+# under the other's name by a missing or stray --beta.
+if [ -n "$BETA" ]; then
+    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] \
+        || { echo "error: a beta version looks like 0.38.0-beta.1, not '$VERSION'" >&2; exit 1; }
+elif [[ "$VERSION" == *-* ]]; then
+    echo "error: '$VERSION' looks like a pre-release — use --beta" >&2
+    exit 1
+fi
+
 gate_fail() {
     if [ -n "$UNSAFE" ]; then
         echo "warning: $1 (overridden by PORTSIDE_ALLOW_UNSAFE_RELEASE)" >&2
@@ -55,8 +79,12 @@ if [ -n "$(git status --porcelain)" ]; then
     gate_fail "working tree is dirty — the build would contain changes the tag does not"
 fi
 
-# 2. On the branch the release will be tagged against.
-if [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
+# 2. On the branch the release will be tagged against. A beta is tagged
+#    against the branch it was built from, whatever that is.
+if [ -n "$BETA" ]; then
+    DEFAULT_BRANCH="$BRANCH"
+    [ "$BRANCH" != "HEAD" ] || gate_fail "detached HEAD — check out the branch the beta is built from"
+elif [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
     gate_fail "on branch '$BRANCH' but the release tags '$DEFAULT_BRANCH' — merge first"
 fi
 
@@ -93,7 +121,13 @@ if [ -z "${PORTSIDE_NOTARY_PROFILE:-}" ]; then
 fi
 
 # 6. The changelog entry has to exist before the release notes are extracted.
-if [ -f CHANGELOG.md ] && ! grep -q "^## $VERSION\b" CHANGELOG.md; then
+#    A beta ships what's under "## Unreleased"; its own version never gets a
+#    section, since the final release's section will describe the same work.
+if [ -n "$BETA" ]; then
+    if ! grep -q "^## Unreleased" CHANGELOG.md; then
+        gate_fail "CHANGELOG.md has no '## Unreleased' section — a beta's notes come from it"
+    fi
+elif [ -f CHANGELOG.md ] && ! grep -q "^## $VERSION\b" CHANGELOG.md; then
     gate_fail "CHANGELOG.md has no '## $VERSION' section — add it before releasing"
 fi
 
@@ -103,6 +137,9 @@ if ! diff -q CHANGELOG.md Sources/Portside/Resources/CHANGELOG.md >/dev/null 2>&
     gate_fail "Sources/Portside/Resources/CHANGELOG.md is out of date — cp CHANGELOG.md over it"
 fi
 
+if [ -n "$BETA" ]; then
+    echo "==> BETA: pre-release, not latest, Homebrew tap untouched"
+fi
 if [ -n "$UNSAFE" ]; then
     echo "==> Release gate OVERRIDDEN — publishing anyway (branch $BRANCH @ ${LOCAL_HEAD:0:9})"
 else
@@ -190,6 +227,14 @@ echo "==> Publishing GitHub release v$VERSION"
 # build/notarization wait above. This is what actually closes the race the
 # fetch check above only detects; without it, tag creation still trusted the
 # branch tip at publish time.
+RELEASE_KIND=(--latest)
+if [ -n "$BETA" ]; then
+    RELEASE_KIND=(--prerelease --latest=false)
+    if [ -z "${2:-}" ]; then
+        NOTES="$(printf 'Beta: for testing, not offered to installed copies or Homebrew. Download the DMG below; when the final release ships, Sparkle updates you to it.\n\n'
+                 awk '/^## Unreleased/ { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md)"
+    fi
+fi
 gh release create "v$VERSION" \
     "build/updates/Portside-$VERSION.zip" \
     "build/updates/Portside-$VERSION.dmg" \
@@ -199,7 +244,8 @@ gh release create "v$VERSION" \
     --repo "$REPO" \
     --title "Portside $VERSION" \
     --notes "$NOTES" \
-    --target "$LOCAL_HEAD"
+    --target "$LOCAL_HEAD" \
+    "${RELEASE_KIND[@]}"
 
 # Belt-and-suspenders: read the tag back from GitHub and confirm it actually
 # landed on the built commit. --target above should make this unconditionally
@@ -249,7 +295,9 @@ tap_fail() {
     exit 1
 }
 
-if [ -n "${PORTSIDE_SKIP_TAP_BUMP:-}" ]; then
+if [ -n "$BETA" ]; then
+    echo "==> Skipping Homebrew tap bump (beta)"
+elif [ -n "${PORTSIDE_SKIP_TAP_BUMP:-}" ]; then
     echo "==> Skipping Homebrew tap bump (PORTSIDE_SKIP_TAP_BUMP set)"
 else
     echo "==> Bumping the Homebrew tap ($TAP_REPO)"
@@ -311,5 +359,10 @@ else
     fi
 fi
 
-echo "==> Done. Installed apps will see v$VERSION on their next update check."
+if [ -n "$BETA" ]; then
+    echo "==> Done. v$VERSION is a pre-release: installed apps won't be offered it."
+    echo "    https://github.com/$REPO/releases/tag/v$VERSION"
+else
+    echo "==> Done. Installed apps will see v$VERSION on their next update check."
+fi
 echo "    Reinstall locally with: cp -R build/Portside.app /Applications/"

@@ -41,6 +41,23 @@ The DMG is the recommended direct download: open it and drag Portside to the
 Applications alias in the Finder window. The ZIP remains the update artifact
 for Sparkle and the Homebrew cask.
 
+## Betas
+
+```sh
+Scripts/release.sh --beta 0.38.0-beta.1
+```
+Same gates, signing and notarization, from whatever branch you're on (pushed,
+clean). It publishes a GitHub pre-release that is never marked latest, and
+leaves the Homebrew tap alone, so installed copies — which read
+`releases/latest/download/appcast.xml` — are never offered it. Release notes
+default to the changelog's `## Unreleased` section; no beta gets a section of
+its own. Testers download the DMG from the release page.
+
+Sparkle compares build numbers (the commit count), not version strings. When
+the final release ships with a higher build number, testers update onto it.
+A release from `main` with a higher count than the beta's branch would also
+move them onto it, beta work or not.
+
 ## Homebrew
 
 The cask lives in a separate repo (`mcglothi/homebrew-tap`, `Casks/portside.rb`),
