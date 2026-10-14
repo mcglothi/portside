@@ -5,11 +5,11 @@ struct TerminalHostingView: NSViewRepresentable {
     let session: TerminalSession
     var autoFocus = true
 
-    func makeNSView(context: Context) -> LocalProcessTerminalView {
+    func makeNSView(context: Context) -> ProcessTerminalView {
         session.terminalView
     }
 
-    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
+    func updateNSView(_ nsView: ProcessTerminalView, context: Context) {
         // The view is in the hierarchy here, so the window is available — the
         // one moment SwiftTerm needs to switch to the Metal renderer.
         session.applyMetalIfNeeded()
