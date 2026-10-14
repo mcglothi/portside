@@ -36,8 +36,31 @@ import SwiftUI
 enum SettingsWindowSizer {
 
     /// One width for every tab. A settings window that changes width as you
-    /// move between tabs reads as a glitch, and the widest page needs 520.
-    static let width: CGFloat = 520
+    /// move between tabs reads as a glitch.
+    ///
+    /// Set by the toolbar, not the pages: the widest page needs 520, but at 520
+    /// the eight tabs' labels don't fit and the last one ("Updates") went into
+    /// the toolbar's overflow menu, where SwiftUI shows Settings tabs disabled
+    /// — reachable only by dragging the window wider. Measured: all eight fit
+    /// at 540 and overflow at 520. 600 leaves room. Pages take this as their
+    /// minimum width too, so dragging can't bring the overflow back.
+    static var width: CGFloat { min(preferredWidth, maxWidth) }
+    static let preferredWidth: CGFloat = 600
+
+    /// Narrowest window that still shows every tab with its label. Below it the
+    /// toolbar shows icons only, so no tab ever lands in the overflow menu.
+    static let labelledToolbarWidth: CGFloat = 540
+
+    /// The screen's width less a margin. `PORTSIDE_SETTINGS_MAX_WIDTH` forces it,
+    /// so the narrow-screen path can be exercised on a wide display.
+    static var maxWidth: CGFloat {
+        if let override = ProcessInfo.processInfo.environment["PORTSIDE_SETTINGS_MAX_WIDTH"],
+           let forced = Double(override) {
+            return CGFloat(forced)
+        }
+        let visible = NSScreen.main?.visibleFrame.width ?? 1440
+        return max(360, visible - 40)
+    }
 
     /// Left free around the window so a "fits on screen" window does not sit
     /// edge to edge against the menu bar and the Dock.
@@ -88,8 +111,19 @@ enum SettingsWindowSizer {
         DispatchQueue.main.async {
             NSApp.windows
                 .filter { $0.identifier?.rawValue == Self.settingsWindowIdentifier }
-                .forEach { $0.styleMask.insert(.resizable) }
+                .forEach { window in
+                    window.styleMask.insert(.resizable)
+                    fitToolbar(window)
+                }
         }
+    }
+
+    /// Labels when every tab fits with its label, icons only when not — never
+    /// the overflow menu, where the tabs can't be chosen.
+    @MainActor static func fitToolbar(_ window: NSWindow) {
+        guard let toolbar = window.toolbar else { return }
+        let mode: NSToolbar.DisplayMode = width < labelledToolbarWidth ? .iconOnly : .iconAndLabel
+        if toolbar.displayMode != mode { toolbar.displayMode = mode }
     }
 
 
