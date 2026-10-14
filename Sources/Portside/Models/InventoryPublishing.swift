@@ -214,6 +214,8 @@ enum InventoryPublishing {
         /// didn't exist yet). Publishing refuses if it has moved since — the
         /// merge was made against what the user reviewed, not what's there now.
         var reviewedTip: String? = nil
+        /// This build's release, stamped into what's published.
+        var appVersion: String? = nil
 
         func merged(_ resolutions: [UUID: Side] = [:]) -> Merge {
             InventoryPublishing.merge(base: base, mine: mine.hosts, theirs: theirs,

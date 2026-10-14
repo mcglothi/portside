@@ -191,6 +191,8 @@ enum SharedManifest {
         /// something that can be shared, or carrying a value that isn't safe
         /// to hand to ssh.
         var skipped: Int
+        /// The release that last wrote the file, if it said.
+        var writtenBy: String? = nil
     }
 
     enum ParseError: LocalizedError, Equatable {
@@ -435,6 +437,8 @@ extension SharedManifest {
         for i in parsed.entries.indices {
             if let original = byDerived[parsed.entries[i].id] { parsed.entries[i].id = original }
         }
+        struct Stamp: Decodable { var writtenBy: String? }
+        parsed.writtenBy = (try? JSONDecoder().decode(Stamp.self, from: data))?.writtenBy
         return parsed
     }
 }

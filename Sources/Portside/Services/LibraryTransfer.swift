@@ -30,21 +30,29 @@ enum LibraryTransfer {
         /// under their original ids is what lets the reference survive the
         /// trip; the password is re-entered once per machine, per profile.
         var credentialProfiles: [CredentialProfile]?
+        /// The Portside release that wrote the file. A shared inventory's
+        /// publish refuses to overwrite one written by a newer release: an
+        /// older build writes only the fields it knows, and would drop the
+        /// rest for everyone. Absent from files written before this, and
+        /// from development builds.
+        var writtenBy: String?
     }
 
     static func encodeSessions(entries: [SessionEntry], folders: [String],
-                               credentialProfiles: [CredentialProfile]) throws -> Data {
+                               credentialProfiles: [CredentialProfile],
+                               writtenBy: String? = AppVersion.current) throws -> Data {
         try encode(Document(portsideExport: currentVersion, kind: .sessions,
                             entries: sortedForDiff(entries), folders: folders.sorted(),
                             macros: nil,
-                            credentialProfiles: credentialProfiles.sorted { $0.name < $1.name }))
+                            credentialProfiles: credentialProfiles.sorted { $0.name < $1.name },
+                            writtenBy: writtenBy))
     }
 
     static func encodeMacros(_ macros: [Macro]) throws -> Data {
         try encode(Document(portsideExport: currentVersion, kind: .macros,
                             entries: nil, folders: nil,
                             macros: macros.sorted { $0.name < $1.name },
-                            credentialProfiles: nil))
+                            credentialProfiles: nil, writtenBy: AppVersion.current))
     }
 
     /// Stable order so an export diffs cleanly.

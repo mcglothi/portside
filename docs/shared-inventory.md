@@ -79,6 +79,12 @@ or credential helper) and never prompts. Commits carry your
 `user.name`/`user.email`; if git doesn't know who you are, nothing is
 committed and Portside tells you how to set it.
 
+**Everyone publishing should be on the same release or newer.** The file
+records the Portside release that last published it. If it's newer than
+yours, Publish Changes stops and asks you to update first: an older Portside
+writes only the fields it knows, so publishing from it would drop newer
+fields for the whole team.
+
 ### Checking pull requests in CI
 
 `Scripts/portside-inventory-check.py` is a single file with no dependencies.

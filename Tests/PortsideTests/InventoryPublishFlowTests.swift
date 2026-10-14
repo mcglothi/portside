@@ -172,6 +172,42 @@ final class InventoryPublishFlowTests: XCTestCase {
     }
 
     /// A team manifest that exists but can't be read is not an empty team.
+    /// A newer Portside last wrote the team's file: an older one publishing
+    /// would drop the fields it doesn't know, so it's refused and told to
+    /// update. The same release, a newer one, or no stamp at all is fine.
+    func testANewerReleasesFileIsntOverwrittenByAnOlderOne() async throws {
+        let src = try await create(["web01"])
+        try git(["clone", "--quiet", bare.path, teammate.path])
+        let file = teammate.appendingPathComponent("portside.json")
+        let parsed = try SharedManifest.parseKeepingIDs(Data(contentsOf: file))
+        try LibraryTransfer.encodeSessions(entries: parsed.entries, folders: parsed.folders,
+                                           credentialProfiles: [], writtenBy: "0.40.0").write(to: file)
+        try git(["commit", "--quiet", "-am", "from a newer Portside"], in: teammate)
+        try git(["push", "--quiet", "origin", "main"], in: teammate)
+
+        guard case .failure(let f) = await store.planPublish(sourceID: src.id, appVersion: "0.37.0") else {
+            return XCTFail("an older release planned a publish over a newer one's file")
+        }
+        XCTAssertTrue(f.message.contains("0.40.0") && f.message.contains("Update Portside"), f.message)
+        for ok: String? in ["0.40.0", "0.41.2", nil] {
+            guard case .success = await store.planPublish(sourceID: src.id, appVersion: ok) else {
+                return XCTFail("refused for \(ok ?? "a development build")")
+            }
+        }
+    }
+
+    /// What's published carries the release that published it.
+    func testAPublishStampsTheRelease() async throws {
+        let src = try await create(["web01"])
+        store.upsert(host("web02"))
+        let planned = await store.planPublish(sourceID: src.id, appVersion: "0.37.0")
+        guard case .success(let plan) = planned else { return XCTFail("plan failed: \(planned)") }
+        guard case .success(let result) = await store.publish(plan, message: "stamp") else {
+            return XCTFail("publish failed")
+        }
+        XCTAssertEqual(try onBranch(result.branch).writtenBy, "0.37.0")
+    }
+
     func testAnUnreadableTeamManifestStopsThePlan() async throws {
         let src = try await create(["web01"])
         try git(["clone", "--quiet", bare.path, teammate.path])
