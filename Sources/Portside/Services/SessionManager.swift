@@ -1268,15 +1268,27 @@ final class SessionManager: ObservableObject {
         // detect focus by hit-testing mouse-downs to the terminal under the
         // cursor and marking its pane active (same NSEvent-monitor pattern as
         // the selection auto-scroll and Enter-to-close workarounds).
+        //
+        // It also hands the terminal the keyboard. AppKit only does that when
+        // the view under the click accepts first responder, and with Metal on,
+        // SwiftTerm 2 covers the terminal with a surface view that doesn't —
+        // so the pane you clicked turned active but typing went elsewhere
+        // (#76). Unconditional, because a pane can be active without having
+        // the keyboard.
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self, let window = event.window,
-                  let hit = window.contentView?.hitTest(event.locationInWindow),
-                  let terminal = Self.enclosingTerminalView(of: hit),
-                  let session = self.sessions.first(where: { $0.terminalView === terminal }),
-                  session.id != self.selectedTab?.activePaneID else { return event }
-            self.focusPane(session.id)
+            self?.focusClickedPane(event)
             return event
         }
+    }
+
+    /// The click-to-focus half of the mouse monitor above.
+    func focusClickedPane(_ event: NSEvent) {
+        guard let window = event.window,
+              let hit = window.contentView?.hitTest(event.locationInWindow),
+              let terminal = Self.enclosingTerminalView(of: hit),
+              let session = sessions.first(where: { $0.terminalView === terminal }) else { return }
+        if session.id != selectedTab?.activePaneID { focusPane(session.id) }
+        if window.firstResponder !== terminal { window.makeFirstResponder(terminal) }
     }
 
     /// Walks up from a hit-tested subview to the enclosing terminal view.

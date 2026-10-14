@@ -485,7 +485,7 @@ struct TerminalPane: View {
     @ObservedObject var session: TerminalSession
 
     var body: some View {
-        TerminalHostingView(session: session)
+        TerminalHostingView(session: session, isActive: sessions.selected === session)
             .overlay(alignment: .topTrailing) {
                 if session.findVisible {
                     FindBar(session: session)
