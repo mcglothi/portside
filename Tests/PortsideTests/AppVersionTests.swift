@@ -15,4 +15,19 @@ final class AppVersionTests: XCTestCase {
             XCTAssertFalse(AppVersion.isNewer(mangled, than: "0.37.0"), "\(mangled) must not block")
         }
     }
+
+    /// A beta's stamp sits between the release before it and its own, so a
+    /// stable build that's older can't publish over a beta's inventory.
+    func testBetasOrderBetweenReleases() {
+        XCTAssertTrue(AppVersion.isNewer("0.38.0-beta.1", than: "0.37.0"))
+        XCTAssertTrue(AppVersion.isNewer("0.38.0", than: "0.38.0-beta.1"))
+        XCTAssertTrue(AppVersion.isNewer("0.38.0-beta.2", than: "0.38.0-beta.1"))
+        XCTAssertTrue(AppVersion.isNewer("0.38.0-beta.10", than: "0.38.0-beta.9"), "numbers, not text")
+        XCTAssertFalse(AppVersion.isNewer("0.38.0-beta.1", than: "0.38.0"))
+        XCTAssertFalse(AppVersion.isNewer("0.38.0-beta.1", than: "0.38.0-beta.1"))
+        XCTAssertFalse(AppVersion.isNewer("0.37.0", than: "0.38.0-beta.1"))
+        for mangled in ["0.38.0-", "0.38.0-beta", "0.38.0-beta.", "0.38.0-rc.1", "0.38.0-beta.-1", "-beta.1", "0.38.0-beta.1-x"] {
+            XCTAssertFalse(AppVersion.isNewer(mangled, than: "0.37.0"), "\(mangled) must not block")
+        }
+    }
 }
