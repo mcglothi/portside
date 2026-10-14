@@ -47,7 +47,7 @@ final class ContainerShellIntegrationTests: XCTestCase {
         return (sessions, try XCTUnwrap(sessions.tabs.last?.leaves.first))
     }
 
-    private func screen(_ s: TerminalSession) -> String { AgentController.screenLines(s.terminalView.getTerminal()) }
+    private func screen(_ s: TerminalSession) -> String { s.terminalView.agentScreen().text }
 
     func testABashContainerGetsCommandRecording() async throws {
         let name = try container("bash:5.2")

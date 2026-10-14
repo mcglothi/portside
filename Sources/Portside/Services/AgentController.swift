@@ -690,7 +690,7 @@ final class AgentController: ObservableObject {
             // tty (it stays raw), so the last line on screen is checked too.
             // Matching text is a heuristic, which is fine *here*: a false
             // positive only means refusing to type.
-            let screen = Self.screenLines(pane.terminalView.screenSource)
+            let screen = pane.terminalView.agentScreen().text
             if AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(screen, lines: 1)) {
                 return .failure(.denied("\(paneName(pane)) looks like it\u{2019}s asking for a password; "
                                         + "an agent can\u{2019}t type there."))
@@ -716,7 +716,7 @@ final class AgentController: ObservableObject {
                 // The pane may have ended, or reached a password prompt, while
                 // the question was up — including a remote one, which only the
                 // screen shows.
-                let now = Self.screenLines(pane.terminalView.screenSource)
+                let now = pane.terminalView.agentScreen().text
                 guard pane.isRunning, !pane.isReadingSecret,
                       !AgentPolicy.looksLikeSecretPrompt(AgentPolicy.screenText(now, lines: 1)) else {
                     return .failure(.badRequest("\(paneName(pane)) changed while waiting; nothing was typed."))
@@ -1053,6 +1053,17 @@ final class AgentController: ObservableObject {
     /// longer than the terminal is wide came back split in two, and an agent
     /// looking for it, or for its output, didn't find it. A row the terminal
     /// soft-wrapped joins the row before it.
+    /// The visible rows alone, joined where a row wraps into the next: the
+    /// fallback when there's no shadow with the whole session in it.
+    static func screenLines(visibleRows rows: [TerminalVisibleRowSnapshot]) -> String {
+        var text = ""
+        for (i, row) in rows.enumerated() {
+            if i > 0 && !row.isWrapped { text += "\n" }
+            text += row.text
+        }
+        return text
+    }
+
     static func screenLines(_ terminal: Terminal) -> String {
         var text = ""
         var row = terminal.buffer.totalLinesTrimmed
@@ -1068,9 +1079,8 @@ final class AgentController: ObservableObject {
     }
 
     private func screenRow(_ pane: TerminalSession, lines: Int?) -> JSONValue {
-        let terminal = pane.terminalView.screenSource
-        let raw = Self.screenLines(terminal)
-        let limit = min(max(lines ?? terminal.rows, 1), 500)
+        let (raw, rows) = pane.terminalView.agentScreen()
+        let limit = min(max(lines ?? rows, 1), 500)
         return .object([
             "pane": .string(pane.id.uuidString),
             "host": JSONValue(pane.entry?.name),

@@ -15,7 +15,7 @@ import XCTest
 @MainActor
 final class ShellIntegrationInjectionPtyTests: XCTestCase {
     private func screen(_ session: TerminalSession) -> String {
-        AgentController.screenLines(session.terminalView.getTerminal())
+        session.terminalView.agentScreen().text
     }
 
     func testTheInjectionWaitsUntilTheTerminalIsRawAndThenWorks() async throws {

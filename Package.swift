@@ -10,7 +10,7 @@ let package = Package(
         // v2, which moves parsing off the main thread and only exposes state
         // through snapshots, and needs a planned migration. A plain `from:`
         // would let a routine package update pull it in.
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", "1.20.0"..<"1.21.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", "1.99.0"..<"2.0.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [

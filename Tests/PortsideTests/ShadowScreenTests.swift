@@ -36,7 +36,7 @@ final class ShadowScreenTests: XCTestCase {
             XCTAssertTrue(shadow.complete)
             stream += Array((1...120).map { "line \($0) of seed \(seed)\r\n" }.joined().utf8)
             feed(v, stream, chunk: Int(seed % 13) + 1)
-            if AgentController.screenLines(v.getTerminal()) != AgentController.screenLines(shadow.terminal) {
+            if Self.viewVisible(v) != Self.visible(shadow.terminal) {
                 differ.append(seed)
             }
         }
@@ -55,11 +55,30 @@ final class ShadowScreenTests: XCTestCase {
         v.setShadowScreen(true)
         let sixel = "\u{1b}Pq#0;2;100;0;0#0!40~-!40~-!40~\u{1b}\\"
         feed(v, Array("above\r\n\(sixel)\r\nbelow\r\n".utf8))
-        let viewText = AgentController.screenLines(v.getTerminal())
-        let shadowText = AgentController.screenLines(try XCTUnwrap(v.shadowScreen).terminal)
+        let viewText = Self.viewVisible(v).joined(separator: "\n")
+        let shadowText = Self.visible(try XCTUnwrap(v.shadowScreen).terminal).joined(separator: "\n")
         XCTAssertNotEqual(viewText, shadowText, "if these match, the shadow now handles images: tighten the test above")
         func words(_ t: String) -> [String] { t.split(whereSeparator: \.isWhitespace).map(String.init) }
         XCTAssertEqual(words(viewText), words(shadowText), "the text itself is the same")
+    }
+
+    /// The view's visible screen, a line per row, trailing blanks dropped.
+    /// Under SwiftTerm v2 that's all of the view there is to compare with.
+    static func viewVisible(_ v: LoggingTerminalView) -> [String] {
+        v.terminalStateSnapshot().visibleRows.map { trimmed($0.text) }
+    }
+
+    /// The same rows of a headless terminal.
+    static func visible(_ t: Terminal) -> [String] {
+        (0..<t.rows).map { row in
+            trimmed(t.getLine(row: row)?.translateToString(trimRight: true, skipNullCellsFollowingWide: true) ?? "")
+        }
+    }
+
+    static func trimmed(_ s: String) -> String {
+        var s = s
+        while s.last == " " || s.last == "\0" { s.removeLast() }
+        return s
     }
 
     static func drawsAnImage(_ bytes: [UInt8]) -> Bool {
@@ -71,10 +90,10 @@ final class ShadowScreenTests: XCTestCase {
         let v = view()
         v.setShadowScreen(true)
         feed(v, Array((1...300).map { "row \($0)\r\n" }.joined().utf8))
-        let text = AgentController.screenLines(v.screenSource)
+        let text = v.agentScreen().text
         XCTAssertTrue(text.contains("row 1\n"), "scrolled-off lines are kept")
         XCTAssertTrue(text.contains("row 300"))
-        XCTAssertTrue(v.screenSource === v.shadowScreen?.terminal, "reads come from the shadow")
+        XCTAssertEqual(text, AgentController.screenLines(try XCTUnwrap(v.shadowScreen).terminal), "reads come from the shadow")
     }
 
     /// Switched on after output, it hasn't seen the start, so reads stay on
@@ -84,13 +103,14 @@ final class ShadowScreenTests: XCTestCase {
         feed(v, Array("before\r\n".utf8))
         v.setShadowScreen(true)
         XCTAssertEqual(v.shadowScreen?.complete, false)
-        XCTAssertTrue(v.screenSource === v.getTerminal())
+        XCTAssertEqual(v.agentScreen().text, AgentController.screenLines(visibleRows: v.terminalStateSnapshot().visibleRows),
+                       "the visible screen, not the incomplete shadow")
     }
 
     func testItFollowsTheViewsSize() throws {
         let v = view()
         v.setShadowScreen(true)
-        v.getTerminal().resize(cols: 91, rows: 33)
+        v.resize(cols: 91, rows: 33)
         v.sizeChanged(source: v, newCols: 91, newRows: 33)
         XCTAssertEqual(v.shadowScreen?.terminal.cols, 91)
         XCTAssertEqual(v.shadowScreen?.terminal.rows, 33)
@@ -101,7 +121,7 @@ final class ShadowScreenTests: XCTestCase {
         v.setShadowScreen(true)
         v.setShadowScreen(false)
         XCTAssertNil(v.shadowScreen)
-        XCTAssertTrue(v.screenSource === v.getTerminal())
+        XCTAssertEqual(v.agentScreen().text, AgentController.screenLines(visibleRows: v.terminalStateSnapshot().visibleRows))
     }
 
     /// Portside's own notices are on the screen the user sees, so they're in

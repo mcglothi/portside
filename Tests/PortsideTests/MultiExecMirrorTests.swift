@@ -42,7 +42,7 @@ final class MultiExecMirrorTests: XCTestCase {
         // Simulate the terminal auto-answering a host query (e.g. DA/DSR),
         // which SwiftTerm routes through send(source: Terminal, data:).
         let response = Array("\u{1B}[?64;1;2c".utf8)
-        view.send(source: view.getTerminal(), data: response[...])
+        view.send(source: ProcessTerminalView.sizeQueryPlaceholder, data: response[...])
         XCTAssertTrue(mirrored().isEmpty,
                       "terminal auto-responses are not user input; mirroring them types garbage into peers")
     }

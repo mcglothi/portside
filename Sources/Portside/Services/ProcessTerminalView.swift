@@ -99,7 +99,12 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
     func setup ()
     {
         terminalDelegate = self
-        process = LocalProcess (delegate: self)
+        // Delivered on the main queue, as SwiftTerm 1.x did by default:
+        // everything in Portside's receive path (logs, capture, timeline,
+        // guard, shadow) assumes it. v2's default is a private queue, and
+        // with it the delivery thread raced the main thread over the command
+        // capture and crashed (EXC_BAD_ACCESS in CommandOutputCapture).
+        process = LocalProcess (delegate: self, dispatchQueue: .main)
     }
     
     /**
@@ -222,13 +227,24 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
      */
     open func getWindowSize () -> winsize
     {
-        // `cellDimension` is internal to SwiftTerm; `cellSizeInPixels` is the
-        // public form of the same cell size, already scaled for the display.
-        // The view sets it during init, before any process asks for this.
-        let terminal = getTerminal()
-        let cell = cellSizeInPixels(source: terminal) ?? (width: 0, height: 0)
-        let pxW = min(cell.width * terminal.cols, Int(UInt16.max))
-        let pxH = min(cell.height * terminal.rows, Int(UInt16.max))
-        return winsize(ws_row: UInt16(terminal.rows), ws_col: UInt16(terminal.cols), ws_xpixel: UInt16(pxW), ws_ypixel: UInt16(pxH))
+        // Cell size: SwiftTerm's own is internal. `cellSizeInPixels(source:)`
+        // is the public form, already scaled for the display; under v2 it
+        // reads a cached value and ignores `source`, which a view no longer
+        // hands out, so a placeholder stands in for it.
+        let dims = terminalDimensions
+        let cell = cellSizeInPixels(source: Self.sizeQueryPlaceholder) ?? (width: 0, height: 0)
+        let pxW = min(cell.width * dims.cols, Int(UInt16.max))
+        let pxH = min(cell.height * dims.rows, Int(UInt16.max))
+        return winsize(ws_row: UInt16(dims.rows), ws_col: UInt16(dims.cols), ws_xpixel: UInt16(pxW), ws_ypixel: UInt16(pxH))
     }
+}
+
+extension ProcessTerminalView {
+    /// See `getWindowSize`: an argument SwiftTerm's cell-size query requires
+    /// and no longer reads.
+    static let sizeQueryPlaceholder = Terminal(delegate: PlaceholderTerminalDelegate())
+}
+
+private final class PlaceholderTerminalDelegate: TerminalDelegate {
+    func send(source: Terminal, data: ArraySlice<UInt8>) {}
 }
