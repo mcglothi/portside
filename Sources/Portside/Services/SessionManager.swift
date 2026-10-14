@@ -2473,6 +2473,15 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    /// Start Fresh: drops the offer and records what's open now as the last
+    /// session. The snapshot is otherwise only rewritten when a tab changes,
+    /// so declining and then quitting without touching a tab left last
+    /// time's tabs on disk, and the next launch asked about them again.
+    func declineRestore() {
+        pendingRestore = nil
+        notifyWorkspaceChanged()
+    }
+
     /// Replays a planned restore: rebuilds each tab's pane tree, restores the
     /// selected tab, and leaves every tab disarmed.
     func restore(_ plan: RestorePlan) {
