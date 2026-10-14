@@ -41,7 +41,19 @@ final class ClipboardPolicyTests: XCTestCase {
         view.useClipboard(board)
         var sent: [UInt8] = []
         view.transportWriter = { sent += $0 }
-        return (view, { String(decoding: sent, as: UTF8.self) })
+        // SwiftTerm 2 parses synchronously but hands each reply to the
+        // delegate with `DispatchQueue.main.async`, so drain the main queue
+        // before reading — otherwise the negative checks pass on nothing.
+        return (view, {
+            Self.drainMain()
+            return String(decoding: sent, as: UTF8.self)
+        })
+    }
+
+    static func drainMain() {
+        let drained = XCTestExpectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        _ = XCTWaiter.wait(for: [drained], timeout: 5)
     }
 
     /// A program asking what's on the clipboard gets no answer — nothing is
@@ -66,6 +78,7 @@ final class ClipboardPolicyTests: XCTestCase {
         let (view, _) = view()
         let text = "copied-\(UUID().uuidString.prefix(6))"
         view.feed(byteArray: Array("\u{1B}]52;c;\(Data(text.utf8).base64EncodedString())\u{07}".utf8)[...])
+        Self.drainMain()
         XCTAssertEqual(board.string(forType: .string), text)
     }
 
@@ -75,6 +88,7 @@ final class ClipboardPolicyTests: XCTestCase {
         let (view, _) = view()
         let huge = Data(repeating: 0x41, count: (1 << 20) + 1).base64EncodedString()
         view.feed(byteArray: Array("\u{1B}]52;c;\(huge)\u{07}".utf8)[...])
+        Self.drainMain()
         XCTAssertEqual(board.string(forType: .string), "before")
     }
 

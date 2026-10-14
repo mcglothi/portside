@@ -40,6 +40,13 @@ final class TerminalImageGuardTests: XCTestCase {
         Array("\u{1b}_G\(control);\(Data(payload.utf8).base64EncodedString())\u{1b}\\".utf8)
     }
 
+    /// The guard rewrites a file medium to one SwiftTerm doesn't know. 1.x
+    /// answered that with ENOTSUP; 2.0 answers EINVAL. Either is a refusal
+    /// that says nothing about the file.
+    static func refused(_ reply: String) -> Bool {
+        reply.contains("ENOTSUP") || reply.contains("EINVAL: unsupported medium")
+    }
+
     private func scratchFile(named name: String, bytes: Int) -> String {
         let path = NSTemporaryDirectory() + name
         FileManager.default.createFile(atPath: path, contents: Data(repeating: 7, count: bytes))
@@ -55,7 +62,7 @@ final class TerminalImageGuardTests: XCTestCase {
         let a = reply(to: apc("a=t,t=f,i=7", existing))
         let b = reply(to: apc("a=t,t=f,i=7", missing))
         XCTAssertEqual(a, b, "the reply must not depend on whether the path exists")
-        XCTAssertTrue(a.contains("ENOTSUP"), a)
+        XCTAssertTrue(Self.refused(a), a)
     }
 
     func testAFilesSizeIsNoLongerAnswered() {
@@ -63,7 +70,7 @@ final class TerminalImageGuardTests: XCTestCase {
         let path = scratchFile(named: "portside-kitty-\(UUID().uuidString)", bytes: 16)
         let r = reply(to: apc("a=t,t=f,f=32,s=2,v=2,i=7", path))
         XCTAssertFalse(r.contains(";OK"), r)
-        XCTAssertTrue(r.contains("ENOTSUP"), r)
+        XCTAssertTrue(Self.refused(r), r)
     }
 
     func testATemporaryFileIsNotDeleted() {
@@ -80,7 +87,7 @@ final class TerminalImageGuardTests: XCTestCase {
     /// `shm_open` is variadic, and on arm64 its mode can't be passed.)
     func testSharedMemoryIsNotOpened() {
         let r = reply(to: apc("a=t,t=s,f=32,s=1,v=1,i=7", "/portside-kitty-\(getpid())"))
-        XCTAssertTrue(r.contains("ENOTSUP"), r)
+        XCTAssertTrue(Self.refused(r), r)
     }
 
     // MARK: What must keep working
@@ -121,7 +128,10 @@ final class TerminalImageGuardTests: XCTestCase {
             for chunk in [1, 2, 3, 7, .max] {
                 let r = reply(to: bytes, chunk: chunk)
                 XCTAssertFalse(r.contains(";OK"), "\(label), chunks of \(chunk): \(r)")
-                XCTAssertTrue(r.contains("ENOTSUP"), "\(label), chunks of \(chunk): \(r)")
+                // SwiftTerm 2 drops a command with a multi-character medium
+                // without answering at all, which leaks nothing either.
+                let silent = label == "multi-character value" && r.isEmpty
+                XCTAssertTrue(Self.refused(r) || silent, "\(label), chunks of \(chunk): \(r)")
             }
         }
     }
@@ -148,8 +158,9 @@ final class TerminalImageGuardTests: XCTestCase {
     /// and the main thread busy for minutes. Now cropped.
     func testAHugeRepeatIsCropped() throws {
         let harness = guarded(sixel("#0!200000~"))
-        let size = try XCTUnwrap(harness.bitmaps.first)
-        XCTAssertLessThanOrEqual(size.width, TerminalImageGuard.maxSixelWidth)
+        // The crop drops the whole run, leaving nothing painted; SwiftTerm 2
+        // emits no bitmap for that (1.x emitted an empty one).
+        XCTAssertLessThanOrEqual(harness.bitmaps.first?.width ?? 0, TerminalImageGuard.maxSixelWidth)
     }
 
     func testManySmallRepeatsCannotAddUpPastTheCap() throws {
@@ -169,22 +180,26 @@ final class TerminalImageGuardTests: XCTestCase {
     /// the one before it; the guard has to keep the larger one too.
     func testARepeatCannotBeHiddenBehindAnUnreadableOne() throws {
         let harness = guarded(sixel("#0" + String(repeating: "!999999!\u{01}5~", count: 20)))
-        let size = try XCTUnwrap(harness.bitmaps.first)
-        XCTAssertLessThanOrEqual(size.width, TerminalImageGuard.maxSixelWidth)
+        // The crop drops the whole run, leaving nothing painted; SwiftTerm 2
+        // emits no bitmap for that (1.x emitted an empty one).
+        XCTAssertLessThanOrEqual(harness.bitmaps.first?.width ?? 0, TerminalImageGuard.maxSixelWidth)
     }
 
     /// Raster attributes (`"Pan;Pad;Ph;Pv`) declare a size. SwiftTerm sizes
-    /// the bitmap from the pixels actually drawn, not from this, so a huge
-    /// declaration over a small image must not grow it — this pins that, so a
+    /// the bitmap from the pixels actually drawn, and since 2.0 refuses an
+    /// image whose declaration is past its own pixel limit outright. Either
+    /// way a huge declaration must not grow the bitmap — this pins that, so a
     /// SwiftTerm bump that starts honouring the declaration fails here first.
-    func testDeclaredRasterSizeDoesNotSizeTheBitmap() throws {
+    func testDeclaredRasterSizeDoesNotSizeTheBitmap() {
         let harness = guarded(sixel("\"1;1;50000;50000#0~~"))
-        let size = try XCTUnwrap(harness.bitmaps.first)
-        XCTAssertLessThanOrEqual(size.width, TerminalImageGuard.maxSixelWidth)
-        XCTAssertLessThanOrEqual(size.height, TerminalImageGuard.maxSixelHeight)
+        XCTAssertLessThanOrEqual(harness.bitmaps.first?.width ?? 0, TerminalImageGuard.maxSixelWidth)
+        XCTAssertLessThanOrEqual(harness.bitmaps.first?.height ?? 0, TerminalImageGuard.maxSixelHeight)
         let unguarded = TerminalHarness()
         unguarded.feed(sixel("\"1;1;50000;50000#0~~"))
-        XCTAssertEqual(unguarded.bitmaps.first?.width, 2, "SwiftTerm ignores the declared size")
+        XCTAssertTrue(unguarded.bitmaps.isEmpty, "SwiftTerm refuses a declaration past its limit")
+        let modest = TerminalHarness()
+        modest.feed(sixel("\"1;1;3000;3000#0~~"))
+        XCTAssertEqual(modest.bitmaps.first?.width, 2, "SwiftTerm ignores a declared size within its limit")
     }
 
     func testOrdinarySixelIsUntouched() {
@@ -266,7 +281,7 @@ final class TerminalImageGuardTests: XCTestCase {
 
     /// Held bytes are only ever delayed: everything fed comes out, in order.
     func testNothingIsLostOrReordered() {
-        let bytes = Array("x\u{1b}]0;\u{65E5}\u{672C}\u{1F680}\u{07}y\u{1b}_Ga=q;\u{00E9}\u{1b}\\z".utf8)
+        let bytes = Array("x\u{1b}]0;\u{65E5}\u{672C}\u{1F680}\u{07}y\u{1b}_Ga=q;e\u{1b}\\z\u{1F680}".utf8)
         for size in 1...7 {
             var filter = TerminalImageGuard()
             var out: [UInt8] = []
@@ -277,5 +292,24 @@ final class TerminalImageGuardTests: XCTestCase {
             }
             XCTAssertEqual(out, bytes, "chunks of \(size)")
         }
+    }
+
+    /// Kitty commands are ASCII. Anything else inside an APC is replaced, so
+    /// SwiftTerm 2 — which reads such a byte as content or as a control
+    /// depending on where the read split — reads it the same way the guard does.
+    func testNonASCIIInsideAnAPCIsReplaced() {
+        var filter = TerminalImageGuard()
+        let bytes = Array("\u{1b}_Ga=q;\u{00E9}".utf8) + [0x9C, 0x9F] + Array("\u{1b}\\\u{00E9}".utf8)
+        let expected = Array("\u{1b}_Ga=q;XXXX\u{1b}\\\u{00E9}".utf8)
+        XCTAssertEqual(Array(filter.filtered(bytes[...])), expected)
+    }
+
+    /// In an OSC a C1 byte that isn't continuing a character becomes `?`;
+    /// characters and a C1 ST that ends the OSC are left alone.
+    func testAStrayC1InsideAnOSCIsReplaced() {
+        var filter = TerminalImageGuard()
+        let bytes = Array("\u{1b}]0;a".utf8) + [0x9D, 0x90] + Array("\u{00DC}".utf8) + [0x9C]
+        let expected = Array("\u{1b}]0;a??\u{00DC}".utf8) + [0x9C]
+        XCTAssertEqual(Array(filter.filtered(bytes[...])), expected)
     }
 }

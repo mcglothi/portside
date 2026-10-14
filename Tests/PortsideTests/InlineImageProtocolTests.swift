@@ -119,15 +119,17 @@ final class InlineImageProtocolTests: XCTestCase {
         XCTAssertEqual(delegate.blobs.first?.prefix(8), Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
     }
 
-    func testKittyGraphicsReachesTheDelegate() {
-        let (terminal, delegate) = makeTerminal()
+    /// SwiftTerm 2 keeps Kitty images in the terminal's own store rather
+    /// than handing them to the delegate, so that's where to look.
+    func testKittyGraphicsIsStoredAndPlaced() {
+        let (terminal, _) = makeTerminal()
 
         // a=T: transmit and display immediately. f=100: the payload is a PNG.
         terminal.feed(text: "\u{1b}_Ga=T,f=100;\(onePixelPNGBase64)\u{1b}\\")
 
-        XCTAssertFalse(
-            delegate.blobs.isEmpty && delegate.bitmaps.isEmpty,
-            "Kitty graphics should reach the delegate by one of the two image callbacks"
-        )
+        let snapshot = terminal.kittyGraphicsRenderSnapshot()
+        XCTAssertEqual(snapshot.imagesById.count, 1, "the PNG should be decoded and stored")
+        XCTAssertEqual(snapshot.imagesById.values.first?.width, 1)
+        XCTAssertEqual(snapshot.placements.count, 1, "a=T should place the image")
     }
 }

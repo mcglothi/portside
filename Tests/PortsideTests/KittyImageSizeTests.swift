@@ -15,12 +15,19 @@ final class KittyImageSizeTests: XCTestCase {
 
     /// Sends `commands` (control, payload) through the guard, returns the
     /// replies. `chunk` is the read size.
-    private func send(_ commands: [(String, String)], chunk: Int = .max) -> String {
+    private func send(_ commands: [(String, String)], chunk: Int = .max, guarded: Bool = true) -> String {
         let bytes = Array(commands.map { "\u{1b}_G\($0.0);\($0.1)\u{1b}\\" }.joined().utf8)
-        return sendBytes(bytes, chunk: chunk)
+        return sendBytes(bytes, chunk: chunk, guarded: guarded)
     }
 
-    private func sendBytes(_ bytes: [UInt8], chunk: Int = .max,
+    /// For an image within the limit the guard must not change SwiftTerm's
+    /// answer, whatever SwiftTerm makes of an odd spelling: these compare
+    /// against the unguarded reply rather than pinning one SwiftTerm's parser.
+    private func sameAsUnguarded(_ commands: [(String, String)], chunk: Int = .max) -> Bool {
+        accepted(send(commands, chunk: chunk)) == accepted(send(commands, guarded: false))
+    }
+
+    private func sendBytes(_ bytes: [UInt8], chunk: Int = .max, guarded: Bool = true,
                            file: StaticString = #filePath, line: UInt = #line) -> String {
         Self.watched("\(name), chunks of \(chunk)", file: file, line: line) {
             var filter = TerminalImageGuard()
@@ -28,7 +35,7 @@ final class KittyImageSizeTests: XCTestCase {
             var i = 0
             while i < bytes.count {
                 let end = i + min(max(chunk, 1), bytes.count - i)
-                h.feed(Array(filter.filtered(bytes[i..<end])))
+                h.feed(guarded ? Array(filter.filtered(bytes[i..<end])) : Array(bytes[i..<end]))
                 i = end
             }
             return String(decoding: h.replies, as: UTF8.self)
@@ -163,7 +170,7 @@ final class KittyImageSizeTests: XCTestCase {
         for format in ["+100", "0100", String(repeating: "0", count: 256) + "100"] {
             for chunk in [1, 5, .max] {
                 XCTAssertFalse(accepted(send([("f=\(format),i=7", large)], chunk: chunk)), format)
-                XCTAssertTrue(accepted(send([("f=\(format),i=7", small)], chunk: chunk)), format)
+                XCTAssertTrue(sameAsUnguarded([("f=\(format),i=7", small)], chunk: chunk), format)
             }
         }
     }
@@ -177,20 +184,54 @@ final class KittyImageSizeTests: XCTestCase {
         for value in ["32", "", "invalid", "100=", " 100", "+", "-100", "9223372036854775808"] {
             // -100 is a valid integer but an unsupported format; other invalid
             // values default to raw 32. All must replace the earlier f=100.
-            let reply = send([("f=100,f=\(value),s=2,v=2,i=7", raw)])
-            XCTAssertEqual(accepted(reply), value != "-100", value)
+            XCTAssertTrue(sameAsUnguarded([("f=100,f=\(value),s=2,v=2,i=7", raw)]), value)
         }
         let small = image(.png, width: 32, height: 32).base64EncodedString()
-        XCTAssertTrue(accepted(send([("f=100,o=z,o=,i=7", small)])))
-        XCTAssertTrue(accepted(send([("f=100,o=é,i=7", small)], chunk: 1)))
+        XCTAssertTrue(sameAsUnguarded([("f=100,o=z,o=,i=7", small)]))
+        XCTAssertTrue(sameAsUnguarded([("f=100,o=é,i=7", small)], chunk: 1))
+    }
+
+    /// SwiftTerm 2 ignores an empty value and one past 11 bytes, keeping the
+    /// earlier value, and drops a command whose value doesn't parse. Read the
+    /// 1.x way — empty or unparseable means the default, raw 32 — these left
+    /// the guard expecting raw pixels while SwiftTerm decoded a PNG.
+    func testFormatsSwiftTermKeepsAreStillChecked() {
+        let large = image(.png, width: 4097, height: 1).base64EncodedString()
+        let small = image(.png, width: 32, height: 32).base64EncodedString()
+        for keys in ["f=100,f=", "f=100,f=000000000032", "f=100,f=" + String(repeating: "0", count: 30) + "32",
+                     "f=100,i=7,f=,s=1,v=1"] {
+            for chunk in [1, 5, .max] {
+                XCTAssertFalse(accepted(send([(keys + ",i=7", large)], chunk: chunk)), keys)
+                XCTAssertTrue(sameAsUnguarded([(keys + ",i=7", small)], chunk: chunk), keys)
+            }
+        }
+    }
+
+    /// A command SwiftTerm can't parse is ignored whole: it neither starts nor
+    /// ends a chunked transfer, so the guard's check must carry straight past it.
+    func testAnUnparseableCommandLeavesTheTransferAlone() {
+        let large = image(.png, width: 4097, height: 1).base64EncodedString()
+        let small = image(.png, width: 32, height: 32).base64EncodedString()
+        for junk in ["i=x", "m=-1", "z=99999999999", "f=1é"] {
+            for payload in [small, large] {
+                let commands = [("f=100,i=7,m=1", String(payload.prefix(8))),
+                                ("f=32,s=1,v=1,m=0,\(junk)", "AAAA"),
+                                ("m=0", String(payload.dropFirst(8)))]
+                if payload == small {
+                    XCTAssertTrue(sameAsUnguarded(commands, chunk: 1), junk)
+                } else {
+                    XCTAssertFalse(accepted(send(commands, chunk: 1)), junk)
+                }
+            }
+        }
     }
 
     func testIncompleteStandaloneImageDoesNotPoisonNextImage() {
         let small = image(.png, width: 32, height: 32).base64EncodedString()
         for more in ["", ",m=0", ",m=1,m=0", ",m=1,m=", ",m=1,m=garbage", ",m=1,m=-1"] {
             for chunk in [1, 5, .max] {
-                XCTAssertTrue(accepted(send([("f=100,i=8" + more, "iVBO"),
-                                             ("f=100,i=7", small)], chunk: chunk)), more)
+                XCTAssertTrue(sameAsUnguarded([("f=100,i=8" + more, "iVBO"),
+                                               ("f=100,i=7", small)], chunk: chunk), more)
             }
         }
     }
@@ -200,9 +241,13 @@ final class KittyImageSizeTests: XCTestCase {
         let small = image(.png, width: 32, height: 32).base64EncodedString()
         for more in ["+1", "01", String(repeating: "0", count: 256) + "1", "0,m=1", "1,m=é", "1,m=0é"] {
             for payload in [small, large] {
-                let reply = send([("f=100,i=7,m=\(more)", String(payload.prefix(4))),
-                                  ("f=32,m=0", String(payload.dropFirst(4)))], chunk: 1)
-                XCTAssertEqual(accepted(reply), payload == small, more)
+                let commands = [("f=100,i=7,m=\(more)", String(payload.prefix(4))),
+                                ("f=32,m=0", String(payload.dropFirst(4)))]
+                if payload == small {
+                    XCTAssertTrue(sameAsUnguarded(commands, chunk: 1), more)
+                } else {
+                    XCTAssertFalse(accepted(send(commands, chunk: 1)), more)
+                }
             }
         }
     }
@@ -235,22 +280,44 @@ final class KittyImageSizeTests: XCTestCase {
 
     func testNonDirectMediumCannotLeavePendingState() {
         let small = image(.png, width: 32, height: 32).base64EncodedString()
-        XCTAssertTrue(accepted(send([("f=100,t=f,m=1,i=8", "iVBO"), ("f=100,i=7", small)])))
-        XCTAssertTrue(accepted(send([("f=100,m=1,i=8", "iVBO"), ("t=f,m=1", ""),
-                                     ("f=100,i=7", small)])))
-        XCTAssertTrue(accepted(send([("f=100,t=f,t=,m=1,i=7", String(small.prefix(4))),
-                                     ("m=0", String(small.dropFirst(4)))])))
+        XCTAssertTrue(sameAsUnguarded([("f=100,t=f,m=1,i=8", "iVBO"), ("f=100,i=7", small)]))
+        XCTAssertTrue(sameAsUnguarded([("f=100,m=1,i=8", "iVBO"), ("t=f,m=1", ""),
+                                       ("f=100,i=7", small)]))
+        XCTAssertTrue(sameAsUnguarded([("f=100,t=f,t=,m=1,i=7", String(small.prefix(4))),
+                                       ("m=0", String(small.dropFirst(4)))]))
     }
 
     func testAbortedCommandsNeitherCreateNorConsumePendingState() {
         let small = image(.png, width: 32, height: 32).base64EncodedString()
-        for abort: UInt8 in [0x18, 0x1A, 0x9B, 0x9D, 0x90, 0x9F, 0x98, 0x9E] {
+        let large = image(.png, width: 4097, height: 1).base64EncodedString()
+        for abort: UInt8 in [0x18, 0x1A] {
             let aborted = Array("\u{1b}_Gf=100,m=1;iVBO".utf8) + [abort] + Array("\u{1b}\\".utf8)
             let fresh = Array("\u{1b}_Gf=100,i=7;\(small)\u{1b}\\".utf8)
             XCTAssertTrue(accepted(sendBytes(aborted + fresh, chunk: 1)), "abort \(abort)")
             let first = Array("\u{1b}_Gf=100,i=7,m=1;\(small.prefix(4))\u{1b}\\".utf8)
             let last = Array("\u{1b}_Gm=0;\(small.dropFirst(4))\u{1b}\\".utf8)
             XCTAssertTrue(accepted(sendBytes(first + aborted + last, chunk: 1)), "abort \(abort)")
+        }
+        // C1 bytes no longer abort an APC in SwiftTerm 2 — mid-run they're
+        // content — and the guard makes them content at any split. Whatever
+        // SwiftTerm makes of the result, the guard agrees with it, and an
+        // oversized image is still refused.
+        for c1: UInt8 in [0x9B, 0x9D, 0x90, 0x9F, 0x98, 0x9E, 0x9C] {
+            let interrupted: [UInt8] = Array("\u{1b}_Gf=100,m=1;iVBO".utf8) + [c1] + Array("\u{1b}\\".utf8)
+            for payload in [small, large] {
+                let first: [UInt8] = Array("\u{1b}_Gf=100,i=7,m=1;\(payload.prefix(4))\u{1b}\\".utf8)
+                let last: [UInt8] = Array("\u{1b}_Gm=0;\(payload.dropFirst(4))\u{1b}\\".utf8)
+                let whole: [UInt8] = Array("\u{1b}_Gf=100,i=7;\(payload)\u{1b}\\".utf8)
+                let streams: [[UInt8]] = [interrupted + whole, first + interrupted + last, first + [c1] + last]
+                for bytes in streams {
+                    let guarded = accepted(sendBytes(bytes, chunk: 1))
+                    if payload == small {
+                        XCTAssertEqual(guarded, accepted(sendBytes(bytes, guarded: false)), "C1 \(c1)")
+                    } else {
+                        XCTAssertFalse(guarded, "C1 \(c1)")
+                    }
+                }
+            }
         }
         let first = "\u{1b}_Gf=100,i=7,m=1;\(small.prefix(4))\u{1b}\\"
         let abortedDelete = "\u{1b}_Ga=d;\u{18}"
@@ -265,7 +332,10 @@ final class KittyImageSizeTests: XCTestCase {
             for trailingKey in ["", ","] {
                 let first = Array("\u{1b}_Gf=100,i=7,m=1\(trailingKey)".utf8) + end
                 let last = Array("\u{1b}_Gm=0;\(small)".utf8) + end
-                XCTAssertTrue(accepted(sendBytes(first + last, chunk: 1)))
+                // SwiftTerm 2 doesn't end an APC at a raw C1 ST: it's content.
+                XCTAssertEqual(accepted(sendBytes(first + last, chunk: 1)), end != [0x9C], "\(end)\(trailingKey)")
+                XCTAssertEqual(accepted(sendBytes(first + last, chunk: 1)),
+                               accepted(sendBytes(first + last, guarded: false)), "\(end)\(trailingKey)")
                 let oversized = Array("\u{1b}_Gm=0;\(large)".utf8) + end
                 XCTAssertFalse(accepted(sendBytes(first + oversized, chunk: 1)))
             }

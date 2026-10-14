@@ -174,12 +174,32 @@ struct TerminalImageGuard {
         return result
     }
 
+    static let apcStandIn = UInt8(ascii: "X")
+    static let oscStandIn = UInt8(ascii: "?")
+
     private mutating func newAPC() -> State {
         apcCount += 1
         return .apc(KittyCommand(serial: apcCount))
     }
 
     private mutating func step(_ byte: UInt8) -> UInt8? {
+        // SwiftTerm 2 reads the inside of an APC or OSC as one run up to the
+        // next C0 byte, so there a C1 byte is content. A byte that *starts* a
+        // run — after a C0, or first in a read — goes through its state table
+        // instead, where a C1 byte is a control and one above 0x9F aborts.
+        // Which reading a byte gets depends on where reads split, which the
+        // guard can't follow, so it removes the question: Kitty commands are
+        // ASCII, so any other byte in an APC becomes `X`; in an OSC, where
+        // titles carry UTF-8, a C1 byte that isn't continuing a character and
+        // isn't ST becomes `?`. Either way both readings then agree.
+        if case .apc(var command) = state, byte >= 0x80 {
+            continuationsDue = 0
+            defer { state = .apc(command) }
+            return command.consume(Self.apcStandIn, carry: kittyCarry) ?? Self.apcStandIn
+        }
+        if case .osc = state, continuationsDue == 0, (0x80...0x9F).contains(byte), byte != 0x9C {
+            return step(Self.oscStandIn) ?? Self.oscStandIn
+        }
         if continuationsDue > 0 {
             if byte & 0xC0 == 0x80 {
                 continuationsDue -= 1
@@ -188,6 +208,10 @@ struct TerminalImageGuard {
             continuationsDue = 0
         }
         if inString, let length = Self.utf8Length(byte) { continuationsDue = length - 1 }
+        // In ground SwiftTerm 2 prints every byte above 0x1F, C1 included:
+        // only ESC starts a sequence there. (A C1 introducer still works from
+        // inside one, e.g. straight after a CSI.)
+        if case .ground = state, byte >= 0x80 { return nil }
         switch byte {
         case 0x1B:                          // ESC: ends a sequence, may start one
             state = .escape
@@ -207,8 +231,8 @@ struct TerminalImageGuard {
         case 0x90:                          // C1 DCS
             state = .dcsEntry
             return nil
-        case 0x80...0x9F:                   // other C1 transitions abort an APC
-            if case .apc = state { state = .ground }
+        case 0x80...0x9F:                   // other C1 controls end a DCS or escape
+            state = .ground
             return nil
         default:
             break
@@ -370,36 +394,49 @@ fileprivate struct KittyCommand {
         var check: Check?
     }
 
-    /// Constant-space equivalent of Int(raw) for an ASCII decimal value.
-    /// Accumulate negatively so Int.min is representable, and keep scanning
-    /// after overflow so a later non-ASCII byte can discard the whole value.
+    /// One control value, read the way SwiftTerm 2's
+    /// `parseKittyGraphicsControl` reads it, in constant space:
+    ///
+    /// - empty, or longer than 11 bytes: ignored, the earlier value stands;
+    /// - a single non-digit byte: that byte's code (`t=d`, `f=+` is 43);
+    /// - otherwise ASCII `UInt32(raw)` (`Int32` for z/H/V), and anything that
+    ///   doesn't parse drops the whole command, leaving a pending transfer as
+    ///   it was.
     struct Value {
+        enum Parsed: Equatable { case ignored, invalid, value(Int) }
+        static let maxLength = 11
+
         var first: UInt8?
+        var count = 0
         var ascii = true
         var negative = false
+        var wellFormed = true
         var digits = false
-        var valid = true
-        var number = 0
+        var magnitude = 0
 
         mutating func feed(_ byte: UInt8) {
-            let isFirst = first == nil
-            if isFirst { first = byte }
+            count = min(count + 1, Self.maxLength + 1)
             ascii = ascii && byte < 0x80
-            if isFirst && (byte == UInt8(ascii: "+") || byte == UInt8(ascii: "-")) {
-                negative = byte == UInt8(ascii: "-")
-                return
+            if first == nil {
+                first = byte
+                if byte == UInt8(ascii: "+") || byte == UInt8(ascii: "-") {
+                    negative = byte == UInt8(ascii: "-")
+                    return
+                }
             }
-            guard valid, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) else { valid = false; return }
+            guard wellFormed, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) else { wellFormed = false; return }
             digits = true
-            let (scaled, mulOverflow) = number.multipliedReportingOverflow(by: 10)
-            let (next, subOverflow) = scaled.subtractingReportingOverflow(Int(byte - UInt8(ascii: "0")))
-            number = next
-            valid = !mulOverflow && !subOverflow
+            // At most 11 digits, so this can't overflow.
+            if count <= Self.maxLength { magnitude = magnitude * 10 + Int(byte - UInt8(ascii: "0")) }
         }
 
-        var integer: Int? {
-            guard valid, digits, negative || number != Int.min else { return nil }
-            return negative ? number : -number
+        func parsed(signed: Bool) -> Parsed {
+            guard let first, count <= Self.maxLength else { return .ignored }
+            if count == 1, !(UInt8(ascii: "0")...UInt8(ascii: "9")).contains(first) { return .value(Int(first)) }
+            guard ascii, wellFormed, digits else { return .invalid }
+            let value = negative ? -magnitude : magnitude
+            let range = signed ? Int(Int32.min)...Int(Int32.max) : 0...Int(UInt32.max)
+            return range.contains(value) ? .value(value) : .invalid
         }
     }
 
@@ -411,6 +448,8 @@ fileprivate struct KittyCommand {
     var action = UInt8(ascii: "t")
     var medium = UInt8(ascii: "d")
     var compressed = false
+    /// SwiftTerm couldn't parse a value and ignores the whole command.
+    var dropped = false
     var transfer = Pending()
 
     init(serial: Int) { self.serial = serial }
@@ -462,19 +501,29 @@ fileprivate struct KittyCommand {
     }
 
     private mutating func finishValue(_ key: [UInt8], _ value: Value) {
-        guard value.ascii else { return }
-        switch key {
-        case [UInt8(ascii: "f")]: format = value.integer ?? 32  // f
-        case [UInt8(ascii: "m")]: more = value.integer ?? 0     // m
-        case [UInt8(ascii: "a")]: action = value.first ?? UInt8(ascii: "t")    // a, default t
-        case [UInt8(ascii: "t")]: medium = value.first ?? UInt8(ascii: "d")   // t, default d
-        case [UInt8(ascii: "o")]: compressed = value.first != nil // o
-        default: break
+        guard key.count == 1, let name = key.first,
+              (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(name) || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(name)
+        else { return }
+        let signed = name == UInt8(ascii: "z") || name == UInt8(ascii: "H") || name == UInt8(ascii: "V")
+        switch value.parsed(signed: signed) {
+        case .ignored: return
+        case .invalid: dropped = true
+        case .value(let v):
+            switch name {
+            case UInt8(ascii: "f"): format = v                                      // f, default 32
+            case UInt8(ascii: "m"): more = v > 0 ? 1 : 0                            // m
+            case UInt8(ascii: "a"): action = UInt8(exactly: v) ?? UInt8(ascii: "t") // a, default t
+            case UInt8(ascii: "t"): medium = UInt8(exactly: v) ?? UInt8(ascii: "d") // t, default d
+            case UInt8(ascii: "o"): compressed = UInt8(exactly: v) != nil          // o
+            default: break
+            }
         }
     }
 
     private mutating func startPayload(carry: Pending?) {
         phase = .payload
+        // Never parsed, so its payload is never decoded or appended.
+        if dropped { return }
         let deleting = action == UInt8(ascii: "d") || action == UInt8(ascii: "D")
         if let carry, !deleting {
             transfer = carry
@@ -497,6 +546,7 @@ fileprivate struct KittyCommand {
             startPayload(carry: carry) // no semicolon: an empty payload
         case .payload: break
         }
+        if dropped { return }
         // SwiftTerm first clears pending on a=d/D, then appends/starts only
         // for m=1 with t=d. Every other dispatched Kitty command finishes it.
         carry = more == 1 && medium == UInt8(ascii: "d") ? transfer : nil
