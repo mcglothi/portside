@@ -332,10 +332,13 @@ final class KittyImageSizeTests: XCTestCase {
             for trailingKey in ["", ","] {
                 let first = Array("\u{1b}_Gf=100,i=7,m=1\(trailingKey)".utf8) + end
                 let last = Array("\u{1b}_Gm=0;\(small)".utf8) + end
-                // SwiftTerm 2 doesn't end an APC at a raw C1 ST: it's content.
-                XCTAssertEqual(accepted(sendBytes(first + last, chunk: 1)), end != [0x9C], "\(end)\(trailingKey)")
-                XCTAssertEqual(accepted(sendBytes(first + last, chunk: 1)),
-                               accepted(sendBytes(first + last, guarded: false)), "\(end)\(trailingKey)")
+                // SwiftTerm 2 alone doesn't end an APC at a raw C1 ST — mid-run
+                // it's content — so the guard sends it on as BEL, and the
+                // image is accepted as it was under SwiftTerm 1.20.
+                XCTAssertTrue(accepted(sendBytes(first + last, chunk: 1)), "\(end)\(trailingKey)")
+                if end != [0x9C] {
+                    XCTAssertTrue(accepted(sendBytes(first + last, guarded: false)), "\(end)\(trailingKey)")
+                }
                 let oversized = Array("\u{1b}_Gm=0;\(large)".utf8) + end
                 XCTAssertFalse(accepted(sendBytes(first + oversized, chunk: 1)))
             }

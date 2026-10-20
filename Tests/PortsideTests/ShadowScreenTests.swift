@@ -132,6 +132,25 @@ final class ShadowScreenTests: XCTestCase {
                        "the visible screen, not the incomplete shadow")
     }
 
+    /// Without a complete shadow — read-only Agent Access keeps none, and a
+    /// late one missed the start — scrollback is still read, from a copy of
+    /// the view's buffer, and reads as the shadow would.
+    func testWithoutACompleteShadowScrollbackIsStillRead() throws {
+        let rows = Array((1...300).map { "row \($0)\r\n" }.joined().utf8)
+        let shadowed = view()
+        shadowed.setShadowScreen(true)
+        feed(shadowed, rows)
+        for late in [false, true] {
+            let v = view()
+            feed(v, Array("row 1\r\n".utf8))
+            if late { v.setShadowScreen(true) }
+            feed(v, Array(rows.dropFirst("row 1\r\n".utf8.count)))
+            let text = v.agentScreen().text
+            XCTAssertTrue(text.hasPrefix("row 1\nrow 2\n"), "late: \(late)")
+            XCTAssertEqual(text, shadowed.agentScreen().text, "late: \(late)")
+        }
+    }
+
     func testItFollowsTheViewsSize() throws {
         let v = view()
         v.setShadowScreen(true)

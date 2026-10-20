@@ -299,9 +299,25 @@ final class TerminalImageGuardTests: XCTestCase {
     /// depending on where the read split — reads it the same way the guard does.
     func testNonASCIIInsideAnAPCIsReplaced() {
         var filter = TerminalImageGuard()
-        let bytes = Array("\u{1b}_Ga=q;\u{00E9}".utf8) + [0x9C, 0x9F] + Array("\u{1b}\\\u{00E9}".utf8)
-        let expected = Array("\u{1b}_Ga=q;XXXX\u{1b}\\\u{00E9}".utf8)
+        let bytes = Array("\u{1b}_Ga=q;\u{00E9}".utf8) + [0x9F] + Array("\u{00DC}\u{1b}\\\u{00E9}".utf8)
+        let expected = Array("\u{1b}_Ga=q;XXXXX\u{1b}\\\u{00E9}".utf8)
         XCTAssertEqual(Array(filter.filtered(bytes[...])), expected)
+    }
+
+    /// A C1 ST on its own ends an APC, and keeps ending it wherever the read
+    /// splits; the same byte finishing `Ü` (C3 9C) doesn't.
+    func testAC1STEndsAnAPCButTheSecondByteOfUDoesNot() {
+        let bytes = Array("\u{1b}_Ga=q;\u{00DC}".utf8) + [0x9C] + Array("after".utf8)
+        var filter = TerminalImageGuard()
+        XCTAssertEqual(Array(filter.filtered(bytes[...])),
+                       Array("\u{1b}_Ga=q;XX".utf8) + [0x07] + Array("after".utf8))
+        for split in 1..<bytes.count {
+            var filter = TerminalImageGuard()
+            let h = TerminalHarness()
+            h.feed(Array(filter.filtered(bytes[..<split])))
+            h.feed(Array(filter.filtered(bytes[split...])))
+            XCTAssertEqual(h.screen.first, "after", "split at \(split)")
+        }
     }
 
     /// In an OSC a C1 byte that isn't continuing a character becomes `?`;

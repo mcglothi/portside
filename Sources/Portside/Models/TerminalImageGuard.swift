@@ -193,7 +193,18 @@ struct TerminalImageGuard {
         // titles carry UTF-8, a C1 byte that isn't continuing a character and
         // isn't ST becomes `?`. Either way both readings then agree.
         if case .apc(var command) = state, byte >= 0x80 {
-            continuationsDue = 0
+            // C1 ST still ends the APC, as it did under SwiftTerm 1.20 — but
+            // only standing alone: 0x9C is also the second byte of `Ü`.
+            // Sent on as BEL, which ends an APC under either reading.
+            if byte == 0x9C, continuationsDue == 0 {
+                state = .ground
+                return 0x07
+            }
+            if continuationsDue > 0, byte & 0xC0 == 0x80 {
+                continuationsDue -= 1
+            } else {
+                continuationsDue = (Self.utf8Length(byte) ?? 1) - 1
+            }
             defer { state = .apc(command) }
             return command.consume(Self.apcStandIn, carry: kittyCarry) ?? Self.apcStandIn
         }

@@ -155,14 +155,24 @@ final class LoggingTerminalView: ProcessTerminalView {
 
     /// What agents read as the screen, and how many rows the screen has.
     /// From the shadow when it has seen the whole session, scrollback
-    /// included. Otherwise the visible rows only: under SwiftTerm v2 the
-    /// view's own buffer is out of reach.
+    /// included. Otherwise — read-only Agent Access keeps no shadow, and one
+    /// started mid-session is missing the start — from the view: the visible
+    /// rows from its snapshot, and the history above them from a copy of its
+    /// buffer, which SwiftTerm v2 gives as plain lines (a wrapped line reads
+    /// as several).
     func agentScreen() -> (text: String, rows: Int) {
         if let shadowScreen, shadowScreen.complete {
             return (AgentController.screenLines(shadowScreen.terminal), shadowScreen.terminal.rows)
         }
         let snapshot = terminalStateSnapshot()
-        return (AgentController.screenLines(visibleRows: snapshot.visibleRows), snapshot.dimensions.rows)
+        let screen = AgentController.screenLines(visibleRows: snapshot.visibleRows)
+        let history = String(decoding: getBufferAsData(), as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(max(0, snapshot.viewportRow))
+            // Past the right edge only stale cells from a wider pane, as above.
+            .map { $0.prefix(snapshot.dimensions.cols) }
+        guard !history.isEmpty else { return (screen, snapshot.dimensions.rows) }
+        return (history.joined(separator: "\n") + "\n" + screen, snapshot.dimensions.rows)
     }
 
     override func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
