@@ -113,7 +113,7 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// sessions — see `SessionManager.capturesCommandOutput`.
     var outputCapture: CommandOutputCapture?
     /// Portside's own copy of the screen and scrollback, for agent reads
-    /// (`ShadowScreen`). Kept alongside `outputCapture`.
+    /// (`ShadowScreen`). Kept while Agent Access is on.
     private(set) var shadowScreen: ShadowScreen?
 
     /// Starts or drops the shadow. One started before any output has seen
@@ -155,24 +155,30 @@ final class LoggingTerminalView: ProcessTerminalView {
 
     /// What agents read as the screen, and how many rows the screen has.
     /// From the shadow when it has seen the whole session, scrollback
-    /// included. Otherwise — read-only Agent Access keeps no shadow, and one
-    /// started mid-session is missing the start — from the view: the visible
-    /// rows from its snapshot, and the history above them from a copy of its
-    /// buffer, which SwiftTerm v2 gives as plain lines (a wrapped line reads
-    /// as several).
+    /// included. Otherwise — a session opened before Agent Access was turned
+    /// on — the live screen only: SwiftTerm v2 keeps the view's buffer to
+    /// itself, and its plain-text copy loses where lines wrap.
     func agentScreen() -> (text: String, rows: Int) {
         if let shadowScreen, shadowScreen.complete {
             return (AgentController.screenLines(shadowScreen.terminal), shadowScreen.terminal.rows)
         }
         let snapshot = terminalStateSnapshot()
-        let screen = AgentController.screenLines(visibleRows: snapshot.visibleRows)
-        let history = String(decoding: getBufferAsData(), as: UTF8.self)
+        let rows = snapshot.dimensions.rows
+        // The snapshot's rows are wherever the user has scrolled to; agents
+        // (and the password-prompt check before a send) need the live
+        // bottom. When the user is looking at it, the snapshot is exact.
+        var lines = String(decoding: getBufferAsData(), as: UTF8.self)
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .prefix(max(0, snapshot.viewportRow))
-            // Past the right edge only stale cells from a wider pane, as above.
-            .map { $0.prefix(snapshot.dimensions.cols) }
-        guard !history.isEmpty else { return (screen, snapshot.dimensions.rows) }
-        return (history.joined(separator: "\n") + "\n" + screen, snapshot.dimensions.rows)
+        if lines.last == "" { lines.removeLast() }
+        let live = max(0, lines.count - rows)
+        if snapshot.viewportRow >= live {
+            return (AgentController.screenLines(visibleRows: snapshot.visibleRows), rows)
+        }
+        // Scrolled back: the live rows from the buffer's plain-text copy.
+        // Past the right edge only stale cells from a wider pane, as in
+        // `screenLines(visibleRows:)`; counted in characters here, which a
+        // wide character overcounts.
+        return (lines[live...].map { $0.prefix(snapshot.dimensions.cols) }.joined(separator: "\n"), rows)
     }
 
     override func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -1184,8 +1190,16 @@ final class SessionManager: ObservableObject {
             guard capturesCommandOutput != oldValue else { return }
             for leaf in tabs.flatMap(\.leaves) {
                 leaf.terminalView.outputCapture = capturesCommandOutput ? leaf.terminalView.makeOutputCapture() : nil
-                leaf.terminalView.setShadowScreen(capturesCommandOutput)
             }
+        }
+    }
+    /// Keep a shadow screen for each session, so agents read scrollback.
+    /// Set by Agent Access whenever it's on, read-only included; a session
+    /// opened while it's on has a complete one.
+    var keepsShadowScreens = false {
+        didSet {
+            guard keepsShadowScreens != oldValue else { return }
+            for leaf in tabs.flatMap(\.leaves) { leaf.terminalView.setShadowScreen(keepsShadowScreens) }
         }
     }
     @Published var selectedTabID: UUID? {
@@ -2966,8 +2980,8 @@ final class SessionManager: ObservableObject {
         }
         if capturesCommandOutput {
             session.terminalView.outputCapture = session.terminalView.makeOutputCapture()
-            session.terminalView.setShadowScreen(true)
         }
+        if keepsShadowScreens { session.terminalView.setShadowScreen(true) }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {

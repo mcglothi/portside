@@ -195,6 +195,7 @@ final class AgentController: ObservableObject {
         }
         if settings.enabled { startServer() }
         sessions.capturesCommandOutput = settings.enabled && settings.allowInput
+        sessions.keepsShadowScreens = settings.enabled
         selectionWatch = sessions.$selectedTabID.sink { [weak self] id in
             guard let self, let id else { return }
             self.recentTabs.removeAll { $0 == id }
@@ -210,6 +211,7 @@ final class AgentController: ObservableObject {
         saveSettings()
         on ? startServer() : stopServer()
         sessions?.capturesCommandOutput = on && settings.allowInput
+        sessions?.keepsShadowScreens = on
     }
 
     /// Turning input off also takes it back from every client that had it,

@@ -132,23 +132,35 @@ final class ShadowScreenTests: XCTestCase {
                        "the visible screen, not the incomplete shadow")
     }
 
-    /// Without a complete shadow — read-only Agent Access keeps none, and a
-    /// late one missed the start — scrollback is still read, from a copy of
-    /// the view's buffer, and reads as the shadow would.
-    func testWithoutACompleteShadowScrollbackIsStillRead() throws {
-        let rows = Array((1...300).map { "row \($0)\r\n" }.joined().utf8)
-        let shadowed = view()
-        shadowed.setShadowScreen(true)
-        feed(shadowed, rows)
-        for late in [false, true] {
-            let v = view()
-            feed(v, Array("row 1\r\n".utf8))
-            if late { v.setShadowScreen(true) }
-            feed(v, Array(rows.dropFirst("row 1\r\n".utf8.count)))
-            let text = v.agentScreen().text
-            XCTAssertTrue(text.hasPrefix("row 1\nrow 2\n"), "late: \(late)")
-            XCTAssertEqual(text, shadowed.agentScreen().text, "late: \(late)")
-        }
+    /// Read-only Agent Access keeps shadows too, so its reads have scrollback;
+    /// typing being off only stops command capture.
+    func testReadOnlyAccessKeepsACompleteShadow() throws {
+        let manager = SessionManager()
+        defer { for s in manager.sessions { s.shutdown() } }
+        manager.keepsShadowScreens = true
+        manager.capturesCommandOutput = false
+        manager.openLocalShell()
+        let pane = try XCTUnwrap(manager.selectedTab?.leaves.first)
+        XCTAssertEqual(pane.terminalView.shadowScreen?.complete, true)
+        XCTAssertNil(pane.terminalView.outputCapture)
+        manager.keepsShadowScreens = false
+        XCTAssertNil(pane.terminalView.shadowScreen)
+    }
+
+    /// Without a complete shadow, reads are of the live screen even while
+    /// the user has scrolled back: an agent checking for a password prompt
+    /// before it types must see the bottom, not the user's place in history.
+    func testWithoutAShadowTheLiveScreenIsReadWhenScrolledBack() throws {
+        let v = view()
+        feed(v, Array((1...300).map { "row \($0)\r\n" }.joined().utf8) + Array("Password:".utf8))
+        let atBottom = v.agentScreen().text
+        XCTAssertTrue(atBottom.hasSuffix("row 300\nPassword:"), atBottom)
+        v.scrollUp(lines: 100)
+        XCTAssertLessThan(v.terminalStateSnapshot().viewportRow, 280, "scrolled back")
+        let scrolled = v.agentScreen().text
+        XCTAssertTrue(scrolled.hasSuffix("row 300\nPassword:"), scrolled)
+        XCTAssertEqual(scrolled.components(separatedBy: "\n").count,
+                       atBottom.components(separatedBy: "\n").count)
     }
 
     func testItFollowsTheViewsSize() throws {
