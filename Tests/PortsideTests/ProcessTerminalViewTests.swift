@@ -32,4 +32,34 @@ final class ProcessTerminalViewTests: XCTestCase {
         }
         XCTAssertTrue(String(decoding: view.seen, as: UTF8.self).contains("portside-tap"))
     }
+
+    /// Typing reaches the program, and so does the terminal's own reply to a
+    /// query. Both go through `send(source:data:)`. With SwiftTerm 2's
+    /// LocalProcess.send neither arrived on macOS 15 (#73); PtyWriter fixes it.
+    func testTypingAndRepliesReachTheProgram() async throws {
+        final class Spy: ProcessTerminalView {
+            var seen = Data()
+            override func dataReceived(slice: ArraySlice<UInt8>) {
+                seen.append(contentsOf: slice)
+                super.dataReceived(slice: slice)
+            }
+        }
+        let view = Spy(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        // Asks for device attributes, reads the reply without echo, then a
+        // typed line, and reports both.
+        view.startProcess(executable: "/bin/bash", args: ["-c",
+            #"stty -echo; printf 'ready\033[c'; IFS= read -r -d c r; stty echo; read x; printf 'reply=%s typed=%s\n' "${r#?}" "$x""#])
+        func output() -> String { String(decoding: view.seen, as: UTF8.self) }
+        func wait(for text: String) async throws {
+            for _ in 0..<100 {
+                if output().contains(text) { return }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        try await wait(for: "ready")
+        view.send(source: view, data: Array("hello\r".utf8)[...])
+        try await wait(for: "typed=")
+        XCTAssertTrue(output().contains("typed=hello"), output())
+        XCTAssertTrue(output().contains("reply=[?"), "the terminal's DA reply reached the program: \(output())")
+    }
 }

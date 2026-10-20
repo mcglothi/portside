@@ -3,7 +3,11 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
-## Unreleased
+## 0.38.0
+
+**New terminal engine: SwiftTerm 2.** Portside's terminal is now built on SwiftTerm 1.99, the rewrite that becomes SwiftTerm 2, replacing 1.20. Everything should look and behave as before; this is the change most worth reporting a problem with. Neovim takes its size from the terminal's in-band resize reports, so it redraws at the right size as soon as a window or split changes. Kitty graphics are stored and placed by the terminal itself, and Portside's size and file-access limits on Sixel, iTerm2 and Kitty images were checked against the new engine's parser. Portside now writes your typing to the session itself, because on macOS 15 the new engine's own writes never arrived and keystrokes went nowhere. A Kitty graphics command ended by the one-byte C1 string terminator ends there again, as it did before; the new engine alone would have read it as part of the command.
+
+**Agents read the screen from Portside's own copy of it.** What `portside screen` and the MCP tools return now comes from a second terminal Portside keeps in step with each pane, rather than from the view you're looking at, so the answer doesn't depend on what the view happens to be drawing. Clear Buffer clears it too, and the notices Portside writes into a pane itself (a serial or telnet connection opening or closing, a missing X11 display) are included. Read-only Agent Access keeps the copy too. A pane opened before Agent Access was turned on has no copy, so agents get its screen without scrollback: the live screen, even while you're scrolled back.
 
 **Start Fresh sticks.** With Previous sessions set to ask, choosing Start Fresh and then quitting without opening a tab brought the same prompt back at the next launch, and the one after, because the saved tab list was only rewritten when a tab changed. Start Fresh now records that nothing from last time is wanted.
 

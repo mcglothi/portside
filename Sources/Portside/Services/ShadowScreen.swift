@@ -10,8 +10,8 @@ import SwiftTerm
 /// Portside owns. The bytes are the ones the view gets, after
 /// `TerminalImageGuard`, so both parse the same thing.
 ///
-/// Only kept while agents may read sessions (the same switch as command
-/// capture): it holds a second copy of the scrollback.
+/// Only kept while Agent Access is on, read-only included:
+/// it holds a second copy of the scrollback.
 final class ShadowScreen {
     let terminal: Terminal
     /// Whether it has seen everything the session printed. One switched on

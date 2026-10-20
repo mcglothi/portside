@@ -349,6 +349,17 @@ final class AgentAccessTests: XCTestCase {
                        "the wrapped row joins its line, the space at the edge kept; real newlines stay")
     }
 
+    /// Cells the cursor skipped over are blanks, not nothing: a column
+    /// layout drawn with cursor movement keeps its columns, and a wide
+    /// character isn't followed by an extra space.
+    @MainActor
+    func testScreenReadKeepsSkippedCellsAsSpaces() {
+        let h = TerminalHarness(cols: 20, rows: 3)
+        h.feed("\u{1b}[5Cabc\r\n日本語x")
+        let text = AgentPolicy.screenText(AgentController.screenLines(h.terminal), lines: 10)
+        XCTAssertEqual(text, "     abc\n日本語x")
+    }
+
     func testTypingIsRefusedUntilItsOwnSwitchIsOn() async {
         let (agent, _, _) = controller([host("web1")])
         agent.setEnabled(true)
@@ -829,7 +840,7 @@ final class AgentAccessTests: XCTestCase {
         // a remote one looks from here).
         pane.sendText("printf 'Password: '; read -r x\r")
         for _ in 0..<300 {
-            if AgentPolicy.screenText(AgentController.screenLines(pane.terminalView.getTerminal()), lines: 1)
+            if AgentPolicy.screenText(pane.terminalView.agentScreen().text, lines: 1)
                 .hasSuffix("Password:") { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -837,7 +848,7 @@ final class AgentAccessTests: XCTestCase {
         let r = await task.value
         XCTAssertNotNil(r.error, "typed into a password prompt")
         try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertFalse(AgentController.screenLines(pane.terminalView.getTerminal()).contains(secret))
+        XCTAssertFalse(pane.terminalView.agentScreen().text.contains(secret))
     }
 
     /// Letting one program into a pane doesn't let another in: the question

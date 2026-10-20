@@ -32,7 +32,11 @@ ditto .build/release/Portside_Portside.bundle "$APP/Contents/Resources/Portside_
 # SwiftTerm's Metal shader bundle. Its renderer (as of 1.15.0, our upstream
 # fix in migueldeicaza/SwiftTerm#593) probes Bundle.main.resourceURL for this
 # alongside its other candidates, so it belongs in Contents/Resources too.
-ditto .build/release/SwiftTerm_SwiftTerm.bundle "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
+# SwiftTerm 2 has no resource bundle (its shaders are compiled in), so only
+# copy one when the build made it.
+if [ -d .build/release/SwiftTerm_SwiftTerm.bundle ]; then
+    ditto .build/release/SwiftTerm_SwiftTerm.bundle "$APP/Contents/Resources/SwiftTerm_SwiftTerm.bundle"
+fi
 
 # Embed Sparkle.framework (with its XPC helpers) and point the binary at it.
 FRAMEWORK_SRC="$(find .build/artifacts -type d -path '*macos-arm64_x86_64/Sparkle.framework' | head -1)"

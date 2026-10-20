@@ -73,7 +73,7 @@ public protocol ProcessTerminalViewDelegate: AnyObject {
  * If you want additional control over the delegate methods implemented in this class, you can
  * subclass this and override the methods
  */
-open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelegate, @preconcurrency LocalProcessDelegate {
+open class ProcessTerminalView: TerminalView, TerminalViewDelegate, @preconcurrency LocalProcessDelegate {
     
     public internal(set) var process: LocalProcess!
 
@@ -99,7 +99,12 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
     func setup ()
     {
         terminalDelegate = self
-        process = LocalProcess (delegate: self)
+        // Delivered on the main queue, as SwiftTerm 1.x did by default:
+        // everything in Portside's receive path (logs, capture, timeline,
+        // guard, shadow) assumes it. v2's default is a private queue, and
+        // with it the delivery thread raced the main thread over the command
+        // capture and crashed (EXC_BAD_ACCESS in CommandOutputCapture).
+        process = LocalProcess (delegate: self, dispatchQueue: .main)
     }
     
     /**
@@ -160,8 +165,13 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
      */
     open func send(source: TerminalView, data: ArraySlice<UInt8>)
     {
-        process.send (data: data)
+        if !ptyWriter.write(data) {
+            process.send (data: data)
+        }
     }
+
+    /// Writes to the pty for us; see `PtyWriter`.
+    let ptyWriter = PtyWriter()
     
     /**
      * Use this method to toggle the logging of data coming from the host, or pass nil to stop
@@ -194,12 +204,14 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
         // hosts that want options.termName in the child's environment pass
         // Terminal.getEnvironmentVariables(termName:) explicitly
         process.startProcess(executable: executable, args: args, environment: environment, execName: execName, currentDirectory: currentDirectory)
+        ptyWriter.attach(process.childfd)
     }
 
     /**
      Terminate the process.
      */
     public func terminate() {
+        ptyWriter.detach()
         process.terminate()
     }
 
@@ -207,6 +219,7 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
      * Implements the LocalProcessDelegate method.
      */
     open func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        ptyWriter.detach()
         processDelegate?.processTerminated(source: self, exitCode: exitCode)
     }
     
@@ -222,13 +235,82 @@ open class ProcessTerminalView: TerminalView, @preconcurrency TerminalViewDelega
      */
     open func getWindowSize () -> winsize
     {
-        // `cellDimension` is internal to SwiftTerm; `cellSizeInPixels` is the
-        // public form of the same cell size, already scaled for the display.
-        // The view sets it during init, before any process asks for this.
-        let terminal = getTerminal()
-        let cell = cellSizeInPixels(source: terminal) ?? (width: 0, height: 0)
-        let pxW = min(cell.width * terminal.cols, Int(UInt16.max))
-        let pxH = min(cell.height * terminal.rows, Int(UInt16.max))
-        return winsize(ws_row: UInt16(terminal.rows), ws_col: UInt16(terminal.cols), ws_xpixel: UInt16(pxW), ws_ypixel: UInt16(pxH))
+        // Cell size: SwiftTerm's own is internal. `cellSizeInPixels(source:)`
+        // is the public form, already scaled for the display; under v2 it
+        // reads a cached value and ignores `source`, which a view no longer
+        // hands out, so a placeholder stands in for it.
+        let dims = terminalDimensions
+        let cell = cellSizeInPixels(source: Self.sizeQueryPlaceholder) ?? (width: 0, height: 0)
+        let pxW = min(cell.width * dims.cols, Int(UInt16.max))
+        let pxH = min(cell.height * dims.rows, Int(UInt16.max))
+        return winsize(ws_row: UInt16(dims.rows), ws_col: UInt16(dims.cols), ws_xpixel: UInt16(pxW), ws_ypixel: UInt16(pxH))
+    }
+}
+
+extension ProcessTerminalView {
+    /// See `getWindowSize`: an argument SwiftTerm's cell-size query requires
+    /// and no longer reads.
+    static let sizeQueryPlaceholder = Terminal(delegate: PlaceholderTerminalDelegate())
+}
+
+private final class PlaceholderTerminalDelegate: TerminalDelegate {
+    func send(source: Terminal, data: ArraySlice<UInt8>) {}
+}
+
+/// Writes input to the pty: keystrokes, pastes, and the terminal's own
+/// replies to the program, in order.
+///
+/// SwiftTerm 2's `LocalProcess.send` queues writes on a `DispatchIO` channel.
+/// On macOS 15 those writes never completed — programs drew but never saw a
+/// key (#73, CI). This holds its own duplicate of the pty descriptor and
+/// writes with `write(2)` on a serial queue, waiting with `poll` when the
+/// pty is full, so a program that isn't reading can't block the main thread.
+final class PtyWriter: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "portside.pty-writer")
+    private let lock = NSLock()
+    private var fd: Int32 = -1
+
+    /// Starts writing to `master`, a pty master descriptor. Ignores an
+    /// invalid one, which leaves `write` returning false.
+    func attach(_ master: Int32) {
+        detach()
+        guard master >= 0 else { return }
+        let copy = dup(master)
+        guard copy >= 0 else { return }
+        lock.withLock { fd = copy }
+    }
+
+    /// Stops writing; anything still queued is dropped.
+    func detach() {
+        let old = lock.withLock { () -> Int32 in defer { fd = -1 }; return fd }
+        guard old >= 0 else { return }
+        // Closed on the queue, after any write already in progress.
+        queue.async { close(old) }
+    }
+
+    /// Queues `data`; false when there's no pty to write to.
+    func write(_ data: ArraySlice<UInt8>) -> Bool {
+        let target = lock.withLock { fd }
+        guard target >= 0 else { return false }
+        guard !data.isEmpty else { return true }
+        let bytes = Array(data)
+        queue.async { [self] in
+            var pending = bytes[...]
+            while !pending.isEmpty {
+                // Detached (or reattached) meanwhile: the rest is for a
+                // process that's gone.
+                guard lock.withLock({ fd }) == target else { return }
+                let n = pending.withUnsafeBytes { Darwin.write(target, $0.baseAddress, $0.count) }
+                if n > 0 { pending = pending.dropFirst(n); continue }
+                if n < 0 && errno == EINTR { continue }
+                if n < 0 && errno == EAGAIN {
+                    var p = pollfd(fd: target, events: Int16(POLLOUT), revents: 0)
+                    _ = poll(&p, 1, 250)
+                    continue
+                }
+                return  // EIO and the like: the other side has gone
+            }
+        }
+        return true
     }
 }

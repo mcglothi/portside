@@ -113,7 +113,7 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// sessions — see `SessionManager.capturesCommandOutput`.
     var outputCapture: CommandOutputCapture?
     /// Portside's own copy of the screen and scrollback, for agent reads
-    /// (`ShadowScreen`). Kept alongside `outputCapture`.
+    /// (`ShadowScreen`). Kept while Agent Access is on.
     private(set) var shadowScreen: ShadowScreen?
 
     /// Starts or drops the shadow. One started before any output has seen
@@ -121,8 +121,8 @@ final class LoggingTerminalView: ProcessTerminalView {
     func setShadowScreen(_ on: Bool) {
         guard on else { shadowScreen = nil; return }
         guard shadowScreen == nil else { return }
-        let t = getTerminal()
-        shadowScreen = ShadowScreen(cols: t.cols, rows: t.rows, scrollback: t.options.scrollback ?? 500,
+        let dims = terminalDimensions
+        shadowScreen = ShadowScreen(cols: dims.cols, rows: dims.rows, scrollback: scrollbackLines,
                               complete: !drewAnything)
     }
 
@@ -138,21 +138,47 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// Clear Buffer, for the view and its shadow alike: what was cleared
     /// mustn't still be readable by an agent.
     func clearBuffer() {
-        getTerminal().resetToInitialState()
+        resetToInitialState()
         shadowScreen?.reset()
     }
 
     /// Scrollback depth for the view and, so they stay alike, its shadow.
     func applyScrollback(_ lines: Int) {
-        getTerminal().changeScrollback(lines)
+        scrollbackLines = lines
+        changeScrollback(lines)
         shadowScreen?.changeScrollback(lines)
     }
 
-    /// The terminal agents read: the shadow when it has seen the whole
-    /// session, otherwise the view's own.
-    var screenSource: Terminal {
-        if let shadowScreen, shadowScreen.complete { return shadowScreen.terminal }
-        return getTerminal()
+    /// SwiftTerm's default history depth until `applyScrollback` says
+    /// otherwise; v2 doesn't report it back.
+    private(set) var scrollbackLines = 500
+
+    /// What agents read as the screen, and how many rows the screen has.
+    /// From the shadow when it has seen the whole session, scrollback
+    /// included. Otherwise — a session opened before Agent Access was turned
+    /// on — the live screen only: SwiftTerm v2 keeps the view's buffer to
+    /// itself, and its plain-text copy loses where lines wrap.
+    func agentScreen() -> (text: String, rows: Int) {
+        if let shadowScreen, shadowScreen.complete {
+            return (AgentController.screenLines(shadowScreen.terminal), shadowScreen.terminal.rows)
+        }
+        let snapshot = terminalStateSnapshot()
+        let rows = snapshot.dimensions.rows
+        // The snapshot's rows are wherever the user has scrolled to; agents
+        // (and the password-prompt check before a send) need the live
+        // bottom. When the user is looking at it, the snapshot is exact.
+        var lines = String(decoding: getBufferAsData(), as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.last == "" { lines.removeLast() }
+        let live = max(0, lines.count - rows)
+        if snapshot.viewportRow >= live {
+            return (AgentController.screenLines(visibleRows: snapshot.visibleRows), rows)
+        }
+        // Scrolled back: the live rows from the buffer's plain-text copy.
+        // Past the right edge only stale cells from a wider pane, as in
+        // `screenLines(visibleRows:)`; counted in characters here, which a
+        // wide character overcounts.
+        return (lines[live...].map { $0.prefix(snapshot.dimensions.cols) }.joined(separator: "\n"), rows)
     }
 
     override func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -353,7 +379,7 @@ final class LoggingTerminalView: ProcessTerminalView {
         // have to keep matching what is on disk.
         logger?.append(slice)
         if outputCapture != nil {
-            outputCapture?.columns = getTerminal().cols
+            outputCapture?.columns = terminalDimensions.cols
             outputCapture?.consume(slice)
         }
         rememberOutput(slice)
@@ -493,7 +519,7 @@ final class LoggingTerminalView: ProcessTerminalView {
     private func updateSelectionAutoScroll(for event: NSEvent) {
         // When the remote app owns the mouse (vim etc.), SwiftTerm reports the
         // drag to it instead of selecting; don't fight over the viewport.
-        if allowMouseReporting && getTerminal().mouseMode != .off {
+        if allowMouseReporting && currentMouseMode != .off {
             stopSelectionAutoScroll()
             return
         }
@@ -849,6 +875,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// device fd through SerialPort. Output still tees through the logger
     /// (dataReceived) and input through the MultiExec mirror (send), because
     /// both hooks live on the view, not the process.
+    @MainActor
     init(title: String, serial target: SerialTarget, entry: SessionEntry? = nil,
          appearance: TerminalAppearance = .default,
          logger: SessionLogger? = nil) {
@@ -1029,6 +1056,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// reset primitive is a full VT reset rather than a surgical scrollback
     /// trim, so this also resets modes/colors set by escape sequences — the
     /// same tradeoff a shell's own `reset` command makes.
+    @MainActor
     func clearBuffer() {
         terminalView.clearBuffer()
     }
@@ -1040,7 +1068,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
         terminalView.nativeForegroundColor = appearance.foreground
         terminalView.nativeBackgroundColor = appearance.background
         terminalView.caretColor = appearance.cursor
-        terminalView.getTerminal().setCursorStyle(appearance.swiftTermCursorStyle)
+        terminalView.setCursorStyle(appearance.swiftTermCursorStyle)
     }
 
     /// Sets this terminal's scrollback (history) depth. The view is built with
@@ -1162,8 +1190,16 @@ final class SessionManager: ObservableObject {
             guard capturesCommandOutput != oldValue else { return }
             for leaf in tabs.flatMap(\.leaves) {
                 leaf.terminalView.outputCapture = capturesCommandOutput ? leaf.terminalView.makeOutputCapture() : nil
-                leaf.terminalView.setShadowScreen(capturesCommandOutput)
             }
+        }
+    }
+    /// Keep a shadow screen for each session, so agents read scrollback.
+    /// Set by Agent Access whenever it's on, read-only included; a session
+    /// opened while it's on has a complete one.
+    var keepsShadowScreens = false {
+        didSet {
+            guard keepsShadowScreens != oldValue else { return }
+            for leaf in tabs.flatMap(\.leaves) { leaf.terminalView.setShadowScreen(keepsShadowScreens) }
         }
     }
     @Published var selectedTabID: UUID? {
@@ -1256,15 +1292,27 @@ final class SessionManager: ObservableObject {
         // detect focus by hit-testing mouse-downs to the terminal under the
         // cursor and marking its pane active (same NSEvent-monitor pattern as
         // the selection auto-scroll and Enter-to-close workarounds).
+        //
+        // It also hands the terminal the keyboard. AppKit only does that when
+        // the view under the click accepts first responder, and with Metal on,
+        // SwiftTerm 2 covers the terminal with a surface view that doesn't —
+        // so the pane you clicked turned active but typing went elsewhere
+        // (#76). Unconditional, because a pane can be active without having
+        // the keyboard.
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self, let window = event.window,
-                  let hit = window.contentView?.hitTest(event.locationInWindow),
-                  let terminal = Self.enclosingTerminalView(of: hit),
-                  let session = self.sessions.first(where: { $0.terminalView === terminal }),
-                  session.id != self.selectedTab?.activePaneID else { return event }
-            self.focusPane(session.id)
+            self?.focusClickedPane(event)
             return event
         }
+    }
+
+    /// The click-to-focus half of the mouse monitor above.
+    func focusClickedPane(_ event: NSEvent) {
+        guard let window = event.window,
+              let hit = window.contentView?.hitTest(event.locationInWindow),
+              let terminal = Self.enclosingTerminalView(of: hit),
+              let session = sessions.first(where: { $0.terminalView === terminal }) else { return }
+        if session.id != selectedTab?.activePaneID { focusPane(session.id) }
+        if window.firstResponder !== terminal { window.makeFirstResponder(terminal) }
     }
 
     /// Walks up from a hit-tested subview to the enclosing terminal view.
@@ -2932,8 +2980,8 @@ final class SessionManager: ObservableObject {
         }
         if capturesCommandOutput {
             session.terminalView.outputCapture = session.terminalView.makeOutputCapture()
-            session.terminalView.setShadowScreen(true)
         }
+        if keepsShadowScreens { session.terminalView.setShadowScreen(true) }
         // Command capture only runs when it's switched on, so an unopted user
         // pays nothing -- the timeline is never even allocated.
         if recordsCommands {
