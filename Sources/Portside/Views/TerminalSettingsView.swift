@@ -22,6 +22,14 @@ struct TerminalSettingsView: View {
                 Text("How many lines of output each terminal keeps for scrolling and ⌘F search. Applies to open terminals immediately and to every new session. Larger buffers use more memory per tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Picker("Click in the scroll bar to", selection: Binding(
+                    get: { store.terminal.scrollbarClick },
+                    set: { var t = store.terminal; t.scrollbarClick = $0; store.updateTerminal(t) })) {
+                    ForEach(ScrollbarClickBehavior.allCases) { Text($0.label).tag($0) }
+                }
+                Text("What a click in the scroll bar's track does. Follow System Settings uses the choice under Appearance in System Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Rendering") {

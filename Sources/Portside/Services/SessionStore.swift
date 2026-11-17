@@ -28,7 +28,9 @@ final class SessionStore: ObservableObject {
     /// opt into a *named* profile. Seeded once by `migrateLegacyDefault()`.
     @Published var defaultProfileID: UUID?
     @Published var logging = LoggingSettings()
-    @Published var terminal = TerminalSettings()
+    @Published var terminal = TerminalSettings() {
+        didSet { LoggingTerminalView.scrollbarClick = terminal.scrollbarClick }
+    }
     @Published private(set) var connectionStats: [ConnectionStat] = []
     @Published private(set) var connectionLog: [ConnectionLogEntry] = []
     @Published private(set) var history = HistorySettings()
