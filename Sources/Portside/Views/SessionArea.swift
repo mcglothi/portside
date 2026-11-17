@@ -721,6 +721,16 @@ struct FindBar: View {
                 .onChange(of: session.findTerm) { _, _ in session.findNext() }
                 .onKeyPress(.escape) { session.hideFind(); return .handled }
 
+            if let matches = session.findMatches {
+                Text(matches.total == 0 ? "No results"
+                     : matches.index == 0 ? "\(matches.total)"
+                     : "\(matches.index)/\(matches.total)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(matches.total == 0 ? Color.red : .secondary)
+                    .fixedSize()
+                    .help(matches.total >= 1000 ? "1000 or more matches" : "Current match / total matches")
+            }
+
             Button {
                 session.findCaseSensitive.toggle()
                 session.findNext()

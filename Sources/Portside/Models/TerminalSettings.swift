@@ -15,6 +15,21 @@ enum RestoreMode: String, Codable, CaseIterable, Identifiable {
 
 /// Terminal *behavior* (as opposed to look — see `TerminalAppearance`),
 /// persisted in the library and applied to every live terminal.
+/// What a click in the scroll bar's track does. macOS has a system-wide
+/// choice for this (Appearance › "Click in the scroll bar to"); `system`
+/// follows it, the other two override it for terminals only.
+enum ScrollbarClickBehavior: String, Codable, CaseIterable, Identifiable {
+    case system, page, spot
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .system: return "Follow System Settings"
+        case .page: return "Jump to the next page"
+        case .spot: return "Jump to the spot that's clicked"
+        }
+    }
+}
+
 struct TerminalSettings: Equatable {
     /// Scrollback buffer size in lines. SwiftTerm defaults to a stingy 500;
     /// operators reading long build/log output want far more.
@@ -36,6 +51,9 @@ struct TerminalSettings: Equatable {
     /// is not something to start doing to someone's hosts unasked.
     var injectShellIntegration: Bool = false
 
+    /// Page or jump on a click in the terminal scroll bar's track.
+    var scrollbarClick: ScrollbarClickBehavior = .system
+
     /// Presets offered in Settings. Bounded on purpose: SwiftTerm has no true
     /// "unlimited" mode (passing nil *disables* scrollback), and each line is a
     /// preallocated slot, so we cap at a large-but-sane ceiling.
@@ -52,7 +70,7 @@ struct TerminalSettings: Equatable {
 // scrollbackLines) keeps loading as new terminal settings are added.
 extension TerminalSettings: Codable {
     enum CodingKeys: String, CodingKey {
-        case scrollbackLines, useMetalRenderer, restoreMode, injectShellIntegration
+        case scrollbackLines, useMetalRenderer, restoreMode, injectShellIntegration, scrollbarClick
     }
 
     init(from decoder: Decoder) throws {
@@ -63,5 +81,8 @@ extension TerminalSettings: Codable {
         restoreMode = try c.decodeIfPresent(RestoreMode.self, forKey: .restoreMode) ?? defaults.restoreMode
         injectShellIntegration = try c.decodeIfPresent(Bool.self, forKey: .injectShellIntegration)
             ?? defaults.injectShellIntegration
+        // try?: a value a newer build wrote mustn't fail the whole settings load.
+        scrollbarClick = (try? c.decodeIfPresent(ScrollbarClickBehavior.self, forKey: .scrollbarClick))
+            ?? defaults.scrollbarClick
     }
 }

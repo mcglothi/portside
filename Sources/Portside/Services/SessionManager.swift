@@ -53,11 +53,97 @@ final class LoggingTerminalView: ProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         terminalDelegate = clipboardPolicy
+        showPermanentScrollbar()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         terminalDelegate = clipboardPolicy
+        showPermanentScrollbar()
+    }
+
+    /// SwiftTerm's default overlay scroller fades out 1.5 s after scrolling
+    /// stops, so in a long session there was nothing to grab to drag back up.
+    /// The legacy style is always drawn: a knob once there is scrollback, an
+    /// empty track before that (and on the alternate screen). Set once, before
+    /// the process starts: every change of style resizes the PTY.
+    private func showPermanentScrollbar() {
+        scrollerStyle = .legacy
+        // SwiftTerm puts an I-beam over its whole bounds, scroller included,
+        // and its `resetCursorRects` isn't open, so the bar never looked
+        // grabbable. A subview's cursor rect wins over its superview's.
+        let width = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+        let strip = ArrowCursorStrip(frame: NSRect(x: bounds.maxX - width, y: 0,
+                                                   width: width, height: bounds.height))
+        strip.autoresizingMask = [.minXMargin, .height]
+        addSubview(strip)
+        takeOverScrollerClicks()
+    }
+
+    /// Page or jump on a click in the scroller's track, from Settings.
+    /// AppKit only reads the system-wide choice, and reads it once, so a
+    /// page click is turned into a jump here when the setting asks for one.
+    static var scrollbarClick: ScrollbarClickBehavior = .system
+
+    private static var jumpsToSpot: Bool {
+        switch scrollbarClick {
+        case .page: return false
+        case .spot: return true
+        // Unset reads as false, but AppKit itself treats unset as "jump to
+        // the spot": with no key, its scroller reports `.knobSlot` (a jump)
+        // for clicks above the knob. Reading unset as page made Follow
+        // System jump upward and page downward.
+        case .system:
+            return UserDefaults.standard.object(forKey: "AppleScrollerPagingBehavior") as? Bool ?? true
+        }
+    }
+
+    /// SwiftTerm's scroller handler ignores `.knobSlot`, the part a click
+    /// reports when it jumps the knob to the spot clicked: the knob moved and
+    /// the text didn't. It also leaves the I-beam showing after a click.
+    /// The scroller is private to SwiftTerm, but it is our subview, so its
+    /// action can be pointed here; everything else it does is unchanged.
+    private func takeOverScrollerClicks() {
+        guard let scroller = subviews.lazy.compactMap({ $0 as? NSScroller }).first else { return }
+        scroller.target = self
+        scroller.action = #selector(portsideScrollerActivated(_:))
+    }
+
+    @objc private func portsideScrollerActivated(_ scroller: NSScroller) {
+        switch scroller.hitPart {
+        case .knob, .knobSlot:
+            scroll(toPosition: scroller.doubleValue)
+        // `where` binds to one pattern only, so each page part gets its own
+        // case: a shared `case .decrementPage, .incrementPage where …` made
+        // every page-up click jump, whatever the setting.
+        case .decrementPage where Self.jumpsToSpot, .incrementPage where Self.jumpsToSpot:
+            if let position = Self.spotPosition(in: scroller) {
+                scroll(toPosition: position)
+                scroller.doubleValue = scrollPosition
+            }
+        case .decrementPage:
+            pageUp()
+            scroller.doubleValue = scrollPosition
+        case .incrementPage:
+            pageDown()
+            scroller.doubleValue = scrollPosition
+        default:
+            break
+        }
+        NSCursor.arrow.set()
+    }
+
+    /// Scroll position (0 top, 1 bottom) that centres the knob on the click.
+    private static func spotPosition(in scroller: NSScroller) -> Double? {
+        guard let event = NSApp.currentEvent else { return nil }
+        let point = scroller.convert(event.locationInWindow, from: nil)
+        let slot = scroller.rect(for: .knobSlot)
+        let knob = scroller.rect(for: .knob)
+        let travel = slot.height - knob.height
+        guard travel > 0 else { return nil }
+        var y = point.y - slot.minY
+        if !scroller.isFlipped { y = slot.height - y }
+        return min(max(Double((y - knob.height / 2) / travel), 0), 1)
     }
 
     var logger: SessionLogger?
@@ -785,6 +871,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     @Published var findVisible = false
     @Published var findTerm = ""
     @Published var findCaseSensitive = false
+    /// Where the current match sits among all matches, for the find bar's
+    /// "3/14" counter: `index` is 1-based (0 when nothing is selected) and
+    /// `total` is capped at 1000 by SwiftTerm. Nil when there is no term.
+    @Published private(set) var findMatches: (index: Int, total: Int)?
 
     var environment: HostEnvironment { entry?.environment ?? .none }
     var isProtected: Bool { entry?.isProtected ?? false }
@@ -1028,6 +1118,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
 
     func hideFind() {
         findVisible = false
+        findMatches = nil
         terminalView.clearSearch()
     }
 
@@ -1038,14 +1129,29 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, ProcessTe
     /// Searches forward from the current match; returns whether one was found.
     @discardableResult
     func findNext() -> Bool {
-        guard !findTerm.isEmpty else { terminalView.clearSearch(); return false }
-        return terminalView.findNext(findTerm, options: searchOptions)
+        guard !findTerm.isEmpty else { clearFindMatches(); return false }
+        let found = terminalView.findNext(findTerm, options: searchOptions)
+        updateFindMatches()
+        return found
     }
 
     @discardableResult
     func findPrevious() -> Bool {
-        guard !findTerm.isEmpty else { terminalView.clearSearch(); return false }
-        return terminalView.findPrevious(findTerm, options: searchOptions)
+        guard !findTerm.isEmpty else { clearFindMatches(); return false }
+        let found = terminalView.findPrevious(findTerm, options: searchOptions)
+        updateFindMatches()
+        return found
+    }
+
+    /// Counted after each step rather than kept live: output arriving while
+    /// the bar is open can change the total, and the next step corrects it.
+    private func updateFindMatches() {
+        findMatches = terminalView.searchMatchSummary(findTerm, options: searchOptions)
+    }
+
+    private func clearFindMatches() {
+        findMatches = nil
+        terminalView.clearSearch()
     }
 
     private var searchOptions: SearchOptions {
@@ -3096,4 +3202,28 @@ final class ClipboardPolicy: @preconcurrency TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         view?.rangeChanged(source: source, startY: startY, endY: endY)
     }
+}
+
+/// Transparent strip over the terminal's scroller that only sets the arrow
+/// cursor. Clicks and scrolls fall through to the scroller beneath it.
+///
+/// A cursor rect alone loses: AppKit also sends `cursorUpdate` to the view
+/// under the pointer, which falls through to SwiftTerm's view and sets the
+/// I-beam again. Its own tracking area makes the strip the owner of those
+/// events while the pointer is over it.
+private final class ArrowCursorStrip: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.cursorUpdate, .mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseMoved(with event: NSEvent) { NSCursor.arrow.set() }
 }

@@ -3,6 +3,14 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.39.0
+
+**The terminal's scroll bar stays visible.** It used to fade out a second and a half after scrolling stopped, so in a long session there was nothing to grab to get back up. It is now always drawn: a knob once there is scrollback, an empty track before that and in full-screen programs like vim. It takes its own strip at the right edge, so a terminal is about a column narrower. The pointer is an arrow over it rather than the text cursor.
+
+**Choose what a click in the scroll bar does.** Settings › Terminal › Scrollback › *Click in the scroll bar to*: follow System Settings (the default), jump a page, or jump to the spot clicked. Clicking the track used to move the knob without scrolling the text when macOS was set to jump to the spot.
+
+**Find shows how many matches there are.** The ⌘F bar shows "3/14" for the current match and the total, or "No results".
+
 ## 0.38.0
 
 **New terminal engine: SwiftTerm 2.** Portside's terminal is now built on SwiftTerm 1.99, the rewrite that becomes SwiftTerm 2, replacing 1.20. Everything should look and behave as before; this is the change most worth reporting a problem with. Neovim takes its size from the terminal's in-band resize reports, so it redraws at the right size as soon as a window or split changes. Kitty graphics are stored and placed by the terminal itself, and Portside's size and file-access limits on Sixel, iTerm2 and Kitty images were checked against the new engine's parser. Portside now writes your typing to the session itself, because on macOS 15 the new engine's own writes never arrived and keystrokes went nowhere. A Kitty graphics command ended by the one-byte C1 string terminator ends there again, as it did before; the new engine alone would have read it as part of the command.
