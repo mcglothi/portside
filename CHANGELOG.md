@@ -3,6 +3,10 @@
 All notable changes to Portside are documented here, newest first. This file
 also feeds the in-app update changelog — see `Scripts/release.sh`.
 
+## 0.40.0
+
+**Select to copy, right-click to paste.** Settings › Terminal › Copy & Paste › *Mouse* now offers the PuTTY and Linux-terminal habit as an option: highlighting text copies it, and a right-click pastes. Hold ⌥ while right-clicking to get the Copy/Paste menu. ⌘C and ⌘V work either way, and a right-click paste into a MultiExec group asks first, as ⌘V does. When a program like vim or tmux has turned on mouse reporting, the right-click still goes to it. The default stays the Mac style.
+
 ## 0.39.0
 
 **The terminal's scroll bar stays visible.** It used to fade out a second and a half after scrolling stopped, so in a long session there was nothing to grab to get back up. It is now always drawn: a knob once there is scrollback, an empty track before that and in full-screen programs like vim. It takes its own strip at the right edge, so a terminal is about a column narrower. The pointer is an arrow over it rather than the text cursor.

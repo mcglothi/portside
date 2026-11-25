@@ -30,6 +30,20 @@ enum ScrollbarClickBehavior: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How the mouse copies and pastes in a terminal. ⌘C/⌘V work in both.
+/// `selectToCopy` is the X11/PuTTY habit: finishing a selection copies it,
+/// and a right-click pastes instead of opening the Copy/Paste menu.
+enum ClipboardStyle: String, Codable, CaseIterable, Identifiable {
+    case mac, selectToCopy
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .mac: return "Mac (⌘C / ⌘V, right-click menu)"
+        case .selectToCopy: return "Select to copy, right-click to paste"
+        }
+    }
+}
+
 struct TerminalSettings: Equatable {
     /// Scrollback buffer size in lines. SwiftTerm defaults to a stingy 500;
     /// operators reading long build/log output want far more.
@@ -54,6 +68,9 @@ struct TerminalSettings: Equatable {
     /// Page or jump on a click in the terminal scroll bar's track.
     var scrollbarClick: ScrollbarClickBehavior = .system
 
+    /// Mac-style clipboard by default; select-to-copy is opt-in.
+    var clipboardStyle: ClipboardStyle = .mac
+
     /// Presets offered in Settings. Bounded on purpose: SwiftTerm has no true
     /// "unlimited" mode (passing nil *disables* scrollback), and each line is a
     /// preallocated slot, so we cap at a large-but-sane ceiling.
@@ -70,7 +87,7 @@ struct TerminalSettings: Equatable {
 // scrollbackLines) keeps loading as new terminal settings are added.
 extension TerminalSettings: Codable {
     enum CodingKeys: String, CodingKey {
-        case scrollbackLines, useMetalRenderer, restoreMode, injectShellIntegration, scrollbarClick
+        case scrollbackLines, useMetalRenderer, restoreMode, injectShellIntegration, scrollbarClick, clipboardStyle
     }
 
     init(from decoder: Decoder) throws {
@@ -84,5 +101,7 @@ extension TerminalSettings: Codable {
         // try?: a value a newer build wrote mustn't fail the whole settings load.
         scrollbarClick = (try? c.decodeIfPresent(ScrollbarClickBehavior.self, forKey: .scrollbarClick))
             ?? defaults.scrollbarClick
+        clipboardStyle = (try? c.decodeIfPresent(ClipboardStyle.self, forKey: .clipboardStyle))
+            ?? defaults.clipboardStyle
     }
 }
