@@ -32,8 +32,15 @@ final class ClipboardPolicyTests: XCTestCase {
     }
     private let board = NSPasteboard(name: NSPasteboard.Name("portside-test-\(UUID().uuidString)"))
 
+    private var pasteboardLock: Int32 = -1
+
+    override func setUp() async throws {
+        pasteboardLock = SystemPasteboardLock.acquire()
+    }
+
     override func tearDown() async throws {
         board.releaseGlobally()
+        SystemPasteboardLock.release(pasteboardLock)
     }
 
     private func view() -> (LoggingTerminalView, () -> String) {

@@ -26,8 +26,15 @@ final class SelectToCopyTests: XCTestCase {
         }
     }
 
+    private var pasteboardLock: Int32 = -1
+
+    override func setUp() async throws {
+        pasteboardLock = SystemPasteboardLock.acquire()
+    }
+
     override func tearDown() async throws {
         LoggingTerminalView.clipboardStyle = .mac
+        SystemPasteboardLock.release(pasteboardLock)
     }
 
     private func view() -> LoggingTerminalView {
