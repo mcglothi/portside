@@ -29,7 +29,10 @@ final class SessionStore: ObservableObject {
     @Published var defaultProfileID: UUID?
     @Published var logging = LoggingSettings()
     @Published var terminal = TerminalSettings() {
-        didSet { LoggingTerminalView.scrollbarClick = terminal.scrollbarClick }
+        didSet {
+            LoggingTerminalView.scrollbarClick = terminal.scrollbarClick
+            LoggingTerminalView.clipboardStyle = terminal.clipboardStyle
+        }
     }
     @Published private(set) var connectionStats: [ConnectionStat] = []
     @Published private(set) var connectionLog: [ConnectionLogEntry] = []

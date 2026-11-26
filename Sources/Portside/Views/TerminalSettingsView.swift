@@ -32,6 +32,17 @@ struct TerminalSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Copy & Paste") {
+                Picker("Mouse", selection: Binding(
+                    get: { store.terminal.clipboardStyle },
+                    set: { var t = store.terminal; t.clipboardStyle = $0; store.updateTerminal(t) })) {
+                    ForEach(ClipboardStyle.allCases) { Text($0.label).tag($0) }
+                }
+                Text("Select to copy works like PuTTY and most Linux terminals: highlighting text copies it, and a right-click pastes. Hold ⌥ while right-clicking to get the Copy/Paste menu. ⌘C and ⌘V work either way, and pasting into a MultiExec group still asks first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Rendering") {
                 Toggle("Use GPU (Metal) rendering", isOn: Binding(
                     get: { store.terminal.useMetalRenderer },

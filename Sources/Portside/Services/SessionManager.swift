@@ -85,6 +85,9 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// page click is turned into a jump here when the setting asks for one.
     static var scrollbarClick: ScrollbarClickBehavior = .system
 
+    /// Mac or select-to-copy clipboard, from Settings › Terminal.
+    static var clipboardStyle: ClipboardStyle = .mac
+
     private static var jumpsToSpot: Bool {
         switch scrollbarClick {
         case .page: return false
@@ -666,7 +669,16 @@ final class LoggingTerminalView: ProcessTerminalView {
     /// actions (the same code ⌘C/⌘V already dispatch to) but never sets a
     /// context menu, so right-click does nothing today. Building a fresh menu
     /// per click keeps "Copy"'s enabled state honest as the selection changes.
+    ///
+    /// In select-to-copy mode a plain right-click pastes instead, and
+    /// ⌥-right-click still opens the menu. A remote app that owns the mouse
+    /// (vim, tmux with mouse on) still gets the right-click: SwiftTerm's
+    /// `rightMouseDown` reports it there and never asks for this menu.
     override func menu(for event: NSEvent) -> NSMenu? {
+        if Self.rightClickPastes(style: Self.clipboardStyle, modifiers: event.modifierFlags) {
+            paste(self)
+            return nil
+        }
         let menu = NSMenu()
         let copyItem = ClosureMenuItem(title: "Copy") { [weak self] in
             guard let self else { return }
@@ -681,6 +693,29 @@ final class LoggingTerminalView: ProcessTerminalView {
         pasteItem.isEnabled = NSPasteboard.general.string(forType: .string) != nil
         menu.addItem(pasteItem)
         return menu
+    }
+
+    /// Whether a right-click pastes rather than opening the context menu.
+    static func rightClickPastes(style: ClipboardStyle, modifiers: NSEvent.ModifierFlags) -> Bool {
+        style == .selectToCopy && !modifiers.contains(.option)
+    }
+
+    /// Select-to-copy: once the mouse is released on a selection (drag,
+    /// double-click word, triple-click line), it goes to the clipboard.
+    /// The paste gate is untouched; this only writes the pasteboard.
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        copySelectionIfSelectToCopy()
+    }
+
+    /// Split out of `mouseUp` so the decision is testable without
+    /// synthesizing a mouse drag. Returns whether it copied.
+    @discardableResult
+    func copySelectionIfSelectToCopy() -> Bool {
+        guard Self.clipboardStyle == .selectToCopy, selectionActive,
+              let text = getSelection(), !text.isEmpty else { return false }
+        copy(self)
+        return true
     }
 
     private func selectionAutoScrollTick() {
